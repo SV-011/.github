@@ -2,7 +2,7 @@
 
 Repository: `SV-011/.github`  
 Organization: `SV-011`  
-State: INITIALIZED / RESIDENT_RUNTIME_SOURCE_INSTALL_PENDING  
+State: SOURCE_INSTALLED / RESIDENT_RUNTIME_EXECUTION_PENDING  
 Updated: 2026-09-02  
 Authority effect: NONE  
 Activation effect: false
@@ -57,7 +57,7 @@ Phase-5 remains open until the organization resident runtime produces authentic 
 execution_authorized: false
 publication_authorized: false
 proofs_accepted: false
-runtime_installed: false
+runtime_source_installed: true
 resident_runtime_observed: false
 phase5_real_crossing_observed: false
 phase5_real_denial_observed: false
@@ -73,3 +73,44 @@ autonomous_status_claimed: false
 5. Prepare resident execution requests for one allowed and one denied crossing.
 6. GitHub-hosted validation may prove source behavior only.
 7. Do not close Phase 5 until authentic resident receipts are observed and reconstructed.
+
+
+## Organization-boundary source installation — 2026-09-02
+
+PR #1 merged at `0881f23ce1e735f701f8c8a284c6dcf1e97748f3`.
+
+Installed in the organization activation repository:
+- exact-byte canonical `intr_transport.py`;
+- exact-byte canonical `process_boundary.py`;
+- exact-byte canonical resident runtime import;
+- SV-011 service registry;
+- explicit denial-receipt adapter;
+- resident Phase-5 ALLOW and DENY probe requests;
+- resident probe runner;
+- one declared-task dispatcher;
+- one validation-only workflow.
+
+Hosted validation PASS:
+- run `33671905836` / run number `1` (pull request)
+- run `33671951382` / run number `2` (main push)
+
+Source state:
+```text
+source_installed: true
+resident_probe_requests_installed: true
+resident_runtime_observed: false
+phase5_real_crossing_observed: false
+phase5_real_denial_observed: false
+github_actions_is_runtime_authority: false
+```
+
+The installed requests are ready for a sovereign resident executor:
+- `resident-runtime/requests/phase5-allow.json`
+- `resident-runtime/requests/phase5-deny.json`
+
+The resident execution command surface is:
+```text
+python resident-runtime/run_phase5_probe.py --request <request.json> --evidence-dir <resident-evidence-dir> --runtime-observer <resident-runtime-id>
+```
+
+GitHub-hosted validation of that runner is not authentic resident execution and does not close Phase 5.
