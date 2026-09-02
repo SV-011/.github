@@ -1,0 +1,16 @@
+{
+  "schema_version": "stegverse.sv011.service-registry.v1",
+  "organization": "SV-011",
+  "services": [
+    {
+      "service_id": "sv-011.boundary-diagnostic",
+      "repository": "SV-011/entity",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "accepts": ["sv011.phase5.diagnostic"],
+      "runtime_required_for_consumption": false
+    }
+  ],
+  "authorized_communication_set": ["sv-011.boundary-diagnostic"],
+  "boundary_rule": "Only explicitly registered services are admissible at the SV-011 organizational boundary; carrier presence grants no authority."
+}

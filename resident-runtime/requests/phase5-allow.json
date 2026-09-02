@@ -1,0 +1,11 @@
+{
+  "schema": "stegverse.sv011-resident-boundary-request/v0.1",
+  "request_id": "SV011-PHASE5-ALLOW-001",
+  "entity_id": "SV-011",
+  "kind": "BOUNDARY_CROSSING_PROBE",
+  "destination_service": "sv-011.boundary-diagnostic",
+  "payload": {"probe":"authentic-resident-allow"},
+  "carrier_reference": "HB-SV011-PHASE5-RESIDENT",
+  "transition_reference": "T-011",
+  "authority_effect": "NONE"
+}
