@@ -193,3 +193,64 @@ github_actions_is_runtime_authority: false
 ```
 
 No human file-copy or second-machine prerequisite remains.
+
+
+## Canonical HB/InTr runtime-observability consolidation — 2026-09-02
+
+This SV-011 lane is now a consumer of the shared StegVerse HB Runtime Presence / Resident Observability Contract owned by `StegVerse-Labs/.github#812`.
+
+Do not create an SV-011-specific heartbeat, scheduler, liveness signal, resident process, or runtime-observability mechanism.
+
+Canonical substrate already established:
+- HB32 / 100 Hz oscillator/reference protocol: ACTIVE_PROTOCOL_VERIFIED;
+- HB progression dependency: OSCILLATOR_ONLY;
+- HB/HB-derived carrier authority effect: NONE;
+- native WorkerCoordinator request sweep: installed;
+- native already-local source refresh: installed;
+- organization-local Interlock/InTr boundary executor source: merged/validated;
+- resident request dispatcher/consumer framework: installed;
+- TV/TVC remains sole credential authority.
+
+SV-011's exact unresolved runtime predicates remain distinct:
+
+```text
+resident_node_identity_observed
+resident_process_current
+hb_reference_frame_current
+sv011_source_materialization_request_consumed
+sv011_source_materialization_completed
+sv011_boundary_request_consumed
+sv011_allow_execution_observed
+sv011_deny_execution_observed
+sv011_first_success_capsule_retained
+sv011_same_execution_reconstruction_proven
+```
+
+Existing deployment-local evidence bindings:
+- resident dispatch: `receipts/sovereign-host/resident-request-dispatch.latest.json`
+- HB-derived continuation observation: `receipts/sovereign-host/hb-machine-continuation.latest.json`
+- source materialization request consumption: `receipts/sovereign-host/sv011-phase5-source-materialization-request-consumption.latest.json`
+- source materialization task receipt: `receipts/sv011-phase5-source-materialization/SHWP-SV011-PHASE5-SOURCE-MATERIALIZATION-001.json`
+- boundary request consumption: `receipts/sovereign-host/sv011-phase5-resident-execution-request-consumption.latest.json`
+- boundary task receipt: `receipts/sv011-phase5-boundary/SHWP-SV011-PHASE5-BOUNDARY-001.json`
+- first-write-wins retained success evidence: `receipts/sv011-phase5-boundary/success/first-success.json`
+
+HB protocol existence or reference progression must never satisfy `resident_process_current`, request consumption, execution, retained evidence, or reconstruction.
+
+Current observed state remains fail-closed:
+```text
+shared_observability_contract_owner: StegVerse-Labs/.github#812
+shared_observability_projection_installed: false
+resident_node_identity_observed: false
+resident_process_current: false
+sv011_source_materialization_request_consumed: false
+sv011_source_materialization_completed: false
+sv011_boundary_request_consumed: false
+sv011_allow_execution_observed: false
+sv011_deny_execution_observed: false
+sv011_first_success_capsule_retained: false
+sv011_same_execution_reconstruction_proven: false
+phase5_exit: OPEN
+```
+
+This handoff is a consumer binding only. Issue #812 owns the reusable shared projection; SV-011 must consume it when installed rather than duplicating it.
