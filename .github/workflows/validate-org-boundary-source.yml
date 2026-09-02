@@ -1,0 +1,41 @@
+name: SV-011 Org Boundary Source Validation
+
+on:
+  pull_request:
+    paths:
+      - "org-boundary/**"
+      - "resident-runtime/**"
+      - "tests/**"
+      - "tools/**"
+      - "SV_011_ORG_RUNTIME_MIRROR_HANDOFF.md"
+  push:
+    branches: [main]
+    paths:
+      - "org-boundary/**"
+      - "resident-runtime/**"
+      - "tests/**"
+      - "tools/**"
+      - "SV_011_ORG_RUNTIME_MIRROR_HANDOFF.md"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate declared source tasks
+        run: python tools/run_declared_tasks.py
+      - name: Assert validation-only authority
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open("org-boundary/provenance.json"))
+          assert p["github_actions_is_runtime_authority"] is False
+          assert p["hb_carrier_grants_authority"] is False
+          print("SV011_GITHUB_VALIDATION_AUTHORITY_NONE")
+          PY
