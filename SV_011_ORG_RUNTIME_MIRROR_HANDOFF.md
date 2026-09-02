@@ -240,7 +240,7 @@ HB protocol existence or reference progression must never satisfy `resident_proc
 Current observed state remains fail-closed:
 ```text
 shared_observability_contract_owner: StegVerse-Labs/.github#814
-shared_observability_projection_installed: false
+shared_observability_projection_installed_in_canonical_source: true
 resident_node_identity_observed: false
 resident_process_current: false
 sv011_source_materialization_request_consumed: false
@@ -286,4 +286,15 @@ reconstruction:
   not required for source-materialization completion
 ```
 
-The shared projector source is not yet merged as of this handoff revision; no local projection output is claimed.
+The shared projector is merged in canonical source via StegVerse-Labs/.github PR #822, merge `6358375c81fedb579cb6fcac59946268ea485ebb`. It is bound into sovereign bootstrap/native-service/source-refresh materialization. No deployment-local projection output is claimed until an authentic resident runtime produces the required local evidence.
+
+
+### Shared contract merge state
+
+```text
+canonical_owner: StegVerse-Labs/.github#814
+implementation_pr: #822
+merge: 6358375c81fedb579cb6fcac59946268ea485ebb
+shared_projection_source_installed: true
+shared_projection_runtime_output_observed: false
+```
