@@ -1,0 +1,22 @@
+{
+  "schema": "stegverse.sv011-org-boundary-source-installation/v0.1",
+  "entity_id": "SV-011",
+  "repository": "SV-011/.github",
+  "merge_commit": "0881f23ce1e735f701f8c8a284c6dcf1e97748f3",
+  "hosted_validation": [
+    {"run_id":33671905836,"run_number":1,"event":"pull_request","conclusion":"success"},
+    {"run_id":33671951382,"run_number":2,"event":"push","conclusion":"success"}
+  ],
+  "source_installed": true,
+  "resident_probe_requests_installed": true,
+  "resident_runtime_observed": false,
+  "phase5_real_crossing_observed": false,
+  "phase5_real_denial_observed": false,
+  "github_actions_is_runtime_authority": false,
+  "authority": {
+    "execution_authorized": false,
+    "publication_authorized": false,
+    "proofs_accepted": false
+  },
+  "status": "SOURCE_INSTALLED_RESIDENT_EXECUTION_PENDING"
+}
