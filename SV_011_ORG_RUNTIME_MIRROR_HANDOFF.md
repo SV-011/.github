@@ -2,7 +2,7 @@
 
 Repository: `SV-011/.github`  
 Organization: `SV-011`  
-State: SOURCE_INSTALLED / RESIDENT_RUNTIME_EXECUTION_PENDING  
+State: SOURCE_AND_WORKERCOORDINATOR_BRIDGE_INSTALLED / RESIDENT_RUNTIME_EXECUTION_PENDING  
 Updated: 2026-09-02  
 Authority effect: NONE  
 Activation effect: false
@@ -114,3 +114,38 @@ python resident-runtime/run_phase5_probe.py --request <request.json> --evidence-
 ```
 
 GitHub-hosted validation of that runner is not authentic resident execution and does not close Phase 5.
+
+
+## Canonical sovereign WorkerCoordinator bridge — 2026-09-02
+
+The missing cross-repository consumption path has been implemented in `StegVerse-Labs/.github`.
+
+Canonical integration:
+- issue `StegVerse-Labs/.github#787`: completed
+- final implementation PR `#798`
+- merge `869a6ad8d9c76fa9066bceee525168745f21a6fa`
+- reconciliation PR `#800`
+- reconciliation merge `6d8ba3f905036ff00ee42a9bcddaab4ac5fc9142`
+
+Installed canonical resident surfaces:
+- task `SHWP-SV011-PHASE5-BOUNDARY-001`
+- intent request `RESIDENT-EXEC-SV011-PHASE5-BOUNDARY-001`
+- dispatcher selector `sv011_phase5`
+- at-most-once resident request consumer
+- source-refresh materialization
+- Admissible-Existence phase `ADMISSIBLE`
+- COSV vector `50000000101000`
+- local source locator `STEGVERSE_SV011_ORG_ROOT` (non-secret)
+
+The WorkerCoordinator task requires a clean already-local `SV-011/.github` checkout containing this repository's Phase-5 source installation commit `cf2777d9d21a97289f4ec7b0d9b0b21597047666`.
+
+The bridge is now source/control complete. The remaining Phase-5 transition is machine-owned authentic resident execution. No GitHub-hosted run, merge, request presence, or carrier presence satisfies that transition.
+
+Current runtime predicates remain:
+```text
+resident_request_bridge_installed: true
+resident_runtime_observed: false
+phase5_real_crossing_observed: false
+phase5_real_denial_observed: false
+github_actions_is_runtime_authority: false
+```
