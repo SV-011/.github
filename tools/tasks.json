@@ -1,0 +1,10 @@
+{
+  "schema": "stegverse.sv011-org-declared-tasks/v0.1",
+  "tasks": [
+    {
+      "id": "phase5_org_boundary_source",
+      "command": ["python", "tests/validate_phase5_source.py"],
+      "enabled": true
+    }
+  ]
+}
