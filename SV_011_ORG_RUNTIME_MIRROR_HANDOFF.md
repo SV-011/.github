@@ -197,7 +197,7 @@ No human file-copy or second-machine prerequisite remains.
 
 ## Canonical HB/InTr runtime-observability consolidation — 2026-09-02
 
-This SV-011 lane is now a consumer of the shared StegVerse HB Runtime Presence / Resident Observability Contract owned by `StegVerse-Labs/.github#812`.
+This SV-011 lane is now a consumer of the shared StegVerse HB Runtime Presence / Resident Observability Contract owned by `StegVerse-Labs/.github#814`.
 
 Do not create an SV-011-specific heartbeat, scheduler, liveness signal, resident process, or runtime-observability mechanism.
 
@@ -239,7 +239,7 @@ HB protocol existence or reference progression must never satisfy `resident_proc
 
 Current observed state remains fail-closed:
 ```text
-shared_observability_contract_owner: StegVerse-Labs/.github#812
+shared_observability_contract_owner: StegVerse-Labs/.github#814
 shared_observability_projection_installed: false
 resident_node_identity_observed: false
 resident_process_current: false
@@ -254,3 +254,36 @@ phase5_exit: OPEN
 ```
 
 This handoff is a consumer binding only. Issue #812 owns the reusable shared projection; SV-011 must consume it when installed rather than duplicating it.
+
+
+### Shared projector binding detail
+
+Canonical implementation currently under `StegVerse-Labs/.github#814` / PR `#817` exposes explicit evidence refs rather than inferring task completion from HB or request-wrapper state.
+
+For the SV-011 boundary task, the intended observation binding after the shared projector is merged/materialized is:
+
+```text
+request:
+  control/resident-execution-request.d/sv011-phase5-boundary-001.json
+consumption:
+  receipts/sovereign-host/sv011-phase5-resident-execution-request-consumption.latest.json
+execution:
+  receipts/sv011-phase5-boundary/SHWP-SV011-PHASE5-BOUNDARY-001.json
+reconstruction:
+  DIRECT_SV011_RECONSTRUCTION_RECEIPT_NOT_YET_INSTALLED
+```
+
+For the exact-source predecessor:
+
+```text
+request:
+  control/resident-execution-request.d/sv011-phase5-source-materialization-001.json
+consumption:
+  receipts/sovereign-host/sv011-phase5-source-materialization-request-consumption.latest.json
+execution:
+  receipts/sv011-phase5-source-materialization/SHWP-SV011-PHASE5-SOURCE-MATERIALIZATION-001.json
+reconstruction:
+  not required for source-materialization completion
+```
+
+The shared projector source is not yet merged as of this handoff revision; no local projection output is claimed.
