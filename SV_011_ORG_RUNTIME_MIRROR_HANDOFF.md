@@ -137,7 +137,7 @@ Installed canonical resident surfaces:
 - COSV vector `50000000101000`
 - local source locator `STEGVERSE_SV011_ORG_ROOT` (non-secret)
 
-The WorkerCoordinator task requires a clean already-local `SV-011/.github` checkout containing this repository's Phase-5 source installation commit `cf2777d9d21a97289f4ec7b0d9b0b21597047666`.
+The WorkerCoordinator task accepts either (a) a clean already-local `SV-011/.github` checkout containing this repository's Phase-5 source installation commit `cf2777d9d21a97289f4ec7b0d9b0b21597047666` with the exact pinned blobs, or (b) the exact verified materialized tree produced by the dedicated source-materialization task.
 
 The bridge is now source/control complete. The remaining Phase-5 transition is machine-owned authentic resident execution. No GitHub-hosted run, merge, request presence, or carrier presence satisfies that transition.
 
@@ -149,3 +149,47 @@ phase5_real_crossing_observed: false
 phase5_real_denial_observed: false
 github_actions_is_runtime_authority: false
 ```
+
+
+## Canonical resident source materialization — 2026-09-02
+
+The previous assumption that a clean SV-011 checkout must already exist on the resident node has been removed.
+
+Canonical source prerequisite installed in `StegVerse-Labs/.github`:
+- issue `#806`: completed
+- implementation PR `#807`
+- merge `dccf1015eff9bcc398b43a7e9dd4a4ff1c53111e`
+- reconciliation PR `#808`
+- reconciliation merge `e1e104b15614eca5a9361f21301a9034fcd4b0cd`
+
+Machine-owned source task:
+- `SHWP-SV011-PHASE5-SOURCE-MATERIALIZATION-001`
+
+Intent request:
+- `RESIDENT-EXEC-SV011-PHASE5-SOURCE-MATERIALIZATION-001`
+
+The canonical WorkerCoordinator source now carries an exact seven-file bundle pinned by Git blob identity to:
+`SV-011/.github@cf2777d9d21a97289f4ec7b0d9b0b21597047666`.
+
+Default resident materialization root:
+`~/.stegverse/source/SV-011/.github`
+
+Dispatcher order:
+```text
+sv011_phase5_source_materialization
+-> sv011_phase5
+```
+
+The materializer may only verify and atomically place the source bytes. It has no Phase-5 boundary-execution authority. The Phase-5 worker still has no source-acquisition authority.
+
+Current runtime predicates:
+```text
+source_materialization_lane_installed: true
+authentic_source_materialization_observed: false
+resident_runtime_observed: false
+phase5_real_crossing_observed: false
+phase5_real_denial_observed: false
+github_actions_is_runtime_authority: false
+```
+
+No human file-copy or second-machine prerequisite remains.
