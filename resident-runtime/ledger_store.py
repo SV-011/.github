@@ -20,16 +20,11 @@ Keys are `HEAD`, `receipts/<hex>` and `source-receipts/<hex>`. Nothing here
 satisfies an authority constraint. Authority and time stay constraint
 variables on the documents a caller writes.
 
-Ported from StegVerse-org/.github resident-runtime/ledger_store.py at
-43ef7311f624291c9db55628473c8146b7815f07. The organization identity is not
-named here; the caller supplies the location.
-
 A store is selected only by the location the materializer supplies. A plain
-path is a POSIX root, as it always was; `git+<repository>#<ref>` is a git
-ref. This module names no default location, repository or ref, and no
-location is the organization's ledger because a store can be opened on it:
-designating the organization's sovereign ledger root is an owner decision,
-pending on StegVerse-org/LLM-adapter#368.
+path is a POSIX root; `git+<repository>#<ref>` is a git ref. This module
+names no organization, no default location, and no default ref. Opening a
+store does not make that location the organization's ledger. The caller
+designates the location. A ref nothing has been appended to stays empty.
 """
 from __future__ import annotations
 

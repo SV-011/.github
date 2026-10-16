@@ -20,5 +20,5 @@
   "time_constraint": "HEARTBEAT_EPOCH",
   "organization_ledger_ref": "refs/stegverse/organization-ledger",
   "organization_ledger_repository": "SV-011/.github",
-  "organization_ledger_ref_designation_source": "Same ref name as StegVerse-org/.github .stegverse/transition-ledger/org-contract.json at 9ca1383ab32d6fb5d1dfd4e570dd77921e6df157. Repository rebound to SV-011/.github. This contract does not name StegVerse-org as the ledger repository."
+  "organization_ledger_ref_designation_source": "Owner designation for SV-011/.github. This ref starts empty and holds only transitions appended from SV-011 manifests."
 }

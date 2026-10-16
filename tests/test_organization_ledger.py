@@ -248,6 +248,9 @@ class ContractAndWorkflowTests(unittest.TestCase):
         self.assertEqual(repo["repository"], "SV-011/.github")
         self.assertNotIn("authority_effect", org)
         self.assertNotIn("authority_effect", repo)
+        self.assertNotIn("StegVerse-org", json.dumps(org))
+        self.assertNotIn("StegVerse-org", json.dumps(repo))
+        self.assertIn("starts empty", org["organization_ledger_ref_designation_source"])
 
     def test_the_transition_workflow_publishes_only_the_sv011_ledger_ref(self):
         workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")

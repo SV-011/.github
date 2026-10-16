@@ -24,7 +24,7 @@
     "namespace": "repository-ledger/SV-011/.github",
     "locator_form": "git+<checkout>#refs/stegverse/organization-ledger:repository-ledger/SV-011/.github",
     "new_ledger_root": false,
-    "designation_source": "org-contract.json organization_ledger_ref. Namespace pattern from StegVerse-org/.github .stegverse/transition-ledger/contract.json at 43ef7311f624291c9db55628473c8146b7815f07, rebound to SV-011/.github.",
+    "designation_source": "org-contract.json organization_ledger_ref for SV-011/.github. The repository chain is a subtree of that ref. The ref starts empty.",
     "rule": "The repository chain is kept in its own subtree of the designated organization ledger ref, published by the same fast-forward push under ORGANIZATION_LEDGER_LOCK. Repository replay walks repository-ledger/<repository>/HEAD.json back through its own receipts and never reads an organization receipt."
   },
   "authority_constraint": "NONE_CONTRACT_ONLY",
