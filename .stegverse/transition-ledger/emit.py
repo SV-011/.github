@@ -2,13 +2,15 @@
 """Append one repository transition receipt.
 
 The root comes from ``STEGVERSE_REPO_LEDGER_ROOT``. A missing root fails
-closed: this module does not invent a ledger location. The receipt is
-transition evidence. ``authority_constraint`` records the authority constraint
-variable. The heartbeat epoch, when supplied, records the time constraint.
-Neither selects admission, routing, or execution.
+closed: this module does not invent a ledger location. A plain path is a
+directory. ``git+<repository>#<ref>`` addresses a git ref, and
+``:<namespace>`` addresses a subtree of that ref. The receipt is transition
+evidence. ``authority_constraint`` records the authority constraint variable.
+The heartbeat epoch, when supplied, records the time constraint. Neither
+selects admission, routing, or execution.
 
-A receipt written here is not an authentic production receipt. Callers that
-redirect the root, including tests, are writing a supplied store.
+A receipt written here does not claim to be an authentic production receipt.
+Callers that redirect the root, including tests, are writing a supplied store.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
-C = {"repository": "SV-011/.github", "organization": "SV-011"}
+C = json.loads((ROOT / ".stegverse/transition-ledger/contract.json").read_text(encoding="utf-8"))
 
 _kernel_spec = importlib.util.spec_from_file_location("kernel", ROOT / "org-kernel/kernel.py")
 kernel = importlib.util.module_from_spec(_kernel_spec)
@@ -85,9 +87,9 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     target = store or ledger_store.open_store(lr())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
-    previous = (expected_head or {}).get("receipt_sha256") if isinstance(expected_head, dict) else None
-    prior = recorded(target, expected_head if isinstance(expected_head, dict) else None,
-                     transition_id, transition_class)
+    previous_head = expected_head if isinstance(expected_head, dict) else None
+    previous = (previous_head or {}).get("receipt_sha256")
+    prior = recorded(target, previous_head, transition_id, transition_class)
     mine = dict(evidence) if isinstance(evidence, Mapping) else {}
     if idempotent_on is not None and prior is not None:
         theirs = prior.get("evidence")
@@ -115,10 +117,11 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     }
     digest = sha(body)
     receipt = {**body, "receipt_sha256": digest}
-    target.put(ledger_store.receipt_key(digest), receipt)
-    target.put(ledger_store.HEAD_KEY, {
+    new_head = {
         "schema": "stegverse.ledger-head/v1",
         "repository": C["repository"],
         "receipt_sha256": digest,
-    })
-    return receipt
+    }
+    if target.append_transaction(ledger_store.receipt_key(digest), receipt, previous_head, new_head):
+        return receipt
+    raise RuntimeError("ledger_append_lost_comparison")
