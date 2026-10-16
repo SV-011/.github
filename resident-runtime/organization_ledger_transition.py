@@ -6,14 +6,15 @@ Action is by manifest. The manifest is a JSON document committed under
 manifest: that builder is not in this repository. A request that asks for
 ``build_manifest`` or a prebuilt SDK ``manifest`` fails closed.
 
-The request names the repository transition and, when it declares one, the
-current-state fields ``state_id``, ``as_of``, ``fresh_until``,
-``declared_transition_element``, ``declared_role_escalation``, and
-``satisfied_scope_ids``. ``as_of`` and ``fresh_until`` must be
-``YYYY-MM-DDTHH:MM:SSZ``. Those fields are copied onto the organization
-receipt. A missing ``declared_*`` field is not derived here. Authority and
-time stay constraint variables. A disposition on the resulting receipt is
-evidence that the append happened.
+The request names the repository transition and, when it declares one, a
+``current_state`` in the shape of contract blob
+``8f7d4cc2127325b155e1a91edfe531b5737f7c75``: ``state_id``, ``as_of``,
+``fresh_until``, ``declared_transition_element`` (``transition_id`` and
+``fixture_ref``), ``declared_role_escalation`` (``role_id``, ``from_role``,
+``to_role``), and ``satisfied_scope_ids``. Those values are copied onto the
+organization receipt. A missing ``declared_*`` field is not derived here.
+Authority and time stay constraint variables. A disposition on the resulting
+receipt is evidence that the append happened.
 """
 from __future__ import annotations
 

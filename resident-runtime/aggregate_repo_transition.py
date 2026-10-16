@@ -57,7 +57,6 @@ CURRENT_STATE_FIELDS = (
     "declared_role_escalation",
     "satisfied_scope_ids",
 )
-UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
 def canon(value: Any) -> bytes:
@@ -106,32 +105,42 @@ def load(path: str | Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def normalize_current_state(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Copy only the six current-state fields a manifest actually declared.
+_basis_module = None
 
-    A partial object is refused. ``declared_transition_element`` and
-    ``declared_role_escalation`` are not filled in when the manifest omits
-    them. ``as_of`` and ``fresh_until`` must be ``YYYY-MM-DDTHH:MM:SSZ``. A
-    caller-supplied digest is not stored; readback computes it.
+
+def _basis():
+    """The readback that classifies a current_state against the contract."""
+    global _basis_module
+    if _basis_module is None:
+        spec = importlib.util.spec_from_file_location(
+            "organization_ledger_readback_basis",
+            ROOT / "resident-runtime/organization_ledger_readback.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _basis_module = module
+    return _basis_module
+
+
+def normalize_current_state(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Copy a contract current_state the manifest actually declared.
+
+    The six fields follow contract blob
+    ``8f7d4cc2127325b155e1a91edfe531b5737f7c75``. A missing field, a wrong
+    shape, a stale interval, or a contradictory declaration is refused.
+    ``declared_*`` values are not filled in. A caller-supplied digest is not
+    stored; readback computes it.
     """
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise ValueError("current_state_must_be_an_object")
-    missing = [name for name in CURRENT_STATE_FIELDS if name not in value or value[name] is None]
-    if missing:
-        raise ValueError("current_state_fields_absent:" + ",".join(missing))
-    if not isinstance(value["satisfied_scope_ids"], list):
-        raise ValueError("satisfied_scope_ids_must_be_a_list")
-    if any(not isinstance(item, str) or not item for item in value["satisfied_scope_ids"]):
-        raise ValueError("satisfied_scope_ids_must_be_non_empty_strings")
-    for name in ("state_id", "declared_transition_element", "declared_role_escalation"):
-        if not isinstance(value[name], str) or not value[name]:
-            raise ValueError("current_state_field_must_be_a_non_empty_string:" + name)
-    for name in ("as_of", "fresh_until"):
-        if not isinstance(value[name], str) or UTC_TIMESTAMP.fullmatch(value[name]) is None:
-            raise ValueError("current_state_timestamp_not_yyyy_mm_ddthh_mm_ssz:" + name)
-    return {name: value[name] for name in CURRENT_STATE_FIELDS}
+    projected = _basis().project_current_state({"current_state": dict(value)})
+    if not projected["basis_established"]:
+        absent = projected["current_state_fields_absent"]
+        detail = ",".join(absent) if absent else projected["current_state_reason"]
+        raise ValueError(projected["current_state_reason"] + ":" + detail)
+    state = projected["current_state"]
+    return {name: state[name] for name in CURRENT_STATE_FIELDS}
 
 
 def verify_required_evidence(receipt: Mapping[str, Any]) -> None:

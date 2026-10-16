@@ -29,9 +29,16 @@ STATE = {
     "state_id": "S0",
     "as_of": "2026-10-16T00:00:00Z",
     "fresh_until": "2026-10-17T00:00:00Z",
-    "declared_transition_element": "transition-élément",
-    "declared_role_escalation": "resident-runtime",
-    "satisfied_scope_ids": ["scope.intr-destination"],
+    "declared_transition_element": {
+        "transition_id": "T-001",
+        "fixture_ref": "fixtures/transition-elements/t-001.json",
+    },
+    "declared_role_escalation": {
+        "role_id": "role.resident",
+        "from_role": "role.a",
+        "to_role": "role.b",
+    },
+    "satisfied_scope_ids": ["transition_element"],
 }
 BASIS_INPUT_FIELDS = (
     "state_id",
@@ -145,6 +152,7 @@ class CurrentStateTests(LedgerFixture):
         self.assertEqual(report["chain_length"], 1)
         self.assertIsNone(report["current_state"])
         self.assertIs(report["basis_established"], False)
+        self.assertEqual(report["current_state_reason"], "BASIS_ABSENT")
         self.assertEqual(report["current_state_fields_absent"], list(BASIS_INPUT_FIELDS))
         self.assertNotIn("basis_digest", json.dumps(report["current_state"]))
 
@@ -161,9 +169,18 @@ class CurrentStateTests(LedgerFixture):
         self.assertEqual(state["state_id"], STATE["state_id"])
         self.assertEqual(state["as_of"], STATE["as_of"])
         self.assertEqual(state["fresh_until"], STATE["fresh_until"])
-        self.assertEqual(state["declared_transition_element"], STATE["declared_transition_element"])
-        self.assertEqual(state["declared_role_escalation"], STATE["declared_role_escalation"])
-        self.assertEqual(state["satisfied_scope_ids"], STATE["satisfied_scope_ids"])
+        self.assertEqual(state["declared_transition_element"], {
+            "transition_id": "T-001",
+            "fixture_ref": "fixtures/transition-elements/t-001.json",
+        })
+        self.assertEqual(set(state["declared_transition_element"]), {"transition_id", "fixture_ref"})
+        self.assertEqual(state["declared_role_escalation"], {
+            "role_id": "role.resident",
+            "from_role": "role.a",
+            "to_role": "role.b",
+        })
+        self.assertEqual(set(state["declared_role_escalation"]), {"role_id", "from_role", "to_role"})
+        self.assertEqual(state["satisfied_scope_ids"], ["transition_element"])
         self.assertRegex(state["as_of"], UTC_TIMESTAMP)
         self.assertRegex(state["fresh_until"], UTC_TIMESTAMP)
         self.assertEqual(state["basis_digest"], _contract_basis_digest(STATE))
@@ -193,10 +210,11 @@ class CurrentStateTests(LedgerFixture):
         projected = readback.project_current_state({"current_state": incomplete})
         self.assertIs(projected["basis_established"], False)
         self.assertIsNone(projected["current_state"])
-        self.assertEqual(projected["current_state_reason"], "CURRENT_STATE_BASIS_INCOMPLETE")
+        self.assertEqual(projected["current_state_reason"], "BASIS_ABSENT")
         self.assertEqual(projected["current_state_fields_absent"], ["declared_role_escalation"])
         text = json.dumps(projected)
-        self.assertNotIn("resident-runtime", text)
+        self.assertNotIn("role.a", text)
+        self.assertNotIn("role_id", text)
         self.assertNotIn("basis_digest", json.dumps(projected["current_state"]))
 
     def test_a_timestamp_that_is_not_utc_seconds_is_not_a_basis(self):
@@ -205,9 +223,71 @@ class CurrentStateTests(LedgerFixture):
         projected = readback.project_current_state({"current_state": bad})
         self.assertIs(projected["basis_established"], False)
         self.assertIsNone(projected["current_state"])
-        self.assertEqual(projected["current_state_reason"],
-                         "CURRENT_STATE_TIMESTAMPS_NOT_YYYY_MM_DDTHH_MM_SSZ")
+        self.assertEqual(projected["current_state_reason"], "BASIS_UNKNOWN")
         self.assertEqual(projected["current_state_fields_absent"], ["as_of"])
+
+    def test_a_calendar_date_strptime_rejects_is_unknown(self):
+        bad = dict(STATE)
+        bad["fresh_until"] = "2026-02-31T00:00:00Z"
+        projected = readback.project_current_state({"current_state": bad})
+        self.assertIs(projected["basis_established"], False)
+        self.assertEqual(projected["current_state_reason"], "BASIS_UNKNOWN")
+        self.assertEqual(projected["current_state_fields_absent"], ["fresh_until"])
+
+    def test_a_later_as_of_is_stale(self):
+        stale = dict(STATE)
+        stale["as_of"] = "2026-10-18T00:00:00Z"
+        projected = readback.project_current_state({"current_state": stale})
+        self.assertIs(projected["basis_established"], False)
+        self.assertIsNone(projected["current_state"])
+        self.assertEqual(projected["current_state_reason"], "BASIS_STALE")
+
+    def test_equal_timestamps_are_fresh(self):
+        fresh = dict(STATE)
+        fresh["fresh_until"] = fresh["as_of"]
+        projected = readback.project_current_state({"current_state": fresh})
+        self.assertIs(projected["basis_established"], True)
+        self.assertEqual(projected["current_state"]["as_of"], projected["current_state"]["fresh_until"])
+
+    def test_indistinguishable_roles_are_contradictory(self):
+        bad = dict(STATE)
+        bad["declared_role_escalation"] = {
+            "role_id": "role.resident",
+            "from_role": "role.a",
+            "to_role": "role.a",
+        }
+        projected = readback.project_current_state({"current_state": bad})
+        self.assertIs(projected["basis_established"], False)
+        self.assertEqual(projected["current_state_reason"], "BASIS_CONTRADICTORY")
+        self.assertEqual(projected["current_state_fields_absent"], ["declared_role_escalation"])
+
+    def test_a_satisfaction_list_that_is_not_a_prefix_is_contradictory(self):
+        for scopes in (["role_escalation"], ["transition_element", "transition_element"], ["scope.intr-destination"]):
+            with self.subTest(scopes=scopes):
+                bad = dict(STATE)
+                bad["satisfied_scope_ids"] = scopes
+                projected = readback.project_current_state({"current_state": bad})
+                self.assertIs(projected["basis_established"], False)
+                self.assertEqual(projected["current_state_reason"], "BASIS_CONTRADICTORY")
+                self.assertIn("satisfied_scope_ids", projected["current_state_fields_absent"])
+
+    def test_each_manifest_scope_prefix_is_a_basis(self):
+        for scopes in ([], ["transition_element"], ["transition_element", "role_escalation"]):
+            with self.subTest(scopes=scopes):
+                declared = dict(STATE)
+                declared["satisfied_scope_ids"] = list(scopes)
+                projected = readback.project_current_state({"current_state": declared})
+                self.assertIs(projected["basis_established"], True, projected)
+                self.assertEqual(projected["current_state"]["satisfied_scope_ids"], list(scopes))
+
+    def test_a_transition_id_that_is_not_t_plus_three_digits_is_unknown(self):
+        bad = dict(STATE)
+        bad["declared_transition_element"] = dict(STATE["declared_transition_element"])
+        bad["declared_transition_element"]["transition_id"] = "sv011-ledger-transition-001"
+        projected = readback.project_current_state({"current_state": bad})
+        self.assertIs(projected["basis_established"], False)
+        self.assertEqual(projected["current_state_reason"], "BASIS_UNKNOWN")
+        self.assertEqual(projected["current_state_fields_absent"], ["declared_transition_element"])
 
     def test_an_older_receipt_does_not_supply_the_current_basis(self):
         self.apply(_request(current_state=dict(STATE)))
@@ -222,16 +302,24 @@ class CurrentStateTests(LedgerFixture):
         self.assertEqual(report["chain_length"], 2)
         self.assertIsNone(report["current_state"])
         self.assertIs(report["basis_established"], False)
-        self.assertEqual(report["current_state_reason"], "HEAD_RECEIPT_HAS_NO_CURRENT_STATE")
+        self.assertEqual(report["current_state_reason"], "BASIS_ABSENT")
 
     def test_a_declared_digest_that_does_not_match_the_fields_is_not_a_basis(self):
+        projected = readback.project_current_state({
+            "current_state": {**STATE, "basis_digest": "0" * 64},
+        })
+        self.assertIs(projected["basis_established"], False)
+        self.assertIsNone(projected["current_state"])
+        self.assertEqual(projected["current_state_reason"], "BASIS_CONTRADICTORY")
+        self.assertEqual(projected["current_state_fields_absent"], ["basis_digest"])
+
+    def test_a_prefixed_digest_is_unknown(self):
         projected = readback.project_current_state({
             "current_state": {**STATE, "basis_digest": "sha256:" + "0" * 64},
         })
         self.assertIs(projected["basis_established"], False)
-        self.assertIsNone(projected["current_state"])
-        self.assertEqual(projected["current_state_reason"],
-                         "BASIS_DIGEST_DOES_NOT_MATCH_HEAD_RECEIPT_FIELDS")
+        self.assertEqual(projected["current_state_reason"], "BASIS_UNKNOWN")
+        self.assertEqual(projected["current_state_fields_absent"], ["basis_digest"])
 
 
 class ChainTests(LedgerFixture):
@@ -300,6 +388,18 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaises(ValueError) as refused:
             transition.validate_request(_request(current_state=bad))
         self.assertIn("fresh_until", str(refused.exception))
+        self.assertIn("BASIS_UNKNOWN", str(refused.exception))
+
+    def test_intake_refuses_a_contradictory_role_escalation(self):
+        bad = dict(STATE)
+        bad["declared_role_escalation"] = {
+            "role_id": "role.resident",
+            "from_role": "role.a",
+            "to_role": "role.a",
+        }
+        with self.assertRaises(ValueError) as refused:
+            transition.validate_request(_request(current_state=bad))
+        self.assertIn("BASIS_CONTRADICTORY", str(refused.exception))
 
     def test_the_intake_tree_validator_accepts_an_empty_directory(self):
         with tempfile.TemporaryDirectory() as directory:

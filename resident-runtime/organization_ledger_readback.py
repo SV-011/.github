@@ -20,26 +20,38 @@ is the submitted manifest digest.
 Current-state basis
 -------------------
 ``current_state`` is taken only from the head receipt's ``current_state``
-object. A complete basis has exactly seven fields: ``state_id``, ``as_of``,
-``fresh_until``, ``basis_digest``, ``declared_transition_element``,
-``declared_role_escalation``, and ``satisfied_scope_ids``. The two
-``declared_*`` fields are copied only from that head receipt. If either is
-absent there, this readback does not fill it in: the basis is incomplete,
-``basis_established`` is false, and the reason names the absence. An earlier
-receipt's fields are not carried forward. An empty ledger has
-``current_state`` null and no digest.
+object. The shape is the Current-state basis section of contract blob
+``8f7d4cc2127325b155e1a91edfe531b5737f7c75`` (``git hash-object`` of that
+file). A complete basis has exactly these fields:
 
-``as_of`` and ``fresh_until`` must be ``YYYY-MM-DDTHH:MM:SSZ``. A value that
-does not match that form is not a basis.
+- ``state_id``: an identifier matching ``^[A-Za-z0-9._:-]{1,128}$``
+- ``as_of`` and ``fresh_until``: UTC timestamps ``YYYY-MM-DDTHH:MM:SSZ`` that
+  ``datetime.strptime`` accepts. The basis is fresh when ``as_of <=
+  fresh_until``.
+- ``declared_transition_element``: ``transition_id`` matching ``T-`` plus
+  three digits, and ``fixture_ref`` matching
+  ``fixtures/transition-elements/<name>.json`` where ``<name>`` is an
+  identifier. Both are copied from the head receipt. This repository does
+  not contain that fixture tree, so the path is checked as a pattern and the
+  declaration is copied; the fixture file is not opened and its
+  ``transition_id`` is not compared here.
+- ``declared_role_escalation``: ``role_id``, ``from_role``, and ``to_role``,
+  each an identifier, copied from the head receipt. ``from_role`` and
+  ``to_role`` must differ.
+- ``satisfied_scope_ids``: a prefix of the manifest scope, one of ``[]``,
+  ``["transition_element"]``, or
+  ``["transition_element", "role_escalation"]``.
+- ``basis_digest``: the lowercase hex SHA-256 of the UTF-8 bytes of
+  ``json.dumps`` of ``current_state`` with ``basis_digest`` removed
+  (``sort_keys`` true, separators ``,`` and ``:``, ``ensure_ascii`` false).
 
-``basis_digest`` is the lowercase hex sha256, with no ``sha256:`` prefix, of
-the UTF-8 bytes of ``json.dumps`` of the other six fields (``sort_keys``
-true, separators ``,`` and ``:``, ``ensure_ascii`` false). The digest is not
-part of its own preimage. A digest stored on the head that is not that value
-is not a basis.
-
-This is the Current-state basis section of the owner-fetched contract blob
-``8f7d4cc2127325b155e1a91edfe531b5737f7c75``.
+A missing required field is ``BASIS_ABSENT``. A present field with the wrong
+type or pattern, or an unparseable time, is ``BASIS_UNKNOWN``. A later
+``as_of`` is ``BASIS_STALE``. A digest mismatch, a satisfaction list that is
+not one of those prefixes, or indistinguishable roles is
+``BASIS_CONTRADICTORY``. In each of those cases ``basis_established`` is
+false and ``current_state`` is null. Nothing is copied from an earlier
+receipt. An empty ledger has ``current_state`` null and no digest.
 
 Stdlib and ``git`` only. Authority and time stay constraint variables. This
 readback records no transition, so it has no disposition.
@@ -51,6 +63,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,8 +79,18 @@ BASIS_INPUT_FIELDS = (
     "declared_role_escalation",
     "satisfied_scope_ids",
 )
-STRING_FIELDS = ("state_id", "declared_transition_element", "declared_role_escalation")
+IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+TRANSITION_ID = re.compile(r"^T-[0-9]{3}$")
+FIXTURE_REF = re.compile(r"^fixtures/transition-elements/[A-Za-z0-9._:-]{1,128}\.json$")
 UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+SCOPE_PREFIXES = (
+    (),
+    ("transition_element",),
+    ("transition_element", "role_escalation"),
+)
+TRANSITION_ELEMENT_FIELDS = ("fixture_ref", "transition_id")
+ROLE_ESCALATION_FIELDS = ("from_role", "role_id", "to_role")
 
 
 def canon(value):
@@ -91,11 +114,10 @@ def self_verifies(document):
 
 
 def basis_digest(subject):
-    """Lowercase hex sha256 of the six current-state fields. No prefix.
+    """Lowercase hex SHA-256 of current_state with basis_digest removed.
 
-    The preimage is ``json.dumps`` of those fields with sorted keys,
-    separators ``,`` and ``:``, and ``ensure_ascii`` false. ``basis_digest``
-    is not an input.
+    The preimage is ``json.dumps`` of the other six fields, sorted keys,
+    separators ``,`` and ``:``, ``ensure_ascii`` false. No ``sha256:`` prefix.
     """
     payload = {name: subject[name] for name in BASIS_INPUT_FIELDS}
     preimage = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -111,8 +133,43 @@ def _incomplete(reason, absent):
     }
 
 
+def _parse_utc(value):
+    if not isinstance(value, str) or UTC_TIMESTAMP.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def _copy_transition_element(value):
+    """The declaration's transition element, or None when the shape is wrong."""
+    if not isinstance(value, dict) or set(value) != set(TRANSITION_ELEMENT_FIELDS):
+        return None
+    transition_id = value.get("transition_id")
+    fixture_ref = value.get("fixture_ref")
+    if not isinstance(transition_id, str) or TRANSITION_ID.fullmatch(transition_id) is None:
+        return None
+    if not isinstance(fixture_ref, str) or FIXTURE_REF.fullmatch(fixture_ref) is None:
+        return None
+    return {"transition_id": transition_id, "fixture_ref": fixture_ref}
+
+
+def _copy_role_escalation(value):
+    """The declaration's role escalation, or None when an identifier is wrong."""
+    if not isinstance(value, dict) or set(value) != set(ROLE_ESCALATION_FIELDS):
+        return None
+    copied = {}
+    for name in ROLE_ESCALATION_FIELDS:
+        item = value.get(name)
+        if not isinstance(item, str) or IDENTIFIER.fullmatch(item) is None:
+            return None
+        copied[name] = item
+    return copied
+
+
 def project_current_state(head_receipt):
-    """The head receipt's current_state, or an explicit incomplete absence.
+    """The head receipt's current_state, or a contract reason it is not a basis.
 
     ``declared_transition_element`` and ``declared_role_escalation`` are
     copied only from this receipt. A missing one is not invented. Nothing is
@@ -120,27 +177,53 @@ def project_current_state(head_receipt):
     """
     declared = head_receipt.get("current_state") if isinstance(head_receipt, dict) else None
     if not isinstance(declared, dict):
-        return _incomplete("HEAD_RECEIPT_HAS_NO_CURRENT_STATE", BASIS_INPUT_FIELDS)
+        return _incomplete("BASIS_ABSENT", BASIS_INPUT_FIELDS)
     missing = [name for name in BASIS_INPUT_FIELDS if name not in declared or declared[name] is None]
     if missing:
-        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", missing)
-    bad_times = [name for name in ("as_of", "fresh_until")
-                 if not isinstance(declared[name], str) or UTC_TIMESTAMP.fullmatch(declared[name]) is None]
+        return _incomplete("BASIS_ABSENT", missing)
+    unknown = sorted(name for name in declared if name not in BASIS_INPUT_FIELDS and name != "basis_digest")
+    if unknown:
+        return _incomplete("BASIS_UNKNOWN", unknown)
+    if not isinstance(declared["state_id"], str) or IDENTIFIER.fullmatch(declared["state_id"]) is None:
+        return _incomplete("BASIS_UNKNOWN", ["state_id"])
+    as_of = _parse_utc(declared["as_of"])
+    fresh_until = _parse_utc(declared["fresh_until"])
+    bad_times = [name for name, parsed in (("as_of", as_of), ("fresh_until", fresh_until)) if parsed is None]
     if bad_times:
-        return _incomplete("CURRENT_STATE_TIMESTAMPS_NOT_YYYY_MM_DDTHH_MM_SSZ", bad_times)
-    bad_strings = [name for name in STRING_FIELDS
-                   if not isinstance(declared[name], str) or not declared[name]]
-    if bad_strings:
-        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", bad_strings)
-    if not isinstance(declared["satisfied_scope_ids"], list):
-        return _incomplete("SATISFIED_SCOPE_IDS_NOT_A_LIST", ["satisfied_scope_ids"])
-    if any(not isinstance(item, str) or not item for item in declared["satisfied_scope_ids"]):
-        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", ["satisfied_scope_ids"])
-    subject = {name: declared[name] for name in BASIS_INPUT_FIELDS}
+        return _incomplete("BASIS_UNKNOWN", bad_times)
+    element = _copy_transition_element(declared["declared_transition_element"])
+    if element is None:
+        return _incomplete("BASIS_UNKNOWN", ["declared_transition_element"])
+    role = _copy_role_escalation(declared["declared_role_escalation"])
+    if role is None:
+        return _incomplete("BASIS_UNKNOWN", ["declared_role_escalation"])
+    scopes = declared["satisfied_scope_ids"]
+    if not isinstance(scopes, list) or any(not isinstance(item, str) for item in scopes):
+        return _incomplete("BASIS_UNKNOWN", ["satisfied_scope_ids"])
+    if "basis_digest" in declared and (
+            not isinstance(declared["basis_digest"], str) or HEX_SHA256.fullmatch(declared["basis_digest"]) is None):
+        return _incomplete("BASIS_UNKNOWN", ["basis_digest"])
+    if as_of > fresh_until:
+        return _incomplete("BASIS_STALE", ["as_of"])
+    contradictory = []
+    if role["from_role"] == role["to_role"]:
+        contradictory.append("declared_role_escalation")
+    if tuple(scopes) not in SCOPE_PREFIXES:
+        contradictory.append("satisfied_scope_ids")
+    if contradictory:
+        return _incomplete("BASIS_CONTRADICTORY", contradictory)
+    subject = {
+        "state_id": declared["state_id"],
+        "as_of": declared["as_of"],
+        "fresh_until": declared["fresh_until"],
+        "declared_transition_element": element,
+        "declared_role_escalation": role,
+        "satisfied_scope_ids": list(scopes),
+    }
     state = dict(subject)
     state["basis_digest"] = basis_digest(subject)
     if "basis_digest" in declared and declared["basis_digest"] != state["basis_digest"]:
-        return _incomplete("BASIS_DIGEST_DOES_NOT_MATCH_HEAD_RECEIPT_FIELDS", [])
+        return _incomplete("BASIS_CONTRADICTORY", ["basis_digest"])
     return {
         "basis_established": True,
         "current_state": state,
