@@ -10,6 +10,11 @@
       "id": "intr_destination_capability",
       "command": ["python", "-m", "unittest", "tests.test_intr_destination_capability"],
       "enabled": true
+    },
+    {
+      "id": "organization_ledger",
+      "command": ["python", "-m", "unittest", "tests.test_organization_ledger"],
+      "enabled": true
     }
   ]
 }

@@ -1,0 +1,32 @@
+{
+  "schema": "stegverse.repo-transition-ledger-contract/v1",
+  "repository": "SV-011/.github",
+  "organization": "SV-011",
+  "ledger_level": "REPOSITORY",
+  "receipt_schema": "stegverse.repo-transition-receipt/v1",
+  "append_only_receipts": true,
+  "required_fields": [
+    "repository",
+    "transition_id",
+    "transition_class",
+    "predecessor_state_sha256",
+    "successor_state_sha256",
+    "evidence",
+    "authority_constraint",
+    "time_constraint",
+    "hb_reference",
+    "previous_receipt_sha256"
+  ],
+  "replay_rule": "REPOSITORY_REPLAY_MUST_NOT_REQUIRE_ORGANIZATION_OR_ECOSYSTEM_REPLAY",
+  "repository_ledger_location": {
+    "repository": "SV-011/.github",
+    "ref": "refs/stegverse/organization-ledger",
+    "namespace": "repository-ledger/SV-011/.github",
+    "locator_form": "git+<checkout>#refs/stegverse/organization-ledger:repository-ledger/SV-011/.github",
+    "new_ledger_root": false,
+    "designation_source": "org-contract.json organization_ledger_ref. Namespace pattern from StegVerse-org/.github .stegverse/transition-ledger/contract.json at 43ef7311f624291c9db55628473c8146b7815f07, rebound to SV-011/.github.",
+    "rule": "The repository chain is kept in its own subtree of the designated organization ledger ref, published by the same fast-forward push under ORGANIZATION_LEDGER_LOCK. Repository replay walks repository-ledger/<repository>/HEAD.json back through its own receipts and never reads an organization receipt."
+  },
+  "authority_constraint": "NONE_CONTRACT_ONLY",
+  "time_constraint": "HEARTBEAT_EPOCH"
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "stegverse.organization-transition-ledger-contract/v1",
+  "organization": "SV-011",
+  "repository": "SV-011/.github",
+  "ledger_level": "ORGANIZATION",
+  "consumes": [
+    "stegverse.repo-transition-receipt/v1",
+    "stegverse.canonical-state-transition-receipt/v1"
+  ],
+  "emits": "stegverse.organization-transition-receipt/v1",
+  "replay_rule": "ORGANIZATION_REPLAY_MUST_REQUIRE_ONLY_VERIFIED_REPO_RECEIPTS_AND_ORG_RECEIPTS_NOT_ECOSYSTEM_REPLAY",
+  "preserves_repo_receipt": true,
+  "preserves_source_transition_receipt": true,
+  "append_only_receipts": true,
+  "organization_scope_rule": "EVERY_STATE_TRANSITION_OCCURRING_WITHIN_THE_ORGANIZATION_EMITS_AN_ORGANIZATION_RECEIPT",
+  "ledger_root_is_organization_runtime_reality_locus": true,
+  "ledger_lock": "ORGANIZATION_LEDGER_LOCK",
+  "write_mode": "MANIFEST_DIRECTED_APPEND",
+  "authority_constraint": "NONE_CONTRACT_ONLY",
+  "time_constraint": "HEARTBEAT_EPOCH",
+  "organization_ledger_ref": "refs/stegverse/organization-ledger",
+  "organization_ledger_repository": "SV-011/.github",
+  "organization_ledger_ref_designation_source": "Same ref name as StegVerse-org/.github .stegverse/transition-ledger/org-contract.json at 9ca1383ab32d6fb5d1dfd4e570dd77921e6df157. Repository rebound to SV-011/.github. This contract does not name StegVerse-org as the ledger repository."
+}
