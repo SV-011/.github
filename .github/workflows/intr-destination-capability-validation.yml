@@ -1,0 +1,74 @@
+name: Validate InTr Destination Capability
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'org-boundary/runtime/capability_ingress.py'
+      - 'org-boundary/registry/services.json'
+      - 'org-boundary/registry/federation.json'
+      - 'org-kernel/kernel.py'
+      - 'org-runtime/interlock-intr.json'
+      - 'org-runtime/runtime_boundary.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'resident-runtime/organization_egress_boundary.py'
+      - 'resident-runtime/aggregate_repo_transition.py'
+      - 'resident-runtime/ledger_store.py'
+      - '.stegverse/transition-ledger/emit.py'
+      - 'tests/test_intr_destination_capability.py'
+      - 'docs/INTR_DESTINATION_CAPABILITY_MIRROR_HANDOFF.md'
+      - '.github/workflows/intr-destination-capability-validation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'org-boundary/runtime/capability_ingress.py'
+      - 'org-boundary/registry/services.json'
+      - 'org-boundary/registry/federation.json'
+      - 'org-kernel/kernel.py'
+      - 'org-runtime/interlock-intr.json'
+      - 'org-runtime/runtime_boundary.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'resident-runtime/organization_egress_boundary.py'
+      - 'resident-runtime/aggregate_repo_transition.py'
+      - 'resident-runtime/ledger_store.py'
+      - '.stegverse/transition-ledger/emit.py'
+      - 'tests/test_intr_destination_capability.py'
+      - 'docs/INTR_DESTINATION_CAPABILITY_MIRROR_HANDOFF.md'
+      - '.github/workflows/intr-destination-capability-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-intr-destination:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout organization boundary
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: The boundary enforces the advertised address and the served set
+        run: |
+          python3 org-runtime/runtime_boundary.py validate > boundary.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open("boundary.json"))
+          assert report["valid"] is True, report["checks"]
+          assert report["checks"]["capability_addresses_resolve"] is True
+          assert report["checks"]["peer_capability_addresses_derive"] is True
+          print("INTR_DESTINATION_ADDRESS_ENFORCED=PASS", len(report["checks"]), "checks")
+          PY
+
+      # Both ledgers are caller-supplied stores. A run that appended into a
+      # default location would be writing runtime reality from CI. The mesh
+      # the unittest opens is a temporary directory. The far side is this
+      # repository's kernel receipt and control response. That shows emit and
+      # close against a fabricated answer. It does not show a live peer
+      # installed the capability, and it does not claim an authentic receipt.
+      - name: Validate advertise, address, resolve, emit, and close
+        env:
+          STEGVERSE_REPO_LEDGER_ROOT: ${{ runner.temp }}/repo-ledger
+          STEGVERSE_ORG_LEDGER_ROOT: ${{ runner.temp }}/org-ledger
+        run: python3 -m unittest tests.test_intr_destination_capability -v
