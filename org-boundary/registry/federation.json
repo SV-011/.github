@@ -1,0 +1,128 @@
+{
+  "schema_version": "stegverse.org-federation-directory.v1",
+  "organization": "SV-011",
+  "owner_repository": "SV-011/.github",
+  "capability_services_enumerated": false,
+  "capability_address_form": "ORGANIZATION_SLUG_DOT_CAPABILITY_PROFILE_ID",
+  "peer_capability_services_are_derived_not_listed": true,
+  "authority_constraint": "NONE_DIRECTORY_ONLY",
+  "time_constraint": "HEARTBEAT_EPOCH",
+  "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+  "denominator": 16,
+  "organizations": [
+    {
+      "organization": "AaCT-E",
+      "repository": "AaCT-E/.github",
+      "org_control_service": "aact-e.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "Admissible-Existence",
+      "repository": "Admissible-Existence/.github",
+      "org_control_service": "admissible-existence.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "AdmittedCode",
+      "repository": "AdmittedCode/.github",
+      "org_control_service": "admittedcode.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "Data-Continuation",
+      "repository": "Data-Continuation/.github",
+      "org_control_service": "data-continuation.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "ECAT-ICAT-Formal",
+      "repository": "ECAT-ICAT-Formal/.github",
+      "org_control_service": "ecat-icat-formal.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "formalism-tests",
+      "repository": "formalism-tests/.github",
+      "org_control_service": "formalism-tests.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "GCAT-BCAT-Engine",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "org_control_service": "gcat-bcat-engine.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "Infrastructure-Continuity-Ventures",
+      "repository": "Infrastructure-Continuity-Ventures/.github",
+      "org_control_service": "infrastructure-continuity-ventures.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "master-records",
+      "repository": "master-records/.github",
+      "org_control_service": "master-records.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "StegGhost",
+      "repository": "StegGhost/.github",
+      "org_control_service": "stegghost.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "StegVerse-002",
+      "repository": "StegVerse-002/.github",
+      "org_control_service": "stegverse-002.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "StegVerse-Labs",
+      "repository": "StegVerse-Labs/.github",
+      "org_control_service": "stegverse-labs.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "StegVerse-org",
+      "repository": "StegVerse-org/.github",
+      "org_control_service": "stegverse-org.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "SV-LLM",
+      "repository": "SV-LLM/.github",
+      "org_control_service": "sv-llm.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "Triad-Test",
+      "repository": "Triad-Test/.github",
+      "org_control_service": "triad-test.org-control",
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    },
+    {
+      "organization": "SV-011",
+      "repository": "SV-011/entity",
+      "addressed_service": "sv-011.boundary-diagnostic",
+      "addressed_service_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "serves_an_organization_control_service": false,
+      "kernel_required": "1.3.0",
+      "transport_profile": "stegverse.intr.org-boundary.v1"
+    }
+  ]
+}
