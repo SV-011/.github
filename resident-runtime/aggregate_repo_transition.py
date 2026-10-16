@@ -49,7 +49,15 @@ source_key = ledger_store.source_key
 SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
 FROM_HEAD = "FROM_HEAD"
 GENESIS = "GENESIS"
-CURRENT_STATE_FIELDS = ("state_id", "as_of", "fresh_until", "satisfied_scope_ids")
+CURRENT_STATE_FIELDS = (
+    "state_id",
+    "as_of",
+    "fresh_until",
+    "declared_transition_element",
+    "declared_role_escalation",
+    "satisfied_scope_ids",
+)
+UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
 def canon(value: Any) -> bytes:
@@ -99,25 +107,30 @@ def load(path: str | Path) -> Any:
 
 
 def normalize_current_state(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Copy only the four current-state fields a manifest actually declared.
+    """Copy only the six current-state fields a manifest actually declared.
 
-    A partial object is refused. Missing fields are not filled in, and a
-    caller-supplied digest is not stored.
+    A partial object is refused. ``declared_transition_element`` and
+    ``declared_role_escalation`` are not filled in when the manifest omits
+    them. ``as_of`` and ``fresh_until`` must be ``YYYY-MM-DDTHH:MM:SSZ``. A
+    caller-supplied digest is not stored; readback computes it.
     """
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise ValueError("current_state_must_be_an_object")
-    missing = [name for name in CURRENT_STATE_FIELDS if name not in value]
+    missing = [name for name in CURRENT_STATE_FIELDS if name not in value or value[name] is None]
     if missing:
         raise ValueError("current_state_fields_absent:" + ",".join(missing))
     if not isinstance(value["satisfied_scope_ids"], list):
         raise ValueError("satisfied_scope_ids_must_be_a_list")
     if any(not isinstance(item, str) or not item for item in value["satisfied_scope_ids"]):
         raise ValueError("satisfied_scope_ids_must_be_non_empty_strings")
-    for name in ("state_id", "as_of", "fresh_until"):
+    for name in ("state_id", "declared_transition_element", "declared_role_escalation"):
         if not isinstance(value[name], str) or not value[name]:
             raise ValueError("current_state_field_must_be_a_non_empty_string:" + name)
+    for name in ("as_of", "fresh_until"):
+        if not isinstance(value[name], str) or UTC_TIMESTAMP.fullmatch(value[name]) is None:
+            raise ValueError("current_state_timestamp_not_yyyy_mm_ddthh_mm_ssz:" + name)
     return {name: value[name] for name in CURRENT_STATE_FIELDS}
 
 

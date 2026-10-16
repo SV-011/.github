@@ -7,11 +7,13 @@ manifest: that builder is not in this repository. A request that asks for
 ``build_manifest`` or a prebuilt SDK ``manifest`` fails closed.
 
 The request names the repository transition and, when it declares one, the
-current-state fields ``state_id``, ``as_of``, ``fresh_until``, and
-``satisfied_scope_ids``. Those fields are copied onto the organization
-receipt. They are not derived here. Authority and time stay constraint
-variables. A disposition on the resulting receipt is evidence that the
-append happened.
+current-state fields ``state_id``, ``as_of``, ``fresh_until``,
+``declared_transition_element``, ``declared_role_escalation``, and
+``satisfied_scope_ids``. ``as_of`` and ``fresh_until`` must be
+``YYYY-MM-DDTHH:MM:SSZ``. Those fields are copied onto the organization
+receipt. A missing ``declared_*`` field is not derived here. Authority and
+time stay constraint variables. A disposition on the resulting receipt is
+evidence that the append happened.
 """
 from __future__ import annotations
 
@@ -26,7 +28,6 @@ from typing import Any, Mapping
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST_SCHEMA = "stegverse.organization-transition-request/v1"
 SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
-CURRENT_STATE_FIELDS = ("state_id", "as_of", "fresh_until", "satisfied_scope_ids")
 
 _emit_spec = importlib.util.spec_from_file_location(
     "repository_ledger", ROOT / ".stegverse/transition-ledger/emit.py")

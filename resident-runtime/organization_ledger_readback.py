@@ -20,20 +20,26 @@ is the submitted manifest digest.
 Current-state basis
 -------------------
 ``current_state`` is taken only from the head receipt's ``current_state``
-object. The fields are ``state_id``, ``as_of``, ``fresh_until``, and
-``satisfied_scope_ids``. ``basis_digest`` is ``sha256:`` plus the hex sha256
-of the canonical JSON of exactly those four fields (``sort_keys``, separators
-``,`` and ``:``, ``ensure_ascii`` false). ``basis_digest`` is not part of its
-own preimage. An earlier receipt's fields are not carried forward. A missing
-field is not filled in. An empty ledger has ``current_state`` null and no
-digest.
+object. A complete basis has exactly seven fields: ``state_id``, ``as_of``,
+``fresh_until``, ``basis_digest``, ``declared_transition_element``,
+``declared_role_escalation``, and ``satisfied_scope_ids``. The two
+``declared_*`` fields are copied only from that head receipt. If either is
+absent there, this readback does not fill it in: the basis is incomplete,
+``basis_established`` is false, and the reason names the absence. An earlier
+receipt's fields are not carried forward. An empty ledger has
+``current_state`` null and no digest.
 
-The mirrored contract ``SV-011/entity``
-``mirrors/Admissible-Existence/TT/ba3cca71/docs/SV_011_NEXT_REQUIRED_CAPABILITY_DERIVATION_CONTRACT.md``
-was not readable from this repository's credentials (the repository is not
-visible). The four field names are the ones that contract section is required
-to supply, and the digest rule is this ledger's existing receipt canon applied
-to those fields only.
+``as_of`` and ``fresh_until`` must be ``YYYY-MM-DDTHH:MM:SSZ``. A value that
+does not match that form is not a basis.
+
+``basis_digest`` is the lowercase hex sha256, with no ``sha256:`` prefix, of
+the UTF-8 bytes of ``json.dumps`` of the other six fields (``sort_keys``
+true, separators ``,`` and ``:``, ``ensure_ascii`` false). The digest is not
+part of its own preimage. A digest stored on the head that is not that value
+is not a basis.
+
+This is the Current-state basis section of the owner-fetched contract blob
+``8f7d4cc2127325b155e1a91edfe531b5737f7c75``.
 
 Stdlib and ``git`` only. Authority and time stay constraint variables. This
 readback records no transition, so it has no disposition.
@@ -43,6 +49,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -50,7 +57,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ledger_store import HEAD_KEY, open_store, parse_locator, receipt_key, source_key  # noqa: E402
 
 RETRY = "resident-runtime/organization_ledger_readback.py::main"
-CURRENT_STATE_FIELDS = ("state_id", "as_of", "fresh_until", "satisfied_scope_ids")
+# The six fields covered by basis_digest. basis_digest itself is the seventh.
+BASIS_INPUT_FIELDS = (
+    "state_id",
+    "as_of",
+    "fresh_until",
+    "declared_transition_element",
+    "declared_role_escalation",
+    "satisfied_scope_ids",
+)
+STRING_FIELDS = ("state_id", "declared_transition_element", "declared_role_escalation")
+UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
 def canon(value):
@@ -74,49 +91,56 @@ def self_verifies(document):
 
 
 def basis_digest(subject):
-    """Digest of the four current-state fields. The digest is not an input."""
-    return sha({name: subject[name] for name in CURRENT_STATE_FIELDS})
+    """Lowercase hex sha256 of the six current-state fields. No prefix.
+
+    The preimage is ``json.dumps`` of those fields with sorted keys,
+    separators ``,`` and ``:``, and ``ensure_ascii`` false. ``basis_digest``
+    is not an input.
+    """
+    payload = {name: subject[name] for name in BASIS_INPUT_FIELDS}
+    preimage = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+def _incomplete(reason, absent):
+    return {
+        "basis_established": False,
+        "current_state": None,
+        "current_state_fields_absent": list(absent),
+        "current_state_reason": reason,
+    }
 
 
 def project_current_state(head_receipt):
-    """The head receipt's current_state, or an explicit absence.
+    """The head receipt's current_state, or an explicit incomplete absence.
 
-    Nothing is copied from an older receipt, the clock, or a default.
+    ``declared_transition_element`` and ``declared_role_escalation`` are
+    copied only from this receipt. A missing one is not invented. Nothing is
+    copied from an older receipt, the clock, or a default.
     """
     declared = head_receipt.get("current_state") if isinstance(head_receipt, dict) else None
     if not isinstance(declared, dict):
-        return {
-            "basis_established": False,
-            "current_state": None,
-            "current_state_fields_absent": list(CURRENT_STATE_FIELDS),
-            "current_state_reason": "HEAD_RECEIPT_HAS_NO_CURRENT_STATE",
-        }
-    missing = [name for name in CURRENT_STATE_FIELDS if name not in declared]
+        return _incomplete("HEAD_RECEIPT_HAS_NO_CURRENT_STATE", BASIS_INPUT_FIELDS)
+    missing = [name for name in BASIS_INPUT_FIELDS if name not in declared or declared[name] is None]
     if missing:
-        return {
-            "basis_established": False,
-            "current_state": None,
-            "current_state_fields_absent": missing,
-            "current_state_reason": "CURRENT_STATE_FIELDS_ABSENT_ON_HEAD_RECEIPT",
-        }
-    subject = {name: declared[name] for name in CURRENT_STATE_FIELDS}
-    if not isinstance(subject["satisfied_scope_ids"], list):
-        return {
-            "basis_established": False,
-            "current_state": None,
-            "current_state_fields_absent": [],
-            "current_state_reason": "SATISFIED_SCOPE_IDS_NOT_A_LIST",
-        }
+        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", missing)
+    bad_times = [name for name in ("as_of", "fresh_until")
+                 if not isinstance(declared[name], str) or UTC_TIMESTAMP.fullmatch(declared[name]) is None]
+    if bad_times:
+        return _incomplete("CURRENT_STATE_TIMESTAMPS_NOT_YYYY_MM_DDTHH_MM_SSZ", bad_times)
+    bad_strings = [name for name in STRING_FIELDS
+                   if not isinstance(declared[name], str) or not declared[name]]
+    if bad_strings:
+        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", bad_strings)
+    if not isinstance(declared["satisfied_scope_ids"], list):
+        return _incomplete("SATISFIED_SCOPE_IDS_NOT_A_LIST", ["satisfied_scope_ids"])
+    if any(not isinstance(item, str) or not item for item in declared["satisfied_scope_ids"]):
+        return _incomplete("CURRENT_STATE_BASIS_INCOMPLETE", ["satisfied_scope_ids"])
+    subject = {name: declared[name] for name in BASIS_INPUT_FIELDS}
     state = dict(subject)
     state["basis_digest"] = basis_digest(subject)
-    declared_digest = declared.get("basis_digest")
-    if declared_digest is not None and declared_digest != state["basis_digest"]:
-        return {
-            "basis_established": False,
-            "current_state": None,
-            "current_state_fields_absent": [],
-            "current_state_reason": "BASIS_DIGEST_DOES_NOT_MATCH_HEAD_RECEIPT_FIELDS",
-        }
+    if "basis_digest" in declared and declared["basis_digest"] != state["basis_digest"]:
+        return _incomplete("BASIS_DIGEST_DOES_NOT_MATCH_HEAD_RECEIPT_FIELDS", [])
     return {
         "basis_established": True,
         "current_state": state,

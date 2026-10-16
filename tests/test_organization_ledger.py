@@ -27,10 +27,21 @@ AFTER = "sha256:" + "b" * 64
 EPOCH = 32
 STATE = {
     "state_id": "S0",
-    "as_of": "HB:32",
-    "fresh_until": "HB:40",
+    "as_of": "2026-10-16T00:00:00Z",
+    "fresh_until": "2026-10-17T00:00:00Z",
+    "declared_transition_element": "transition-élément",
+    "declared_role_escalation": "resident-runtime",
     "satisfied_scope_ids": ["scope.intr-destination"],
 }
+BASIS_INPUT_FIELDS = (
+    "state_id",
+    "as_of",
+    "fresh_until",
+    "declared_transition_element",
+    "declared_role_escalation",
+    "satisfied_scope_ids",
+)
+UTC_TIMESTAMP = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 
 
 def _load(name, relative):
@@ -66,13 +77,11 @@ def _request(**overrides):
     return document
 
 
-def _canon(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-
-
-def _basis_digest(state):
-    subject = {name: state[name] for name in ("state_id", "as_of", "fresh_until", "satisfied_scope_ids")}
-    return "sha256:" + hashlib.sha256(_canon(subject)).hexdigest()
+def _contract_basis_digest(state):
+    """The contract digest: lowercase hex sha256 of the six fields, no prefix."""
+    subject = {name: state[name] for name in BASIS_INPUT_FIELDS}
+    preimage = json.dumps(subject, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
 class LedgerFixture(unittest.TestCase):
@@ -116,7 +125,10 @@ class EmptyLedgerTests(LedgerFixture):
         self.assertIs(report["disposition_is_transition_evidence"], False)
         self.assertNotIn("disposition", report)
         text = json.dumps(report)
-        for invented in ("state_id", "as_of", "fresh_until", "satisfied_scope_ids", "basis_digest", "sha256:"):
+        for invented in (
+            "state_id", "as_of", "fresh_until", "satisfied_scope_ids", "basis_digest",
+            "declared_transition_element", "declared_role_escalation", "sha256:",
+        ):
             self.assertNotIn(invented, text, invented)
         self.assertIsNone(readback.recorded_for(self.org_location, "a" * 64))
         self.assertFalse((self.repo / ".git" / "refs" / "stegverse").exists())
@@ -133,8 +145,7 @@ class CurrentStateTests(LedgerFixture):
         self.assertEqual(report["chain_length"], 1)
         self.assertIsNone(report["current_state"])
         self.assertIs(report["basis_established"], False)
-        self.assertEqual(report["current_state_fields_absent"],
-                         ["state_id", "as_of", "fresh_until", "satisfied_scope_ids"])
+        self.assertEqual(report["current_state_fields_absent"], list(BASIS_INPUT_FIELDS))
         self.assertNotIn("basis_digest", json.dumps(report["current_state"]))
 
     def test_current_state_is_copied_from_the_head_receipt_and_digested(self):
@@ -143,12 +154,60 @@ class CurrentStateTests(LedgerFixture):
         self.assertEqual(code, 0, report)
         self.assertIs(report["basis_established"], True)
         state = report["current_state"]
+        self.assertEqual(set(state), {
+            "state_id", "as_of", "fresh_until", "basis_digest",
+            "declared_transition_element", "declared_role_escalation", "satisfied_scope_ids",
+        })
         self.assertEqual(state["state_id"], STATE["state_id"])
         self.assertEqual(state["as_of"], STATE["as_of"])
         self.assertEqual(state["fresh_until"], STATE["fresh_until"])
+        self.assertEqual(state["declared_transition_element"], STATE["declared_transition_element"])
+        self.assertEqual(state["declared_role_escalation"], STATE["declared_role_escalation"])
         self.assertEqual(state["satisfied_scope_ids"], STATE["satisfied_scope_ids"])
-        self.assertEqual(state["basis_digest"], _basis_digest(STATE))
+        self.assertRegex(state["as_of"], UTC_TIMESTAMP)
+        self.assertRegex(state["fresh_until"], UTC_TIMESTAMP)
+        self.assertEqual(state["basis_digest"], _contract_basis_digest(STATE))
         self.assertEqual(readback.basis_digest(STATE), state["basis_digest"])
+
+    def test_basis_digest_recomputes_exactly_per_the_contract(self):
+        self.apply(_request(current_state=dict(STATE)))
+        code, report = self.read()
+        self.assertEqual(code, 0, report)
+        state = report["current_state"]
+        without_digest = {key: value for key, value in state.items() if key != "basis_digest"}
+        self.assertEqual(set(without_digest), set(BASIS_INPUT_FIELDS))
+        preimage = json.dumps(without_digest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        digest = hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+        self.assertEqual(state["basis_digest"], digest)
+        self.assertEqual(digest, digest.lower())
+        self.assertEqual(len(digest), 64)
+        self.assertNotIn("sha256:", state["basis_digest"])
+        self.assertNotIn("\\u", preimage)
+        prefixed = hashlib.sha256(("sha256:" + preimage).encode("utf-8")).hexdigest()
+        self.assertNotEqual(state["basis_digest"], "sha256:" + digest)
+        self.assertNotEqual(state["basis_digest"], prefixed)
+
+    def test_a_missing_declared_field_is_not_fabricated(self):
+        incomplete = dict(STATE)
+        del incomplete["declared_role_escalation"]
+        projected = readback.project_current_state({"current_state": incomplete})
+        self.assertIs(projected["basis_established"], False)
+        self.assertIsNone(projected["current_state"])
+        self.assertEqual(projected["current_state_reason"], "CURRENT_STATE_BASIS_INCOMPLETE")
+        self.assertEqual(projected["current_state_fields_absent"], ["declared_role_escalation"])
+        text = json.dumps(projected)
+        self.assertNotIn("resident-runtime", text)
+        self.assertNotIn("basis_digest", json.dumps(projected["current_state"]))
+
+    def test_a_timestamp_that_is_not_utc_seconds_is_not_a_basis(self):
+        bad = dict(STATE)
+        bad["as_of"] = "HB:32"
+        projected = readback.project_current_state({"current_state": bad})
+        self.assertIs(projected["basis_established"], False)
+        self.assertIsNone(projected["current_state"])
+        self.assertEqual(projected["current_state_reason"],
+                         "CURRENT_STATE_TIMESTAMPS_NOT_YYYY_MM_DDTHH_MM_SSZ")
+        self.assertEqual(projected["current_state_fields_absent"], ["as_of"])
 
     def test_an_older_receipt_does_not_supply_the_current_basis(self):
         self.apply(_request(current_state=dict(STATE)))
@@ -226,6 +285,20 @@ class IntakeTests(unittest.TestCase):
         del partial["fresh_until"]
         with self.assertRaises(ValueError) as refused:
             transition.validate_request(_request(current_state=partial))
+        self.assertIn("fresh_until", str(refused.exception))
+
+    def test_a_missing_declared_field_is_refused_at_intake(self):
+        partial = dict(STATE)
+        del partial["declared_transition_element"]
+        with self.assertRaises(ValueError) as refused:
+            transition.validate_request(_request(current_state=partial))
+        self.assertIn("declared_transition_element", str(refused.exception))
+
+    def test_a_non_utc_timestamp_is_refused_at_intake(self):
+        bad = dict(STATE)
+        bad["fresh_until"] = "HB:40"
+        with self.assertRaises(ValueError) as refused:
+            transition.validate_request(_request(current_state=bad))
         self.assertIn("fresh_until", str(refused.exception))
 
     def test_the_intake_tree_validator_accepts_an_empty_directory(self):
