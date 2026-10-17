@@ -42,5 +42,34 @@
   },
   "organization_ledger_ref": "refs/stegverse/organization-ledger",
   "organization_ledger_repository": "SV-011/.github",
-  "organization_ledger_ref_designation_source": "SV-011/.github organization ledger, published at refs/stegverse/organization-ledger"
+  "organization_ledger_ref_designation_source": "SV-011/.github organization ledger, published at refs/stegverse/organization-ledger",
+  "optional_fields": [
+    "current_state"
+  ],
+  "transition_request_intake": {
+    "directory": ".stegverse/transition-requests/",
+    "request_schema": "stegverse.organization-transition-request/v1",
+    "write_mode": "MANIFEST_DIRECTED_APPEND",
+    "workflow": ".github/workflows/organization-ledger-transition.yml",
+    "workflow_job": "request-transition",
+    "applies": "resident-runtime/organization_ledger_transition.py",
+    "sdk_manifest": "REFUSED_SDK_MANIFEST_BUILDER_NOT_PRESENT"
+  },
+  "current_state_basis": {
+    "source_repository": "Admissible-Existence/TT",
+    "source_commit": "ba3cca71b6928cf739ab6b321c939860fd1edbb1",
+    "source_path": "docs/SV_011_NEXT_REQUIRED_CAPABILITY_DERIVATION_CONTRACT.md",
+    "source_blob": "8f7d4cc2127325b155e1a91edfe531b5737f7c75",
+    "read_from": "ORGANIZATION_HEAD_RECEIPT_ONLY",
+    "stored_fields": [
+      "state_id",
+      "as_of",
+      "fresh_until",
+      "declared_transition_element",
+      "declared_role_escalation",
+      "satisfied_scope_ids"
+    ],
+    "basis_digest": "COMPUTED_BY_READBACK",
+    "fixture_ref": "PATH_PATTERN_CHECKED_HERE_FIXTURE_RESOLVED_BY_TT"
+  }
 }

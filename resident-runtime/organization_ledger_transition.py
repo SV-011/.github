@@ -13,6 +13,11 @@ The request names the repository transition and, when it declares one, a
 ``fixture_ref``), ``declared_role_escalation`` (``role_id``, ``from_role``,
 ``to_role``), and ``satisfied_scope_ids``. Those values are copied onto the
 organization receipt. A missing ``declared_*`` field is not derived here.
+
+Storage follows the ledger layout already on ``refs/stegverse/organization-ledger``:
+the repository receipt is appended to ``repository-ledger/SV-011/.github`` on
+that ref, and the organization receipt names it in ``repo_receipt_sha256``.
+Existing receipts are not rewritten.
 Authority and time stay constraint variables. A disposition on the resulting
 receipt is evidence that the append happened.
 """
@@ -83,7 +88,10 @@ def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
         raise TransitionRequestRefused("TRANSITION_REQUEST_EVIDENCE_IS_AN_OBJECT", "evidence")
     current = document.get("current_state")
     if current is not None:
-        current = organization_ledger.normalize_current_state(current)
+        try:
+            current = organization_ledger.normalize_current_state(current)
+        except ValueError as exc:
+            raise TransitionRequestRefused("TRANSITION_REQUEST_CURRENT_STATE_IS_A_BASIS", str(exc)) from None
     hb_epoch = document.get("hb_epoch")
     if hb_epoch is not None and (not isinstance(hb_epoch, int) or isinstance(hb_epoch, bool)):
         raise TransitionRequestRefused("TRANSITION_REQUEST_HB_EPOCH_IS_AN_INTEGER", "hb_epoch")
@@ -149,7 +157,8 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
         "request_id": request["request_id"],
         "repository_receipt_sha256": repository_receipt["receipt_sha256"],
         "organization_receipt_sha256": organization_receipt["receipt_sha256"],
-        "source_retained": organization_receipt["source_transition_sha256"] == repository_receipt["receipt_sha256"],
+        "organization_receipt_preserves_repository_receipt":
+            organization_receipt["repo_receipt_sha256"] == repository_receipt["receipt_sha256"],
         "current_state_recorded": organization_receipt.get("current_state"),
         "authority_constraint": request["authority_constraint"],
         "time_constraint": "HEARTBEAT_EPOCH",
