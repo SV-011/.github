@@ -20,6 +20,11 @@
       "id": "organization_ledger_transition_requests",
       "command": ["python", "-m", "unittest", "tests.test_organization_ledger_transition_requests"],
       "enabled": true
+    },
+    {
+      "id": "organization_role_conformance",
+      "command": ["python", "-m", "unittest", "tests.test_organization_role_conformance"],
+      "enabled": true
     }
   ]
 }

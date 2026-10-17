@@ -319,6 +319,16 @@ sdk_manifest_builder_present: false (build_manifest/manifest refused with SDK_MA
 standing_to_constraint_set: on hold (SV-011/.github#12 item 2)
 ```
 
+### Six-field conformance
+
+Every non-ALLOW outcome on the intake, readback, intr-destination ingress, egress, and the ledger workflow carries `failure_code`, `failed_predicate`, `required_evidence_or_repair`, `retry_entrypoint`, `owning_existing_goal` and `next_attempt` (`StegVerse-org/.github@c483d441` `docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md`, item 5). An absent far-side answer is `FAIL_CLOSED` `FAR_SIDE_ANSWER_NOT_MATERIALIZED` with `receiver_unavailable_disposition: DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION`; it writes nothing and nothing waits on the receiver. Surfaces not yet conforming are held in `data/organization-role-exemption-register.json` (N1 dispatch-driven self-closure, N8 ledger transport credential, N11 manifested route). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
+
+```text
+non_allow_six_fields: resident-runtime/non_allow.py
+exemption_register: data/organization-role-exemption-register.json (3 entries, review 2026-11-17)
+tests: tests/test_organization_role_conformance.py
+```
+
 ### Registry reconciliation
 
 Read on 2026-10-17. No registry entry is added or changed by this repository, and no new goal task id is declared here.

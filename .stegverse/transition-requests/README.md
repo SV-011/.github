@@ -28,12 +28,18 @@ A `current_state` that the readback would not accept as a basis is refused befor
 
 No request is committed here. Committing one is the manifest that appends. A push that adds or changes no request file appends nothing.
 
+## Dispositions
+
+An applied request writes `disposition: ALLOW` into the evidence of both receipts and into the result, as evidence that the append occurred. A request that carries its own `evidence.disposition` is refused.
+
+A refused request is `FAIL_CLOSED` with `failure_code: ORGANIZATION_TRANSITION_REQUEST_REFUSED` and the six fields of the Organization Role conformance standard: `failure_code`, `failed_predicate`, `required_evidence_or_repair`, `retry_entrypoint`, `owning_existing_goal` (the request's own, else `SV011-TT-CAPABILITY-MAP-OBSERVATION-001`) and `next_attempt`. It is refused before the append and leaves no receipt (`refusal_recorded: false`). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
+
 ## Readback
 
 `resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. Its report has no top-level `disposition`. It reports two things separately:
 
 - `verification`: whether the organization chain verifies, whether the repository chain verifies, and whether every organization receipt names a repository receipt that is present. A closure result handed to it must match the `evidence.disposition` already inside the receipts it names (`closure_result_matches_receipt_evidence`).
-- the current-state basis: `basis_established`, `current_state_reason`, and `current_state`.
+- the current-state basis: `basis_established`, `current_state_reason`, and `current_state`. A basis that is not established also carries the six fields in `current_state_finding`; a refused readback carries them at the top level.
 
 A disposition appears only inside the original receipts, as evidence that a transition occurred. It does not satisfy the authority constraint or the time constraint.
 

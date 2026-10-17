@@ -20,6 +20,15 @@ that ref, and the organization receipt names it in ``repo_receipt_sha256``.
 Existing receipts are not rewritten.
 Authority and time stay constraint variables. A disposition on the resulting
 receipt is evidence that the append happened.
+
+Dispositions
+------------
+An applied request records ``disposition: ALLOW`` in the evidence of both
+receipts and in the result, as evidence that the append occurred. A request
+that declares its own ``evidence.disposition`` is refused. A refused request is
+``FAIL_CLOSED`` with the six fields of the Organization Role conformance
+standard (``resident-runtime/non_allow.py``). It is refused before the append,
+so it leaves no receipt on the ledger; ``refusal_recorded`` says so.
 """
 from __future__ import annotations
 
@@ -44,6 +53,17 @@ _org_spec = importlib.util.spec_from_file_location(
     "organization_ledger", ROOT / "resident-runtime/aggregate_repo_transition.py")
 organization_ledger = importlib.util.module_from_spec(_org_spec)
 _org_spec.loader.exec_module(organization_ledger)
+
+_non_allow_spec = importlib.util.spec_from_file_location(
+    "non_allow_transition", ROOT / "resident-runtime/non_allow.py")
+non_allow = importlib.util.module_from_spec(_non_allow_spec)
+_non_allow_spec.loader.exec_module(non_allow)
+
+APPLIED = "ALLOW"
+REFUSED = "FAIL_CLOSED"
+REFUSAL_FAILURE_CODE = "ORGANIZATION_TRANSITION_REQUEST_REFUSED"
+RETRY_ENTRYPOINT = (".stegverse/transition-requests/ (push to main; "
+                    ".github/workflows/organization-ledger-transition.yml job request-transition)")
 
 
 class TransitionRequestRefused(Exception):
@@ -86,6 +106,10 @@ def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
     evidence = document.get("evidence", {})
     if not isinstance(evidence, dict):
         raise TransitionRequestRefused("TRANSITION_REQUEST_EVIDENCE_IS_AN_OBJECT", "evidence")
+    if "disposition" in evidence:
+        raise TransitionRequestRefused(
+            "TRANSITION_REQUEST_DOES_NOT_DECLARE_ITS_OWN_DISPOSITION",
+            "evidence.disposition is written by the append as evidence that it occurred; remove it from the request")
     current = document.get("current_state")
     if current is not None:
         try:
@@ -118,8 +142,12 @@ def validate_tree(directory: Path) -> list[str]:
         return []
     names = []
     for path in sorted(directory.glob("*.json")):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        validate_request(document)
+        try:
+            validate_request(json.loads(path.read_text(encoding="utf-8")))
+        except TransitionRequestRefused as exc:
+            raise TransitionRequestRefused(exc.failed_predicate, str(path) + ": " + exc.detail) from None
+        except ValueError as exc:
+            raise TransitionRequestRefused("TRANSITION_REQUEST_IS_JSON", str(path) + ": " + str(exc)) from None
         names.append(str(path))
     return names
 
@@ -135,6 +163,7 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
     evidence["request_id"] = request["request_id"]
     evidence["owning_existing_goal"] = request["owning_existing_goal"]
     evidence["standing"] = request["standing"]
+    evidence["disposition"] = APPLIED
     if request["current_state"] is not None:
         evidence["current_state"] = request["current_state"]
     repository_receipt = repository_ledger.append(
@@ -147,14 +176,17 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
         request["predecessor_state_sha256"], request["successor_state_sha256"],
         {"request_id": request["request_id"],
          "owning_existing_goal": request["owning_existing_goal"],
-         "transition_id": request["transition_id"]},
+         "transition_id": request["transition_id"],
+         "disposition": APPLIED},
         request["authority_constraint"],
         hb_epoch=repository_receipt["hb_reference"]["epoch"],
         idempotent=True,
         current_state=request["current_state"])
     return {
         "schema": "stegverse.organization-ledger-transition-result/v1",
+        "disposition": APPLIED,
         "request_id": request["request_id"],
+        "owning_existing_goal": request["owning_existing_goal"],
         "repository_receipt_sha256": repository_receipt["receipt_sha256"],
         "organization_receipt_sha256": organization_receipt["receipt_sha256"],
         "organization_receipt_preserves_repository_receipt":
@@ -167,18 +199,38 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _refusal(exc: Exception) -> dict[str, Any]:
+def _declared_goal(document: Any) -> str:
+    """The request's own owning goal when it names one, else this intake's goal."""
+    if isinstance(document, Mapping):
+        goal = document.get("owning_existing_goal")
+        if isinstance(goal, str) and goal.strip():
+            return goal
+    return non_allow.LEDGER_GOAL
+
+
+def _refusal(exc: Exception, document: Any = None) -> dict[str, Any]:
+    predicate = getattr(exc, "failed_predicate", "TRANSITION_REQUEST_APPLIES")
+    detail = getattr(exc, "detail", str(exc))
+    request_id = document.get("request_id") if isinstance(document, Mapping) else None
     return {
         "schema": "stegverse.organization-ledger-transition-result/v1",
+        **non_allow.result(
+            REFUSED,
+            failure_code=REFUSAL_FAILURE_CODE,
+            failed_predicate=predicate,
+            required_evidence_or_repair=detail,
+            retry_entrypoint=RETRY_ENTRYPOINT,
+            owning_existing_goal=_declared_goal(document),
+            next_attempt="correct the committed transition request and push it again; nothing was appended for this request"),
+        "request_id": request_id if isinstance(request_id, str) else None,
         "chain_verifies": False,
-        "failed_predicate": getattr(exc, "failed_predicate", "TRANSITION_REQUEST_APPLIES"),
-        "required_evidence_or_repair": getattr(exc, "detail", str(exc)),
-        "retry_entrypoint": "resident-runtime/organization_ledger_transition.py",
-        "next_attempt": "correct the committed transition request and push it again; nothing was appended for this request",
         "consequence_committed": False,
+        "refusal_recorded": False,
+        "refusal_recorded_reason": "REFUSED_BEFORE_THE_APPEND_NO_RECEIPT_WRITTEN",
         "authority_constraint": "NONE_REFUSAL_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
         "disposition_is_transition_evidence": False,
+        "production_receipt_claimed": False,
     }
 
 
@@ -187,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--request", type=Path, default=None)
     parser.add_argument("--validate-tree", type=Path, default=None)
     args = parser.parse_args(argv)
+    document: Any = None
     try:
         if args.validate_tree is not None:
             names = validate_tree(args.validate_tree)
@@ -196,8 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             raise TransitionRequestRefused("TRANSITION_REQUEST_PATH_PRESENT", "--request")
         document = json.loads(args.request.read_text(encoding="utf-8"))
         result = apply_request(document)
-    except (TransitionRequestRefused, ValueError, OSError) as exc:
-        print(json.dumps(_refusal(exc), sort_keys=True))
+    except (TransitionRequestRefused, ValueError, OSError, RuntimeError) as exc:
+        print(json.dumps(_refusal(exc, document), sort_keys=True))
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

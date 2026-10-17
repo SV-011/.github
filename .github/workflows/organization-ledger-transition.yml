@@ -11,6 +11,12 @@ name: Organization Ledger Transition
 # - A workflow_dispatch run performs an intr-destination diagnostic
 #   self-closure (job transition) and reads both receipts back.
 #
+# Every non-ALLOW line this workflow prints carries the six fields of the
+# Organization Role conformance standard (StegVerse-org/.github@c483d441
+# docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md, item 5): failure_code,
+# failed_predicate, required_evidence_or_repair, retry_entrypoint,
+# owning_existing_goal, next_attempt. Nothing here waits on or polls a receiver.
+#
 # Receipts already on the ref are not rewritten. Pull requests run the
 # redirected-root tests and do not push the ref. An SDK manifest is not a
 # request here: organization_ledger_transition.py refuses it with
@@ -31,6 +37,12 @@ on:
       - 'tests/fixtures/organization-ledger-2cc58cec/**'
       - 'tests/test_intr_destination_capability.py'
       - '.github/workflows/organization-ledger-transition.yml'
+      - 'resident-runtime/non_allow.py'
+      - 'resident-runtime/organization_egress_boundary.py'
+      - 'org-runtime/interlock-intr.json'
+      - 'data/organization-role-exemption-register.json'
+      - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
+      - 'tests/test_organization_role_conformance.py'
   push:
     branches: [main]
     paths:
@@ -46,6 +58,12 @@ on:
       - 'tests/fixtures/organization-ledger-2cc58cec/**'
       - 'tests/test_intr_destination_capability.py'
       - '.github/workflows/organization-ledger-transition.yml'
+      - 'resident-runtime/non_allow.py'
+      - 'resident-runtime/organization_egress_boundary.py'
+      - 'org-runtime/interlock-intr.json'
+      - 'data/organization-role-exemption-register.json'
+      - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
+      - 'tests/test_organization_role_conformance.py'
   workflow_dispatch:
     inputs:
       communication_id:
@@ -81,8 +99,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate ledger contracts, self-closure, request intake, and readback on a redirected root
-        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_organization_ledger_transition_requests tests.test_intr_destination_capability -v
+      - name: Validate ledger contracts, self-closure, request intake, readback, and six-field conformance on a redirected root
+        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_organization_ledger_transition_requests tests.test_intr_destination_capability tests.test_organization_role_conformance -v
 
       - name: Validate every committed transition request before any append
         run: python3 resident-runtime/organization_ledger_transition.py --validate-tree .stegverse/transition-requests
@@ -107,13 +125,19 @@ jobs:
           locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
           echo "$locators"
           ref=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$locators")
-          test "$ref" = "$LEDGER_REF"
+          if [ "$ref" != "$LEDGER_REF" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"DESIGNATED_LEDGER_REF_MISMATCH","failed_predicate":"LEDGER_CONTRACT_DESIGNATES_THE_PUBLISHED_REF","required_evidence_or_repair":"org-contract.json and contract.json designating refs/stegverse/organization-ledger","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"correct the ledger contracts and run the job again; nothing was appended","production_receipt_claimed":false}'
+            exit 1
+          fi
           namespace=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["namespace"])' "$locators")
           org_root=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["organization_locator"])' "$locators")
           repo_root=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
           echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
           # Locators contain '#'. The append step exports them in its own shell.
-          test -n "$org_root" && test -n "$repo_root"
+          if [ -z "$org_root" ] || [ -z "$repo_root" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"DESIGNATED_LEDGER_LOCATORS_ABSENT","failed_predicate":"LEDGER_CONTRACT_YIELDS_BOTH_LOCATORS","required_evidence_or_repair":"designated organization and repository locators from organization_ledger_readback.py --designated-locators","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"correct the ledger contracts and start the self-closure again; nothing was appended","production_receipt_claimed":false}'
+            exit 1
+          fi
           if git ls-remote --exit-code origin "$LEDGER_REF" >/dev/null; then
             git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
             echo "ledger tip: $(git rev-parse "$LEDGER_REF")"
@@ -125,15 +149,27 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, sys
+          import json, os, sys
           for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID", "STEGVERSE_HB_EPOCH"):
               value = os.environ.get(name, "")
               if not value.strip() or any(ord(character) < 32 or ord(character) > 126 for character in value):
-                  print("FAIL_CLOSED: " + name + "_NOT_A_PRINTABLE_TOKEN")
+                  print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": name + "_NOT_A_PRINTABLE_TOKEN",
+                                    "failed_predicate": "SELF_CLOSURE_INPUT_IS_A_PRINTABLE_TOKEN",
+                                    "required_evidence_or_repair": "a non-empty printable ASCII value for " + name,
+                                    "retry_entrypoint": ".github/workflows/organization-ledger-transition.yml job transition",
+                                    "owning_existing_goal": "ORG-FED-SV-011-001",
+                                    "next_attempt": "start the self-closure again with corrected inputs; nothing was appended",
+                                    "production_receipt_claimed": False}, sort_keys=True))
                   sys.exit(1)
-          epoch = int(os.environ["STEGVERSE_HB_EPOCH"])
+          epoch = int(os.environ["STEGVERSE_HB_EPOCH"]) if os.environ["STEGVERSE_HB_EPOCH"].isdigit() else -1
           if epoch < 32:
-              print("FAIL_CLOSED: HB_EPOCH_BEFORE_ANCHOR")
+              print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": "HB_EPOCH_BEFORE_ANCHOR",
+                                "failed_predicate": "HB_EPOCH_IS_AN_INTEGER_AT_LEAST_32",
+                                "required_evidence_or_repair": "an integer hb_epoch of at least 32",
+                                "retry_entrypoint": ".github/workflows/organization-ledger-transition.yml job transition",
+                                "owning_existing_goal": "ORG-FED-SV-011-001",
+                                "next_attempt": "start the self-closure again with hb_epoch >= 32; nothing was appended",
+                                "production_receipt_claimed": False}, sort_keys=True))
               sys.exit(1)
           PY
           locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
@@ -141,7 +177,7 @@ jobs:
           export STEGVERSE_REPO_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
           case "$STEGVERSE_ORG_LEDGER_ROOT" in
             git+*"#$LEDGER_REF") ;;
-            *) echo "FAIL_CLOSED: ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF" >&2; exit 1 ;;
+            *) echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF","failed_predicate":"ORGANIZATION_LOCATOR_NAMES_THE_DESIGNATED_REF","required_evidence_or_repair":"org-contract.json organization_ledger_ref equal to refs/stegverse/organization-ledger","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"correct the ledger contract and start the self-closure again; nothing was appended","production_receipt_claimed":false}'; exit 1 ;;
           esac
           mkdir -p "$RUNNER_TEMP/results"
           python3 resident-runtime/intr_destination_ingress.py --self-closure \
@@ -150,18 +186,37 @@ jobs:
           # The closure result's disposition is evidence of the recorded transition.
           # It is printed, not required to hold a particular value. Publishing
           # needs both receipts to have been recorded with communication_id.
-          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x.get("communication_id"), x; assert x["repository_receipt_observed"] is True, x; assert x["organization_receipt_observed"] is True, x; assert x["disposition_is_transition_evidence"] is True, x; assert x["production_receipt_claimed"] is False, x; print("closure", x["communication_id"], "recorded disposition evidence:", x.get("disposition"), x["repository_receipt_sha256"], x["organization_receipt_sha256"])' \
-            "$RUNNER_TEMP/results/ingress.json"
+          python3 - "$RUNNER_TEMP/results/ingress.json" <<'PY'
+          import json, sys
+          x = json.load(open(sys.argv[1]))
+          unmet = [name for name, held in (
+              ("communication_id", bool(x.get("communication_id"))),
+              ("repository_receipt_observed", x.get("repository_receipt_observed") is True),
+              ("organization_receipt_observed", x.get("organization_receipt_observed") is True),
+              ("disposition_is_transition_evidence", x.get("disposition_is_transition_evidence") is True),
+              ("production_receipt_claimed", x.get("production_receipt_claimed") is False)) if not held]
+          if unmet:
+              print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": "SELF_CLOSURE_NOT_RECORDED_ON_BOTH_LEDGERS",
+                                "failed_predicate": "SELF_CLOSURE_RECORDS_BOTH_RECEIPTS_WITH_COMMUNICATION_ID",
+                                "required_evidence_or_repair": "a self-closure result with " + ", ".join(unmet),
+                                "retry_entrypoint": ".github/workflows/organization-ledger-transition.yml job transition",
+                                "owning_existing_goal": "ORG-FED-SV-011-001",
+                                "next_attempt": "start the self-closure again; nothing is published from this run",
+                                "production_receipt_claimed": False}, sort_keys=True))
+              sys.exit(1)
+          print("closure", x["communication_id"], "receipts:", x["repository_receipt_sha256"], x["organization_receipt_sha256"],
+                "disposition recorded in them:", x.get("disposition"))
+          PY
 
       - name: Publish the ledger ref (fast-forward only)
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet "$LEDGER_REF" >/dev/null; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_NOT_APPENDED","failed_predicate":"SELF_CLOSURE_APPENDED_TO_THE_REF","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_NOT_APPENDED","failed_predicate":"SELF_CLOSURE_APPENDED_TO_THE_REF","required_evidence_or_repair":"a self-closure append that leaves refs/stegverse/organization-ledger in this checkout","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"start the self-closure again; nothing was published","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","detail":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"re-run; the same packet is answered from the ledger when it is already recorded","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"a local ledger tip that fast-forwards the published ref; another append moved the ref first and this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"start the self-closure again; the same packet is answered from the ledger when it is already recorded","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
 
@@ -172,7 +227,7 @@ jobs:
           git init -q --bare "$fresh"
           auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
           if [ -z "$auth_header" ]; then
-            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","required_evidence_or_repair":"the checkout transport header (job token scope contents) for an independent fetch of the ref; the append and publish above stand","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job transition","owning_existing_goal":"ORG-FED-SV-011-001","next_attempt":"re-run the job; the published receipts are read back from a fresh fetch","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
@@ -236,7 +291,10 @@ jobs:
           locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
           echo "$locators"
           ref=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$locators")
-          test "$ref" = "$LEDGER_REF"
+          if [ "$ref" != "$LEDGER_REF" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"DESIGNATED_LEDGER_REF_MISMATCH","failed_predicate":"LEDGER_CONTRACT_DESIGNATES_THE_PUBLISHED_REF","required_evidence_or_repair":"org-contract.json and contract.json designating refs/stegverse/organization-ledger","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"correct the ledger contracts and run the job again; nothing was appended","production_receipt_claimed":false}'
+            exit 1
+          fi
           namespace=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["namespace"])' "$locators")
           echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
           if git ls-remote --exit-code origin "$LEDGER_REF" >/dev/null; then
@@ -255,7 +313,7 @@ jobs:
           export STEGVERSE_REPO_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
           case "$STEGVERSE_ORG_LEDGER_ROOT" in
             git+*"#$LEDGER_REF") ;;
-            *) echo "FAIL_CLOSED: ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF" >&2; exit 1 ;;
+            *) echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF","failed_predicate":"ORGANIZATION_LOCATOR_NAMES_THE_DESIGNATED_REF","required_evidence_or_repair":"org-contract.json organization_ledger_ref equal to refs/stegverse/organization-ledger","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"correct the ledger contract and push the request again; nothing was appended","production_receipt_claimed":false}'; exit 1 ;;
           esac
           mkdir -p "$RUNNER_TEMP/results"
           while IFS= read -r request; do
@@ -270,11 +328,11 @@ jobs:
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet "$LEDGER_REF" >/dev/null; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_NOT_APPENDED","failed_predicate":"TRANSITION_REQUEST_APPENDED_TO_THE_REF","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_NOT_APPENDED","failed_predicate":"TRANSITION_REQUEST_APPENDED_TO_THE_REF","required_evidence_or_repair":"a request append that leaves refs/stegverse/organization-ledger in this checkout","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"push the corrected request again; nothing was published","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","detail":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"re-run; a request already on the ledger is returned, not appended again","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"a local ledger tip that fast-forwards the published ref; another append moved the ref first and this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"re-run the job; a request already on the ledger is returned, not appended again","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
 
@@ -286,7 +344,7 @@ jobs:
           git init -q --bare "$fresh"
           auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
           if [ -z "$auth_header" ]; then
-            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","required_evidence_or_repair":"the checkout transport header (job token scope contents) for an independent fetch of the ref; the append and publish above stand","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"re-run the job; the published receipts are read back from a fresh fetch","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"

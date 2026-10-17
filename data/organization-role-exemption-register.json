@@ -1,0 +1,87 @@
+{
+  "schema": "stegverse.organization-role-exemption-register/v1",
+  "register_id": "SV-011-ORGANIZATION-ROLE-EXEMPTION-REGISTER-001",
+  "organization": "SV-011",
+  "repository": "SV-011/.github",
+  "standard_source": "StegVerse-org/.github@c483d441c452c228cb0d2f22d9a90a2aab66f7ca:docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md",
+  "standard": "EVERY_ACTION_IS_A_MANIFEST_BOUND_STATE_TRANSITION_AND_NO_EXTERNAL_MACHINE_IS_AWAITED",
+  "rule": "A_SURFACE_THAT_CANNOT_YET_SATISFY_THE_STANDARD_MUST_HOLD_A_REGISTERED_EXEMPTION_WITH_AN_ACTIONABLE_NON_ALLOW_DISPOSITION",
+  "silent_non_conformance_is_conforming": false,
+  "exemption_may_satisfy_a_terminal_predicate": false,
+  "non_allow_result_fields": [
+    "failure_code",
+    "failed_predicate",
+    "required_evidence_or_repair",
+    "retry_entrypoint",
+    "owning_existing_goal",
+    "next_attempt"
+  ],
+  "required_fields": [
+    "surface",
+    "owning_existing_goal",
+    "disposition",
+    "failure_code",
+    "failed_predicate",
+    "why_manifest_bound_state_transition_is_not_yet_possible",
+    "required_evidence_or_repair",
+    "retry_entrypoint",
+    "next_attempt",
+    "expires_or_review_on"
+  ],
+  "prohibited_justifications": [
+    "AN_EXTERNAL_MACHINE_MUST_BE_RUNNING",
+    "A_SECOND_USER_OPERATED_DEVICE_IS_REQUIRED",
+    "A_REMOTE_COMPUTER_IS_UNAVAILABLE",
+    "EVIDENCE_REACHABILITY_IS_PENDING",
+    "A_RECEIVER_IS_NOT_ALWAYS_ON",
+    "AN_AUTHENTIC_OBSERVER_HAS_NOT_YET_LOOKED"
+  ],
+  "exemptions": [
+    {
+      "surface": "SV-011/.github:.github/workflows/organization-ledger-transition.yml job transition (workflow_dispatch inputs communication_id, packet_id, hb_epoch)",
+      "owning_existing_goal": "ORG-FED-SV-011-001",
+      "disposition": "FAIL_CLOSED",
+      "failure_code": "ORGANIZATION_ROLE_CONFORMANCE_NOT_DECLARED",
+      "failed_predicate": "SELF_CLOSURE_IS_DRIVEN_BY_A_COMMITTED_MANIFEST",
+      "why_manifest_bound_state_transition_is_not_yet_possible": "The intr-destination diagnostic self-closure takes its communication_id, packet_id and hb_epoch from typed dispatch inputs rather than from a committed manifest. No self-closure manifest class exists under .stegverse/, and the InTr one-way hop lane (branch intr/one-way-hop, StegVerse-Labs/.github#2897) chains phases through the same dispatch surface, so moving the trigger is a shared design choice, not a local fix.",
+      "required_evidence_or_repair": "An owner decision on a committed self-closure manifest class (for example .stegverse/self-closure-requests/*.json carrying communication_id, packet_id, hb_epoch and owning_existing_goal), agreed with the InTr hop lane; then drive job transition from it and remove the dispatch inputs.",
+      "retry_entrypoint": "SV-011/.github:.github/workflows/organization-ledger-transition.yml job transition",
+      "next_attempt": "repair once the manifest class is decided, and remove this exemption in the same change",
+      "expires_or_review_on": "2026-11-17",
+      "registered_on": "2026-10-17",
+      "audit_item": "N1",
+      "authority_effect": "NONE_REGISTER_ONLY"
+    },
+    {
+      "surface": "SV-011/.github:.github/workflows/organization-ledger-transition.yml ledger fetch and push (workflow GITHUB_TOKEN via the checkout transport header, contents: write)",
+      "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+      "disposition": "FAIL_CLOSED",
+      "failure_code": "TV_TVC_LEDGER_READ_OPERATION_NOT_PRESENT",
+      "failed_predicate": "LEDGER_TRANSPORT_CREDENTIAL_IS_TV_TVC_ISSUED",
+      "why_manifest_bound_state_transition_is_not_yet_possible": "org-runtime/interlock-intr.json declares credential_authority TV/TVC and github_token_runtime_authority NONE, but no TV/TVC operation appends to or reads refs/stegverse/organization-ledger: StegVerse-Labs/TVC@5920219 github_repository_operation_broker.py OPERATIONS holds MATERIALIZE_SOURCE_ARCHIVE, APPLY_BOUNDED_FILE_SET, OPEN_PULL_REQUEST and PROTECT_DEFAULT_BRANCH, and verify_base resolves only refs/heads/*. The workflow token carries git transport only; it is not a transition input and selects nothing.",
+      "required_evidence_or_repair": "A bounded TVC broker operation, owned by StegVerse-Labs/TVC, that reads (and separately appends fast-forward only to) a named non-branch ref in a named repository, with a TV request in StegVerse-org/TV/requests/ naming SV-011/.github and the ref; then switch the ledger transport to it.",
+      "retry_entrypoint": "StegVerse-Labs/TVC:github_repository_operation_broker.py OPERATIONS; StegVerse-org/TV:requests/",
+      "next_attempt": "repair once the TVC operation and TV request are present, and remove this exemption in the same change",
+      "expires_or_review_on": "2026-11-17",
+      "registered_on": "2026-10-17",
+      "audit_item": "N8",
+      "authority_effect": "NONE_REGISTER_ONLY"
+    },
+    {
+      "surface": "SV-011/.github:resident-runtime/organization_ledger_transition.py::validate_request (stegverse.organization-transition-request/v1)",
+      "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+      "disposition": "FAIL_CLOSED",
+      "failure_code": "ORGANIZATION_ROLE_CONFORMANCE_NOT_DECLARED",
+      "failed_predicate": "REQUEST_NAMES_A_MANIFESTED_CAPABILITY_AND_ROUTE",
+      "why_manifest_bound_state_transition_is_not_yet_possible": "Standard item 1 requires a manifested capability and route. The request carries transition_class and org_transition_class, which are classes, not a capability and route, and no source defines the route field's name or vocabulary for this intake.",
+      "required_evidence_or_repair": "An owner decision on the route field (proposed: a required manifested_route object with capability_profile_id, route_id, destination_repository and destination_operation, checked against this organization's declared bindings); then require it in validate_request and record it on both receipts.",
+      "retry_entrypoint": "SV-011/.github:resident-runtime/organization_ledger_transition.py::validate_request",
+      "next_attempt": "repair once the route field is decided, and remove this exemption in the same change",
+      "expires_or_review_on": "2026-11-17",
+      "registered_on": "2026-10-17",
+      "audit_item": "N11",
+      "authority_effect": "NONE_REGISTER_ONLY"
+    }
+  ],
+  "authority_effect": "NONE_REGISTER_ONLY"
+}

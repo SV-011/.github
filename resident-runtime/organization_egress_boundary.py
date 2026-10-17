@@ -4,8 +4,17 @@
 A peer capability address is derived: ``organization_slug(peer) + "." + profile_id``.
 The federation directory names peer organizations and their control services.
 It does not list capability services. Resolution does not show that the peer
-installed the receiving operation. An absent answer stays ``PENDING`` and is
-not a transition.
+installed the receiving operation. An absent answer is not a transition and
+writes nothing. ``close`` answers it ``FAIL_CLOSED`` with the six fields of the
+Organization Role conformance standard, and with the protocol's own
+receiver-unavailable disposition ``DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION``
+and ``always_on_receiver_required: false``. Nothing waits on or polls the
+receiver; the emission receipt stands, and ``close`` is entered again when a
+response frame is in the mesh.
+
+Every non-ALLOW result (``DENY`` or ``FAIL_CLOSED``) carries ``failure_code``,
+``failed_predicate``, ``required_evidence_or_repair``, ``retry_entrypoint``,
+``owning_existing_goal`` and ``next_attempt`` (``resident-runtime/non_allow.py``).
 
 Closure, when a far-side terminal receipt recomputes, shows that a boundary
 ran this packet. What that closure establishes is the responded request class
@@ -47,7 +56,11 @@ CLOSURE_REFUSED_CLASS = "ORGANIZATION_EGRESS_CLOSURE_REFUSED"
 
 ALLOW = "ALLOW"
 DENY = "DENY"
-PENDING = "PENDING"
+FAIL_CLOSED = "FAIL_CLOSED"
+RECEIVER_UNAVAILABLE_DISPOSITION = "DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION"
+ANSWER_NOT_MATERIALIZED = "FAR_SIDE_ANSWER_NOT_MATERIALIZED"
+EMIT_ENTRYPOINT = "resident-runtime/organization_egress_boundary.py::emit"
+CLOSE_ENTRYPOINT = "resident-runtime/organization_egress_boundary.py::close"
 
 ACK_CLASSES = frozenset({"ecosystem.monitor.response", "ecosystem.work.ack",
                          "ecosystem.communication.ack"})
@@ -68,6 +81,29 @@ repository_ledger = _module("repo_transition_emit", ".stegverse/transition-ledge
 organization_ledger = _module("aggregate_repo_transition",
                               "resident-runtime/aggregate_repo_transition.py")
 ledger_store = _module("ledger_store", "resident-runtime/ledger_store.py")
+non_allow = _module("non_allow_egress", "resident-runtime/non_allow.py")
+
+
+def _emit_refusal_fields(failed_predicate: str, reason: str) -> dict[str, str]:
+    return non_allow.fields(
+        failure_code=EMIT_REFUSED_CLASS,
+        failed_predicate=failed_predicate,
+        required_evidence_or_repair=reason,
+        retry_entrypoint=EMIT_ENTRYPOINT,
+        owning_existing_goal=non_allow.BOUNDARY_GOAL,
+        next_attempt="emit again with a payload and destination on which " + failed_predicate
+                     + " holds; the refusal receipt stands and nothing was published")
+
+
+def _closure_refusal_fields(findings: list[str]) -> dict[str, str]:
+    return non_allow.fields(
+        failure_code=CLOSURE_REFUSED_CLASS,
+        failed_predicate="FAR_SIDE_RESPONSE_VERIFIES_AGAINST_THIS_ORGANIZATIONS_EMISSION_RECORD",
+        required_evidence_or_repair="a far-side response with none of: " + "; ".join(findings),
+        retry_entrypoint=CLOSE_ENTRYPOINT,
+        owning_existing_goal=non_allow.BOUNDARY_GOAL,
+        next_attempt="close again when a verifying response frame for this communication_id is in the mesh; "
+                     "the refused closure receipt stands")
 
 
 class EgressRefused(Exception):
@@ -241,7 +277,7 @@ def emit_refusal_record(failed_predicate: str, reason: str, organization: Any,
         "transition_is_the_disposition_of_the_intended_action": True,
         "origin_organization": origin,
         "requested_destination_organization": organization if isinstance(organization, str) else None,
-        "failed_predicate": failed_predicate,
+        **_emit_refusal_fields(failed_predicate, reason),
         "refusal_reason": reason,
         "refusal_is_verbatim": True,
         "payload_sha256": sha(dict(payload) if isinstance(payload, Mapping) else payload),
@@ -287,6 +323,7 @@ def closure_record(resolved: Mapping[str, Any], origin: str, packet_id: str,
         "closure_findings": findings,
         "crossed_an_organization_boundary": True,
         "interlock_intr_involved": True,
+        **({} if verified else _closure_refusal_fields(findings)),
         **_constraint_fields(),
     }
 
@@ -317,8 +354,7 @@ def _refusal_result(record: Mapping[str, Any], appended: Mapping[str, Any]) -> d
         "disposition": DENY,
         "disposition_is_transition_evidence": True,
         "emitted": False,
-        "failure_code": EMIT_REFUSED_CLASS,
-        "failed_predicate": record["failed_predicate"],
+        **{name: record[name] for name in non_allow.SIX_FIELDS},
         "detail": record["refusal_reason"],
         "refusal_recorded": True,
         "emission_transition_class": EMIT_REFUSED_CLASS,
@@ -448,7 +484,13 @@ def verify_closure(resolved: Mapping[str, Any], packet_id: str, response: Mappin
 def close(destination_organization: str, packet_id: str, communication_id: str, *,
           root: Path | None = None, mesh_root: Path | None = None,
           hb_epoch: int | None = None) -> dict[str, Any]:
-    """Observe a far-side answer. No answer is ``PENDING`` and writes nothing."""
+    """Observe a far-side answer.
+
+    No answer yet is ``FAIL_CLOSED`` (``FAR_SIDE_ANSWER_NOT_MATERIALIZED``) with
+    the six fields and writes nothing: an absence is not an arrival, and
+    recording one per call would record the calls rather than the crossing.
+    The receiver is not awaited or polled.
+    """
     origin = this_organization(root)
     resolved = resolve_destination(destination_organization, root=root)
     collected = kernel.collect_ecosystem_responses(origin, communication_id, mesh_root=mesh_root)
@@ -458,8 +500,21 @@ def close(destination_organization: str, packet_id: str, communication_id: str, 
         return {
             "schema": RESULT_SCHEMA,
             "operation": OPERATION_ID,
-            "disposition": PENDING,
-            "disposition_is_transition_evidence": True,
+            **non_allow.result(
+                FAIL_CLOSED,
+                failure_code=ANSWER_NOT_MATERIALIZED,
+                failed_predicate="A_FAR_SIDE_RESPONSE_FOR_THIS_COMMUNICATION_ID_IS_IN_THE_MESH",
+                required_evidence_or_repair="a response frame from " + str(resolved["destination_organization"])
+                                            + " for communication_id " + str(communication_id)
+                                            + " materialized in the mesh",
+                retry_entrypoint=CLOSE_ENTRYPOINT,
+                owning_existing_goal=non_allow.BOUNDARY_GOAL,
+                next_attempt="close is entered again when a response frame materializes; nothing waits on or "
+                             "polls the receiver, and the emission receipt stands"),
+            "disposition_is_transition_evidence": False,
+            "receiver_unavailable_disposition": RECEIVER_UNAVAILABLE_DISPOSITION,
+            "always_on_receiver_required": False,
+            "awaits_the_receiver": False,
             "closed": False,
             "closure_recorded": False,
             "absence_is_not_a_transition": True,
@@ -489,6 +544,7 @@ def close(destination_organization: str, packet_id: str, communication_id: str, 
         "closed": not findings,
         "closure_recorded": True,
         "closure_findings": findings,
+        **({name: record[name] for name in non_allow.SIX_FIELDS} if findings else {}),
         "communication_id": communication_id,
         "request_packet_id": packet_id,
         "destination_organization": resolved["destination_organization"],

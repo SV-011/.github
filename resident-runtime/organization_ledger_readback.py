@@ -56,6 +56,15 @@ against its own body) and the current-state basis (``basis_established``,
 ``current_state_reason``). A verified chain whose head declares no basis
 reports ``BASIS_ABSENT``; that is never turned into a current state.
 
+Non-ALLOW findings
+------------------
+The readback has no disposition of its own, but its non-ALLOW outcomes carry
+the six fields of the Organization Role conformance standard
+(``resident-runtime/non_allow.py``): a refused readback carries them at the top
+level, and a basis that is not established carries them in
+``current_state_finding`` (null when the basis is established). A bare
+``BASIS_*`` code is not reported on its own.
+
 The readback does not select admission, routing, or execution. Authority and
 time stay constraint variables. This module does not claim an authentic
 production receipt.
@@ -107,6 +116,21 @@ _spec = importlib.util.spec_from_file_location(
 ledger_store = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ledger_store)
 
+_non_allow_spec = importlib.util.spec_from_file_location(
+    "non_allow_readback", SOURCE / "resident-runtime/non_allow.py")
+non_allow = importlib.util.module_from_spec(_non_allow_spec)
+_non_allow_spec.loader.exec_module(non_allow)
+
+BASIS_PREDICATE = "ORGANIZATION_HEAD_RECEIPT_DECLARES_A_CURRENT_STATE_BASIS"
+BASIS_RETRY = (".stegverse/transition-requests/ (a committed request carrying current_state; "
+               "job request-transition), then " + RETRY)
+BASIS_REPAIR = {
+    "BASIS_ABSENT": "a committed transition request whose current_state declares every field",
+    "BASIS_UNKNOWN": "a committed transition request whose current_state fields match the TT contract shapes",
+    "BASIS_STALE": "a committed transition request whose current_state has as_of not later than fresh_until",
+    "BASIS_CONTRADICTORY": "a committed transition request whose current_state is internally consistent",
+}
+
 
 def canon(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -128,6 +152,19 @@ def basis_digest(subject: Mapping[str, Any]) -> str:
     return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
 
 
+def basis_finding(reason: str, fields: list[str] | tuple[str, ...], detail: str) -> dict[str, str]:
+    """The six fields for a current-state basis that is not established."""
+    return non_allow.fields(
+        failure_code=reason,
+        failed_predicate=BASIS_PREDICATE,
+        required_evidence_or_repair=(BASIS_REPAIR.get(reason, BASIS_REPAIR["BASIS_UNKNOWN"])
+                                     + " (" + detail + ": " + ", ".join(fields) + ")"),
+        retry_entrypoint=BASIS_RETRY,
+        owning_existing_goal=non_allow.LEDGER_GOAL,
+        next_attempt="read the ledger back after the next committed request is appended; "
+                     "nothing is filled in from an earlier receipt, the clock, or a default")
+
+
 def _incomplete(reason: str, fields: list[str] | tuple[str, ...], detail: str) -> dict[str, Any]:
     return {
         "basis_established": False,
@@ -135,6 +172,7 @@ def _incomplete(reason: str, fields: list[str] | tuple[str, ...], detail: str) -
         "current_state_reason": reason,
         "current_state_detail": detail,
         "current_state_fields": list(fields),
+        "current_state_finding": basis_finding(reason, fields, detail),
         "fixture_ref_resolution": dict(FIXTURE_REF_RESOLUTION),
     }
 
@@ -234,6 +272,7 @@ def project_current_state(head_receipt: Any) -> dict[str, Any]:
         "current_state_reason": "HEAD_RECEIPT_CURRENT_STATE",
         "current_state_detail": None,
         "current_state_fields": [],
+        "current_state_finding": None,
         "fixture_ref_resolution": dict(FIXTURE_REF_RESOLUTION),
     }
 
@@ -501,7 +540,10 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     return result
 
 
-def _refusal(location: str, exc: BaseException) -> dict[str, Any]:
+def _refusal(location: str, exc: BaseException,
+             owning_existing_goal: str = non_allow.LEDGER_GOAL) -> dict[str, Any]:
+    predicate = getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK")
+    detail = getattr(exc, "detail", str(exc))
     return {
         "schema": "stegverse.organization-ledger-readback/v1",
         "location": location,
@@ -510,15 +552,30 @@ def _refusal(location: str, exc: BaseException) -> dict[str, Any]:
         "verification": {"organization_chain_verifies": False, "repository_chain_verifies": False},
         "basis_established": False,
         "current_state": None,
-        "failure_code": "ORGANIZATION_LEDGER_READBACK_FAILED",
-        "failed_predicate": getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK"),
-        "detail": getattr(exc, "detail", str(exc)),
-        "retry_entrypoint": RETRY,
-        "next_attempt": "fetch the ledger ref again and rerun the readback; the readback writes nothing",
+        **non_allow.fields(
+            failure_code="ORGANIZATION_LEDGER_READBACK_FAILED",
+            failed_predicate=predicate,
+            required_evidence_or_repair="a ledger ref at the supplied location on which "
+                                        + predicate + " holds (" + detail + ")",
+            retry_entrypoint=RETRY,
+            owning_existing_goal=owning_existing_goal,
+            next_attempt="fetch the ledger ref again and rerun the readback; the readback writes nothing"),
+        "detail": detail,
         "authority_constraint": "NONE_READBACK_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
         "production_receipt_claimed": False,
     }
+
+
+def _owning_goal(ingress: Any, transition: Any) -> str:
+    """The goal a refusal answers to: the request's own, the closure's, or the ledger's."""
+    if isinstance(transition, Mapping):
+        goal = transition.get("owning_existing_goal")
+        if isinstance(goal, str) and goal.strip():
+            return goal
+    if ingress is not None:
+        return non_allow.BOUNDARY_GOAL
+    return non_allow.LEDGER_GOAL
 
 
 def main() -> int:
@@ -533,21 +590,21 @@ def main() -> int:
                         help="print the published ref locators for this checkout and write nothing")
     args = parser.parse_args()
     location = args.location or ""
+    ingress: Any = None
+    transition: Any = None
     try:
         if args.designated_locators is not None:
             result, code = designated_locators(args.designated_locators), 0
         else:
             if not args.location:
                 parser.error("--location is required")
-            ingress = None
             if args.ingress_result is not None:
                 ingress = json.loads(args.ingress_result.read_text(encoding="utf-8"))
-            transition = None
             if args.transition_result is not None:
                 transition = json.loads(args.transition_result.read_text(encoding="utf-8"))
             result, code = readback(args.location, ingress, args.repository_namespace, transition), 0
     except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
-        result, code = _refusal(location, exc), 1
+        result, code = _refusal(location, exc, _owning_goal(ingress, transition)), 1
     text = json.dumps(result, indent=2, sort_keys=True)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

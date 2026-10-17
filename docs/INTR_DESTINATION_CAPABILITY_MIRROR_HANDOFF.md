@@ -111,20 +111,23 @@ outbound. It is not listed as proven here.
 | What closure establishes | the responded request class and the `communication_id` |
 | Which organization that boundary belongs to | **no** |
 | The far side persisted the chain on its own ledger | **no** |
-| No answer is a close | no — `close` returns `PENDING` and writes nothing |
+| No answer is a close | no — `close` returns `FAIL_CLOSED` `FAR_SIDE_ANSWER_NOT_MATERIALIZED` with the six fields, `receiver_unavailable_disposition: DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION`, `always_on_receiver_required: false`, and writes nothing |
 
 The unit test's far side is this repository's `kernel.receipt` and
 `build_control_response`. That is a fabricated answer in a temporary mesh. It
 is not a live peer, and it is not an authentic production receipt.
 
-A live round-trip with StegVerse-org needs a resident runtime on both sides.
-This repository does not claim that observation.
+A live round-trip with StegVerse-org is observed only as organization-ledger
+receipts appended by manifest-directed transitions on both sides. Nothing here
+waits on or polls a resident runtime, host, or receiver. This repository does
+not claim that observation.
 
 ## Verified
 
 `tests.test_intr_destination_capability` covers the declaration, the overlay
 fail-closed miswires, derived resolution, the refused undeclared capability,
-receipt of a diagnostic at this address, emit `ALLOW`, close `PENDING` with no
+receipt of a diagnostic at this address, emit `ALLOW`, close `FAIL_CLOSED`
+(`FAR_SIDE_ANSWER_NOT_MATERIALIZED`, six fields, nothing written) with no
 answer, and close `ALLOW` when the fabricated far side answers. Closure
 assertions name the responded request class and the `communication_id`.
 

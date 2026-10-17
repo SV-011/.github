@@ -59,6 +59,7 @@ def _module(name: str, relative: str):
     return module
 
 
+non_allow = _module("non_allow_ingress", "resident-runtime/non_allow.py")
 repository_ledger = _module("repo_transition_emit", ".stegverse/transition-ledger/emit.py")
 organization_ledger = _module("aggregate_repo_transition",
                               "resident-runtime/aggregate_repo_transition.py")
@@ -129,6 +130,25 @@ def _evidence(payload: Any, packet_id: str, disposition: str, *,
     return record
 
 
+def _non_allow_fields(evidence: Mapping[str, Any], *, recorded: bool) -> dict[str, str]:
+    """The six conformance fields for a DENY or FAIL_CLOSED ingress result.
+
+    They are written on the result, not into the receipt evidence, so a
+    receipt already on the ledger keeps its bytes.
+    """
+    predicate = evidence.get("failed_predicate") or "DIAGNOSTIC_IS_ADMISSIBLE_AT_THIS_ADDRESS"
+    return non_allow.fields(
+        failure_code=REFUSED_CLASS if recorded else REFUSED_CLASS + "_NOT_RECORDED",
+        failed_predicate=predicate,
+        required_evidence_or_repair="a " + PAYLOAD_SCHEMA + " submission on which " + predicate
+                                    + " holds" + (" (" + str(evidence["detail"]) + ")" if evidence.get("detail") else ""),
+        retry_entrypoint="resident-runtime/intr_destination_ingress.py::receive",
+        owning_existing_goal=non_allow.BOUNDARY_GOAL,
+        next_attempt=("submit a corrected diagnostic under a new packet_id; the refusal receipt stands"
+                      if recorded else
+                      "submit under a packet_id the ledger does not already bind; nothing was appended"))
+
+
 def _result(evidence: Mapping[str, Any], appended: Mapping[str, Any] | None, *,
             replayed: bool, received: bool) -> dict[str, Any]:
     disposition = evidence["disposition"]
@@ -162,6 +182,8 @@ def _result(evidence: Mapping[str, Any], appended: Mapping[str, Any] | None, *,
     if evidence.get("failed_predicate") is not None:
         result["failed_predicate"] = evidence["failed_predicate"]
         result["detail"] = evidence.get("detail")
+    if disposition != ALLOW:
+        result.update(_non_allow_fields(evidence, recorded=appended is not None))
     if appended is None:
         result["repository_receipt_observed"] = False
         result["organization_receipt_observed"] = False
