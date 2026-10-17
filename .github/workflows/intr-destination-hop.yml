@@ -1,0 +1,296 @@
+name: InTr Destination Hop
+
+# One-way InTr hop to a peer's <slug>.intr-destination, in three dispatched
+# phases. Each phase runs in the organization whose ledger it appends to and
+# publishes only that organization's refs/stegverse/organization-ledger,
+# fast-forward only, with this repository's own workflow token.
+#
+#   send     sender       records "sent" (ORGANIZATION_EGRESS_EMITTED), then
+#                         dispatches receive at the destination
+#   receive  destination  records "arrived" (ORGANIZATION_INTR_DESTINATION_INGRESS)
+#                         through its own intr-destination ingress, then
+#                         dispatches close back at the sender
+#   close    sender       records "closed" (ORGANIZATION_EGRESS_CLOSED) only for
+#                         the responded request class carrying communication_id
+#
+# FEDERATION_HOP_TOKEN (repository secret) is used for two things only: reading
+# the destination's advertisement from its <org>/.github, and dispatching the
+# next phase in the peer repository. It never pushes a ledger ref. Without it,
+# send, and a receive that forwards, fail closed before anything is appended.
+#
+# federation.json is not read. The destination slug arrives with the dispatch
+# and the address is derived as <slug>.intr-destination from the destination's
+# own advertisement. Time is supplied as hb_epoch: a forwarded phase is
+# dispatched at the epoch this phase was given, plus one. No phase reads a
+# clock for it. Authority and time are constraint variables; a disposition is
+# transition evidence only. Governance and remediation routes are not touched.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-destination-hop.yml'
+      - 'resident-runtime/intr_hop.py'
+      - 'tests/test_intr_hop.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-destination-hop.yml'
+      - 'resident-runtime/intr_hop.py'
+      - 'tests/test_intr_hop.py'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'send (at the sender), receive (at the destination), close (back at the sender)'
+        type: choice
+        options: [send, receive, close]
+        default: send
+      destination_slug:
+        description: 'send: destination organization slug; its address is <slug>.intr-destination'
+        required: false
+        default: ''
+        type: string
+      peer_slug:
+        description: 'receive: the sending organization slug. close: the destination slug that answered'
+        required: false
+        default: ''
+        type: string
+      communication_id:
+        description: 'communication_id the hop closes on'
+        required: true
+        type: string
+      hb_epoch:
+        description: 'supplied heartbeat epoch for this phase (non-negative integer)'
+        required: true
+        type: string
+      frame:
+        description: 'receive / close: gzip+base64 carrier frame forwarded by the previous phase'
+        required: false
+        default: ''
+        type: string
+      forward:
+        description: 'dispatch the next phase in the peer repository'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: One-way hop phases against a fixture peer (fabricated, non-authentic)
+        run: |
+          python3 -m py_compile resident-runtime/intr_hop.py
+          python3 -m unittest -v tests.test_intr_hop
+
+  hop:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # ORGANIZATION_LEDGER_LOCK, shared with organization-ledger-transition.yml.
+    # The push below is the compare-and-swap against the published ref.
+    concurrency:
+      group: organization-ledger
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      LEDGER_REF: refs/stegverse/organization-ledger
+      PHASE: ${{ inputs.phase }}
+      INPUT_DESTINATION_SLUG: ${{ inputs.destination_slug }}
+      INPUT_PEER_SLUG: ${{ inputs.peer_slug }}
+      INPUT_COMMUNICATION_ID: ${{ inputs.communication_id }}
+      INPUT_HB_EPOCH: ${{ inputs.hb_epoch }}
+      INPUT_FRAME: ${{ inputs.frame }}
+      INPUT_FORWARD: ${{ inputs.forward }}
+      HOP_TOKEN_PRESENT: ${{ secrets.FEDERATION_HOP_TOKEN != '' }}
+    steps:
+      - name: Checkout organization boundary
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Accept the dispatch inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          python3 - <<'PY'
+          import json, os, re, sys
+          slug = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+          phase = os.environ["PHASE"]
+          def refuse(predicate, detail):
+              print(json.dumps({"disposition": "FAIL_CLOSED", "phase": phase, "failed_predicate": predicate,
+                                "detail": detail, "receipts_appended": False,
+                                "retry_entrypoint": ".github/workflows/intr-destination-hop.yml"}, sort_keys=True))
+              sys.exit(1)
+          if phase not in ("send", "receive", "close"):
+              refuse("PHASE_IS_SEND_RECEIVE_OR_CLOSE", phase)
+          cid = os.environ.get("INPUT_COMMUNICATION_ID", "")
+          if not cid or len(cid) > 160 or not all(33 <= ord(ch) <= 126 for ch in cid):
+              refuse("COMMUNICATION_ID_IS_PRINTABLE_ASCII_WITHOUT_SPACES", repr(cid))
+          epoch = os.environ.get("INPUT_HB_EPOCH", "")
+          if not epoch.isdigit():
+              refuse("HB_EPOCH_IS_SUPPLIED_AS_A_NON_NEGATIVE_INTEGER", repr(epoch))
+          peer = os.environ["INPUT_DESTINATION_SLUG"] if phase == "send" else os.environ["INPUT_PEER_SLUG"]
+          if not slug.match(peer or ""):
+              refuse("PEER_IS_AN_ORGANIZATION_SLUG", repr(peer))
+          if phase != "send" and not os.environ.get("INPUT_FRAME", "").strip():
+              refuse("FRAME_IS_FORWARDED_BY_THE_PREVIOUS_PHASE", "frame input is empty")
+          forward = os.environ.get("INPUT_FORWARD", "true") == "true"
+          if os.environ.get("HOP_TOKEN_PRESENT") != "true" and (phase == "send" or (phase == "receive" and forward)):
+              refuse("FEDERATION_HOP_TOKEN_IS_CONFIGURED",
+                     "repository secret FEDERATION_HOP_TOKEN reads the destination advertisement and dispatches the next phase")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("HOP_PEER_SLUG=%s\nHOP_FORWARD=%s\n" % (peer, "true" if forward else "false"))
+          PY
+          printf '%s' "$INPUT_FRAME" > "$RUNNER_TEMP/frame.b64"
+
+      - name: Bind the organization ledger ref and the repository ledger subtree within it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          contract = json.loads(Path(".stegverse/transition-ledger/org-contract.json").read_text())
+          assert contract["organization_ledger_repository"] == os.environ["GITHUB_REPOSITORY"], contract
+          assert contract["organization_ledger_ref"] == os.environ["LEDGER_REF"], contract
+          location = json.loads(Path(".stegverse/transition-ledger/contract.json").read_text())["repository_ledger_location"]
+          assert location["repository"] == contract["organization_ledger_repository"], location
+          assert location["ref"] == contract["organization_ledger_ref"], location
+          assert location["namespace"], location
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("REPO_LEDGER_NAMESPACE=%s\n" % location["namespace"])
+          PY
+          if git ls-remote --exit-code origin "$LEDGER_REF" >/dev/null; then
+            git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+            echo "ledger tip before this phase: $(git rev-parse "$LEDGER_REF")"
+            git rev-parse "$LEDGER_REF" > "$RUNNER_TEMP/ledger-before"
+          else
+            echo "ledger ref not yet materialized; the first append opens it"
+            : > "$RUNNER_TEMP/ledger-before"
+          fi
+
+      - name: Read the destination advertisement
+        if: env.PHASE == 'send'
+        env:
+          HOP_TOKEN: ${{ secrets.FEDERATION_HOP_TOKEN }}
+        run: |
+          set -euo pipefail
+          basic=$(printf 'x-access-token:%s' "$HOP_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
+              clone -q --depth 1 "https://github.com/$HOP_PEER_SLUG/.github.git" "$RUNNER_TEMP/destination"; then
+            echo '{"disposition":"FAIL_CLOSED","phase":"send","failed_predicate":"DESTINATION_ADVERTISEMENT_IS_READABLE","detail":"<slug>/.github could not be read with FEDERATION_HOP_TOKEN","receipts_appended":false}'
+            exit 1
+          fi
+
+      - name: Run the phase against this organization's ledgers
+        run: |
+          set +e -u
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF"
+          export STEGVERSE_ORG_LEDGER_GIT_DIR="$GITHUB_WORKSPACE/.git"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          out="$RUNNER_TEMP/results/$PHASE.json"
+          case "$PHASE" in
+            send)
+              python3 resident-runtime/intr_hop.py send --destination-slug "$HOP_PEER_SLUG" \
+                --communication-id "$INPUT_COMMUNICATION_ID" --hb-epoch "$INPUT_HB_EPOCH" \
+                --peer-root "$RUNNER_TEMP/destination" --out "$out" ;;
+            receive)
+              python3 resident-runtime/intr_hop.py receive --frame-file "$RUNNER_TEMP/frame.b64" \
+                --origin-slug "$HOP_PEER_SLUG" --hb-epoch "$INPUT_HB_EPOCH" --out "$out" ;;
+            close)
+              python3 resident-runtime/intr_hop.py close --frame-file "$RUNNER_TEMP/frame.b64" \
+                --destination-slug "$HOP_PEER_SLUG" --communication-id "$INPUT_COMMUNICATION_ID" \
+                --hb-epoch "$INPUT_HB_EPOCH" --out "$out" ;;
+          esac
+          echo "PHASE_EXIT=$?" >> "$GITHUB_ENV"
+
+      - name: Publish the ledger ref (fast-forward only)
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet "$LEDGER_REF" >/dev/null; then
+            echo "nothing appended; ledger ref not materialized"; exit 0
+          fi
+          if [ "$(git rev-parse "$LEDGER_REF")" = "$(cat "$RUNNER_TEMP/ledger-before")" ]; then
+            echo "nothing appended by this phase"; exit 0
+          fi
+          if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this phase published nothing","retry_entrypoint":".github/workflows/intr-destination-hop.yml","next_attempt":"re-dispatch the same phase; a recorded transition is answered from the ledger"}'
+            exit 1
+          fi
+          echo "published $LEDGER_REF at $(git rev-parse "$LEDGER_REF")"
+
+      - name: Read this phase's receipts back from a fresh fetch
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/results/$PHASE.json"
+          if ! python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); sys.exit(0 if x.get("repository_receipt_sha256") else 1)' "$result"; then
+            echo "this phase recorded no receipt to read back"; exit 0
+          fi
+          fresh="$RUNNER_TEMP/readback.git"
+          git init -q --bare "$fresh"
+          auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
+          if [ -z "$auth_header" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"AUTHENTICATED_LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_AUTHENTICATED"}'
+            exit 1
+          fi
+          git --git-dir="$fresh" -c http.https://github.com/.extraheader="$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
+          python3 resident-runtime/intr_hop.py readback --location "git+$fresh#$LEDGER_REF" \
+            --repository-namespace "$REPO_LEDGER_NAMESPACE" --result "$result" \
+            --out "$RUNNER_TEMP/results/$PHASE-readback.json"
+          {
+            echo "### intr-destination hop: $PHASE"
+            echo '```json'
+            python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); x.pop("frame",None); print(json.dumps(x,indent=2,sort_keys=True))' "$result"
+            cat "$RUNNER_TEMP/results/$PHASE-readback.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch the next phase in the peer repository
+        if: env.PHASE != 'close' && env.HOP_FORWARD == 'true' && env.PHASE_EXIT == '0'
+        env:
+          GH_TOKEN: ${{ secrets.FEDERATION_HOP_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/results/$PHASE.json"
+          python3 - "$result" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          x = json.load(open(sys.argv[1]))
+          phase = os.environ["PHASE"]
+          own = os.environ["GITHUB_REPOSITORY"].split("/", 1)[0]
+          own_slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in own).strip("-")
+          if phase == "send":
+              repository, nxt = x["destination_repository"], "receive"
+          else:
+              repository, nxt = x["origin_organization"] + "/.github", "close"
+          tmp = Path(os.environ["RUNNER_TEMP"])
+          (tmp / "next-frame.b64").write_text(x["frame"], encoding="ascii")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("NEXT_REPOSITORY=%s\nNEXT_PHASE=%s\nOWN_SLUG=%s\n" % (repository, nxt, own_slug))
+          PY
+          next_epoch=$((INPUT_HB_EPOCH + 1))
+          gh workflow run intr-destination-hop.yml -R "$NEXT_REPOSITORY" \
+            -f phase="$NEXT_PHASE" -f peer_slug="$OWN_SLUG" \
+            -f communication_id="$INPUT_COMMUNICATION_ID" -f hb_epoch="$next_epoch" \
+            -F frame=@"$RUNNER_TEMP/next-frame.b64" -f forward=true
+          echo "dispatched $NEXT_PHASE at $NEXT_REPOSITORY (hb_epoch $next_epoch)"
+
+      - name: Phase disposition
+        run: exit "${PHASE_EXIT:-1}"
+
+      - name: Retain the phase evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intr-destination-hop-${{ inputs.phase }}
+          path: ${{ runner.temp }}/results
+          if-no-files-found: ignore
