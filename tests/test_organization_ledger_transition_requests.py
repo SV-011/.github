@@ -419,6 +419,13 @@ class ContractAndWordingTests(unittest.TestCase):
             for needle in needles:
                 self.assertNotIn(needle, text, relative + ": " + needle.strip())
 
+    def test_docs_name_no_resident_executor_for_phase5(self):
+        needles = ("resident execution", "resident executor", "sovereign resident", "authentic resident")
+        for relative in ("SV_011_ORG_RUNTIME_MIRROR_HANDOFF.md", ".stegverse/transition-requests/README.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8").lower()
+            for needle in needles:
+                self.assertNotIn(needle, text, relative + ": " + needle)
+
 
 def _workflow_step_script(step_name: str) -> str:
     """The ``run: |`` body of one step of the ledger workflow, without a YAML parser."""

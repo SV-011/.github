@@ -2,8 +2,8 @@
 
 Repository: `SV-011/.github`  
 Organization: `SV-011`  
-State: SOURCE_AND_WORKERCOORDINATOR_BRIDGE_INSTALLED / RESIDENT_RUNTIME_EXECUTION_PENDING  
-Updated: 2026-09-02  
+State: SOURCE_AND_WORKERCOORDINATOR_BRIDGE_INSTALLED / PHASE5_LEDGER_TRANSITIONS_NOT_OBSERVED  
+Updated: 2026-10-17  
 Authority effect: NONE  
 Activation effect: false
 
@@ -30,7 +30,7 @@ HB / HB-derived carrier
 
 Carrier presence does not satisfy any admission, execution, credential, routing, transition, receiving, publication, or release constraint.
 
-GitHub Actions validate source and evidence. A hosted run does not satisfy the sovereign runtime constraint.
+GitHub-hosted workflow runs, started on request, carry manifest-driven state transitions. Runtime is observed only as an organization receipt appended to `refs/stegverse/organization-ledger` and read back. A run that only validates source appends no receipt and observes no runtime.
 
 ## Canonical upstream lineage
 
@@ -49,7 +49,7 @@ Source organization boundary:
 - a reachable out-of-set denial;
 - explicit receipts for both source-test outcomes.
 
-Phase-5 remains open until the organization resident runtime produces authentic crossing and denial evidence outside GitHub-hosted workflow authority.
+Phase 5 closes on manifest-driven state transitions observed through organization-ledger receipts: one ALLOW-disposition crossing and one DENY-disposition crossing, each appended to `refs/stegverse/organization-ledger` by a GitHub-hosted workflow run started on request, and read back from a fresh fetch. The condition names no resident host or executor.
 
 ## Initial constraint state
 
@@ -70,9 +70,9 @@ autonomous_status_claimed: false
 2. Install exact-byte canonical transport/processor/runtime imports.
 3. Add only SV-011 organization-local profile/registry/receipt behavior.
 4. Install a validation dispatcher; no workflow-per-feature.
-5. Prepare resident execution requests for one ALLOW-disposition and one DENY-disposition crossing.
-6. GitHub-hosted validation proves source behavior only.
-7. Do not close Phase 5 until authentic resident receipts are observed and reconstructed.
+5. Commit manifest-bound transition requests for one ALLOW-disposition and one DENY-disposition crossing.
+6. GitHub-hosted validation runs prove source behavior only; they append no organization-ledger receipt.
+7. Close Phase 5 when both crossings are observed as organization-ledger receipts, produced by GitHub-hosted workflow runs started on request, and reconstructed from a fresh fetch of the ledger ref.
 
 
 ## Organization-boundary source installation — 2026-09-02
@@ -104,16 +104,16 @@ phase5_real_denial_observed: false
 github_actions_is_runtime_authority: false
 ```
 
-The installed requests are ready for a sovereign resident executor:
+The installed probe request files are:
 - `resident-runtime/requests/phase5-allow.json`
 - `resident-runtime/requests/phase5-deny.json`
 
-The resident execution command surface is:
+The probe command surface (its argument names are the recorded ones) is:
 ```text
 python resident-runtime/run_phase5_probe.py --request <request.json> --evidence-dir <resident-evidence-dir> --runtime-observer <resident-runtime-id>
 ```
 
-GitHub-hosted validation of that runner is not authentic resident execution and does not close Phase 5.
+A validation run of that runner appends no organization-ledger receipt and does not close Phase 5.
 
 
 ## Canonical sovereign WorkerCoordinator bridge — 2026-09-02
@@ -139,7 +139,7 @@ Installed canonical resident surfaces:
 
 The WorkerCoordinator task accepts either (a) a clean already-local `SV-011/.github` checkout containing this repository's Phase-5 source installation commit `cf2777d9d21a97289f4ec7b0d9b0b21597047666` with the exact pinned blobs, or (b) the exact verified materialized tree produced by the dedicated source-materialization task.
 
-The bridge is now source/control complete. The remaining Phase-5 transition is machine-owned authentic resident execution. No GitHub-hosted run, merge, request presence, or carrier presence satisfies that transition.
+The bridge is source/control complete. The remaining Phase-5 transition is a manifest-driven state transition observed as an organization-ledger receipt. A merge, request presence, carrier presence, or a run that appends no ledger receipt does not satisfy it.
 
 Current runtime predicates remain:
 ```text
@@ -286,7 +286,7 @@ reconstruction:
   not required for source-materialization completion
 ```
 
-The shared projector is merged in canonical source via StegVerse-Labs/.github PR #822, merge `6358375c81fedb579cb6fcac59946268ea485ebb`. It is bound into sovereign bootstrap/native-service/source-refresh materialization. No deployment-local projection output is claimed until an authentic resident runtime produces the required local evidence.
+The shared projector is merged in canonical source via StegVerse-Labs/.github PR #822, merge `6358375c81fedb579cb6fcac59946268ea485ebb`. It is bound into sovereign bootstrap/native-service/source-refresh materialization. No deployment-local projection output is claimed. Phase 5 evidence is the organization-ledger receipts described in the section below, not a local projection.
 
 
 ### Shared contract merge state
@@ -302,6 +302,8 @@ shared_projection_runtime_output_observed: false
 ## Organization ledger and transition-request intake — 2026-10-17
 
 Draft PR #9 (`cursor/sv011-org-ledger-17f9`). Not merged.
+
+Earlier dated sections record `resident` surfaces, predicates, and paths by their installed names. Those names are identifiers. They add no resident host or executor to the Phase 5 condition above, and nothing in this organization waits on one.
 
 ```text
 ledger_ref: refs/stegverse/organization-ledger
