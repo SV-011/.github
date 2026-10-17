@@ -23,6 +23,7 @@ _spec = importlib.util.spec_from_file_location(
 _cases = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cases)
 LIVE, LIVE_ORG_HEAD, NAMESPACE = _cases.LIVE, _cases.LIVE_ORG_HEAD, _cases.NAMESPACE
+LIVE_REPO_HEAD = _cases.LIVE_REPO_HEAD
 LedgerRepo, _EnvCase, _module = _cases.LedgerRepo, _cases._EnvCase, _cases._module
 request, tt_basis_digest = _cases.request, _cases.tt_basis_digest
 segmentless_contract, live_ledger = _cases.segmentless_contract, _cases.live_ledger
@@ -276,6 +277,36 @@ class SourceReceiptRetentionH45(_EnvCase):
         held = {"source-receipts/" + repo["receipt_sha256"][7:] + ".json": repo}
         self.assertEqual(readback.source_receipt_retention(held, [org], [repo], rule)["retained"],
                          [org["receipt_sha256"]])
+
+    def test_item_4b_the_published_receipt_names_no_source_and_the_ref_retains_none(self):
+        """Item 4b (H51): the cause of SOURCE_RECEIPT_RETAINED_AND_VERIFIES at tip 2cc58cec.
+
+        The shared readback (StegVerse-Labs/.github resident-runtime/organization_ledger_readback.py)
+        reads ``source_transition_sha256`` and ``source-receipts/<hex>.json``. Receipt 3db9008d
+        was minted before forward retention: it names its source only as ``repo_receipt_sha256``
+        (f8134042, which is on the repository chain and self-verifies), so the shared read finds
+        ``source_transition_sha256`` absent (detail None). It is never re-minted.
+        """
+        org = json.loads((LIVE / ("receipts/" + LIVE_ORG_HEAD.split(":")[1] + ".json")).read_text(encoding="utf-8"))
+        self.assertNotIn("source_transition_sha256", org)
+        self.assertEqual(org["repo_receipt_sha256"], LIVE_REPO_HEAD)
+        self.assertFalse((LIVE / "source-receipts").exists())
+        repo = json.loads((LIVE / (NAMESPACE + "/receipts/" + LIVE_REPO_HEAD.split(":")[1] + ".json"))
+                          .read_text(encoding="utf-8"))
+        self.assertEqual(repo["receipt_sha256"], readback._body_sha(repo))
+
+    def test_item_4b_a_forward_receipt_on_the_published_ledger_meets_the_shared_rule(self):
+        """A receipt appended after 2cc58cec names its source and retains it at the shared key."""
+        ledger = LedgerRepo(self.base, seed=LIVE)
+        self.bind(ledger)
+        result = transition.apply_request(request())
+        head = json.loads(ledger.show("receipts/" + result["organization_receipt_sha256"].split(":")[1] + ".json"))
+        source = head["source_transition_sha256"]
+        self.assertEqual(source, result["repository_receipt_sha256"])
+        retained = json.loads(ledger.show("source-receipts/" + source.split(":")[1] + ".json"))
+        self.assertEqual(retained["receipt_sha256"], source)
+        self.assertEqual(readback._body_sha(retained), source)
+        self.assertEqual(head["previous_receipt_sha256"], LIVE_ORG_HEAD)
 
     def test_contract_names_the_segment_and_the_canonical_layout(self):
         org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
