@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Append the organization receipt that consumes one repository receipt.
 
-The root comes from ``STEGVERSE_ORG_LEDGER_ROOT``. The organization receipt
-preserves the repository receipt digest. It does not select admission, routing,
-or execution. Authority and time stay constraint variables. The disposition on
-the evidence is transition evidence.
+The root comes from ``STEGVERSE_ORG_LEDGER_ROOT``. A plain path is a
+directory. ``git+<repository>#<ref>`` addresses a git ref. The organization
+receipt preserves the repository receipt digest. It does not select admission,
+routing, or execution. Authority and time stay constraint variables. The
+disposition on the evidence is transition evidence.
 
-A receipt written here is not an authentic production receipt.
+A receipt written here does not claim to be an authentic production receipt.
+Callers that redirect the root, including tests, are writing a supplied store.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
-C = {"organization": "SV-011", "repository": "SV-011/.github"}
+C = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
 
 _kernel_spec = importlib.util.spec_from_file_location("kernel", ROOT / "org-kernel/kernel.py")
 kernel = importlib.util.module_from_spec(_kernel_spec)
@@ -39,11 +41,12 @@ def sha(value: Any) -> str:
     return "sha256:" + hashlib.sha256(bytes(raw)).hexdigest()
 
 
-def ledger_root() -> Path:
+def ledger_root():
+    """The caller-supplied organization ledger locator. A missing root fails closed."""
     configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
     if not configured:
         raise ValueError("ledger_location_required_from_caller: STEGVERSE_ORG_LEDGER_ROOT")
-    return Path(configured)
+    return ledger_store.parse_locator(configured)
 
 
 def _chain(target: ledger_store.Store, head: Mapping[str, Any] | None):
@@ -100,10 +103,13 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
     }
     digest = sha(body)
     receipt = {**body, "receipt_sha256": digest}
-    target.put(ledger_store.receipt_key(digest), receipt)
-    target.put(ledger_store.HEAD_KEY, {
+    new_head = {
         "schema": "stegverse.ledger-head/v1",
         "organization": C["organization"],
         "receipt_sha256": digest,
-    })
-    return receipt
+    }
+    if target.append_transaction(
+            ledger_store.receipt_key(digest), receipt,
+            head if isinstance(head, dict) else None, new_head):
+        return receipt
+    raise RuntimeError("ledger_append_lost_comparison")
