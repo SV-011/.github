@@ -286,15 +286,25 @@ class LiveReceiptReadbackTests(_EnvCase):
         self.assertIs(result["request_receipt_is_head"], True)
         self.assertIs(result["basis_established"], True)
 
-    def test_an_empty_location_is_reported_as_an_empty_ledger(self):
+    def test_an_empty_location_is_refused_head_absent(self):
+        """DEFAULT pending owner confirmation (C6 parity 3): an empty ledger is a refusal, as in C6."""
         empty = self.base / "empty"
         empty.mkdir()
-        result = readback.readback(str(empty), None, NAMESPACE)
-        self.assertIs(result["ledger_empty"], True)
-        self.assertEqual(result["chain_length"], 0)
-        self.assertIsNone(result["current_state"])
-        self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
-        self.assertEqual(result["current_state_detail"], "ORGANIZATION_LEDGER_EMPTY")
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.readback(str(empty), None, NAMESPACE)
+        self.assertEqual(caught.exception.failure_code, "ORGANIZATION_LEDGER_HEAD_ABSENT")
+        self.assertEqual(caught.exception.failed_predicate, "ORGANIZATION_LEDGER_HEAD_PRESENT")
+        empty_git = self.base / "empty-git"
+        subprocess.run(["git", "init", "-q", str(empty_git)], check=True)
+        code, refused = self.readback_cli("git+" + str(empty_git.resolve()) + "#" + REF,
+                                          org_contract=segmentless_contract(self.base))
+        self.assertEqual(code, 1, refused)
+        self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+        self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_HEAD_ABSENT")
+        self.assertEqual(refused["failed_predicate"], "ORGANIZATION_LEDGER_HEAD_PRESENT")
+        self.assertIn("GENESIS", refused["next_attempt"])
+        self.assertIsNone(refused["current_state"])
+        self.assertIs(refused["basis_established"], False)
 
 
 class RequestIntakeTests(_EnvCase):
@@ -583,10 +593,13 @@ class ObservationOnlyReadbackTests(_EnvCase):
         self.assertIs(result["basis_established"], False)
         self.assertIsNone(result["current_state"])
 
-    def test_the_empty_ledger_report_is_observation_only(self):
+    def test_the_empty_ledger_is_a_fail_closed_refusal(self):
         empty = self.base / "empty"
         empty.mkdir()
-        self.assert_observation_only(readback.readback(str(empty), None, NAMESPACE))
+        code, result = self.readback_cli(str(empty))
+        self.assertEqual(code, 1, result)
+        self.assert_fail_closed(result)
+        self.assertEqual(result["failure_code"], "ORGANIZATION_LEDGER_HEAD_ABSENT")
 
     def test_the_dispatch_consumer_does_not_require_a_disposition_value(self):
         workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")

@@ -227,7 +227,8 @@ class ReadbackNonAllow(Workspace):
                                          "--repository-namespace", NAMESPACE, *extra)
             self.assertEqual(code, 1, refused)
             self.assertEqual(refused["disposition"], "FAIL_CLOSED")
-            self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_READBACK_FAILED")
+            self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_HEAD_ABSENT")
+            self.assertEqual(refused["failed_predicate"], "ORGANIZATION_LEDGER_HEAD_PRESENT")
             self.assert_six(refused, goal)
         code, refused = self.run_cli(script, "--location", self.base / "absent",
                                      "--repository-namespace", "wrong-namespace")
@@ -256,12 +257,15 @@ class ReadbackNonAllow(Workspace):
         self.assert_six(finding, LEDGER_GOAL)
         self.assertIn("HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE", finding["required_evidence_or_repair"])
 
-    def test_the_empty_ledger_basis_carries_six_fields(self):
+    def test_the_empty_ledger_refusal_carries_six_fields(self):
         empty = self.base / "empty"
         empty.mkdir()
-        finding = readback.readback(str(empty), None, NAMESPACE)["current_state_finding"]
-        self.assertEqual(finding["failure_code"], "BASIS_ABSENT")
-        self.assert_six(finding, LEDGER_GOAL)
+        code, refused = self.run_cli(ROOT / "resident-runtime/organization_ledger_readback.py",
+                                     "--location", empty, "--repository-namespace", NAMESPACE)
+        self.assertEqual(code, 1, refused)
+        self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+        self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_HEAD_ABSENT")
+        self.assert_six(refused, LEDGER_GOAL)
 
     def test_every_basis_code_carries_six_fields_and_an_established_basis_carries_none(self):
         good = {

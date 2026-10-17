@@ -114,7 +114,7 @@ class ObservationSchemaB3(unittest.TestCase):
     def test_readback_uses_its_own_observation_id(self):
         self.assertEqual(readback.OBSERVATION_SCHEMA, "stegverse.organization-ledger-observation/v1")
         source = (ROOT / "resident-runtime/organization_ledger_readback.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count('"schema": OBSERVATION_SCHEMA'), 3)
+        self.assertEqual(source.count('"schema": OBSERVATION_SCHEMA'), 2)
         self.assertNotIn('"schema": "stegverse.organization-ledger-readback/v1"', source)
 
 
@@ -514,6 +514,99 @@ class LegacySegmentDeclarationG4(_EnvCase):
         self.assertEqual(printed["disposition"], "FAIL_CLOSED")
         for name in SIX:
             self.assertEqual(printed[name], name.upper())
+
+
+C6_INTEGRITY_PREDICATES = {
+    "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY", "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+    "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC", "ORGANIZATION_LEDGER_HEAD_PRESENT",
+    "REPOSITORY_CHAIN_VERIFIES", "REPOSITORY_LEDGER_HEAD_PRESENT",
+    "RECEIPT_SELF_HASH", "CHAIN_LINKAGE", "SELF_HASH", "LINKAGE",
+}
+
+
+class C6ParityGaps(_EnvCase):
+    """DEFAULT pending owner confirmation: the gaps P1's parity check of 8dcf892 against C6 ebf4aaf found."""
+
+    def segment(self):
+        org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+        return copy.deepcopy(org["source_receipt_retention"]["legacy_pre_retention_segment"])
+
+    def refused_code(self, waived):
+        segment = self.segment()
+        segment["waived_predicate"] = waived
+        segment.pop("declaration_sha256")
+        segment["declaration_sha256"] = readback.legacy_declaration_digest(segment)
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.validate_legacy_segment(segment)
+        return caught.exception.failure_code
+
+    def test_1_the_never_waivable_set_is_c6s(self):
+        self.assertEqual(set(readback.LEGACY_INTEGRITY_PREDICATES), C6_INTEGRITY_PREDICATES)
+        for name in sorted(C6_INTEGRITY_PREDICATES):
+            self.assertEqual(self.refused_code(name), "LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE", name)
+            self.assertEqual(self.refused_code(["SOURCE_RECEIPT_RETAINED_AND_VERIFIES", name]),
+                             "LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE", name)
+        for name in ("RECEIPT_VERIFIES_AGAINST_ITS_BODY", "LEDGER_CHAIN_IS_COMPLETE", "RECEIPT_HAS_THE_CONTRACT_FIELDS"):
+            self.assertEqual(self.refused_code(name), "LEGACY_SEGMENT_WAIVES_A_NON_WAIVABLE_PREDICATE", name)
+        self.assertEqual(self.refused_code([]), "LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE")
+
+    def exported_ledger(self):
+        ledger = LedgerRepo(self.base)
+        self.bind(ledger)
+        result = transition.apply_request(request())
+        tree = self.base / "exported"
+        tree.mkdir()
+        archive = subprocess.run(["git", "-C", str(ledger.path), "archive", _cases.REF], capture_output=True, check=True)
+        subprocess.run(["tar", "-x", "-C", str(tree)], input=archive.stdout, check=True)
+        receipt = tree / "receipts" / (result["organization_receipt_sha256"][7:] + ".json")
+        self.assertTrue(receipt.is_file())
+        return tree, receipt
+
+    def segmentless(self):
+        return json.loads(segmentless_contract(self.base).read_text(encoding="utf-8"))
+
+    def test_2_the_organization_chain_uses_c6s_predicate_names(self):
+        tree, receipt = self.exported_ledger()
+        self.assertIn("schema", readback.readback(str(tree), None, NAMESPACE, None, self.segmentless()))
+        body = json.loads(receipt.read_text(encoding="utf-8"))
+        body["hb_epoch"] = 999
+        receipt.write_text(json.dumps(body), encoding="utf-8")
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.readback(str(tree), None, NAMESPACE, None, self.segmentless())
+        self.assertEqual(caught.exception.failed_predicate, "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY")
+        receipt.unlink()
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.readback(str(tree), None, NAMESPACE, None, self.segmentless())
+        self.assertEqual(caught.exception.failed_predicate, "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE")
+        source = (ROOT / "resident-runtime/organization_ledger_readback.py").read_text(encoding="utf-8")
+        self.assertIn('"self_hash": "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY"', source)
+        self.assertIn('"complete": "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE"', source)
+
+    def test_3_an_empty_ledger_is_head_absent_with_six_fields(self):
+        for contract in (None, segmentless_contract(self.base)):
+            empty = self.base / ("empty-" + ("default" if contract is None else "segmentless"))
+            empty.mkdir()
+            code, refused = self.readback_cli(str(empty), org_contract=contract)
+            self.assertEqual(code, 1, refused)
+            self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+            self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_HEAD_ABSENT")
+            self.assertEqual(refused["failed_predicate"], "ORGANIZATION_LEDGER_HEAD_PRESENT")
+            for name in SIX:
+                self.assertTrue(refused[name], name)
+        self.assertFalse(hasattr(readback, "empty_ledger_report"))
+
+    def test_4_a_successful_read_stays_b3_pending_rigel(self):
+        """(4) is not applied: a successful read stays disposition-free; ALLOW under readback/v1 is Rigel's call."""
+        ledger = LedgerRepo(self.base)
+        self.bind(ledger)
+        result = transition.apply_request(request())
+        code, report = self.readback_cli(ledger.org, transition_result=result,
+                                         org_contract=segmentless_contract(self.base))
+        self.assertEqual(code, 0, report)
+        self.assertNotIn("disposition", report)
+        self.assertEqual(report["schema"], "stegverse.organization-ledger-observation/v1")
+        doc = (ROOT / "docs/ORGANIZATION_ROLE_CONFORMANCE.md").read_text(encoding="utf-8")
+        self.assertIn("C6 parity (4)", doc)
 
 
 if __name__ == "__main__":

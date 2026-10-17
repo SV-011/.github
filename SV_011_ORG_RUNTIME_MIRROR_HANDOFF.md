@@ -312,7 +312,7 @@ head_organization_receipt: sha256:3db9008d… (intr-destination self-closure, di
 repository_receipt: repository-ledger/SV-011/.github/ sha256:f8134042…
 intake: .stegverse/transition-requests/*.json, push to main, job request-transition
 publication: fast-forward only, read back from a fresh fetch
-readback: observation only; a successful read has no top-level disposition (exit 0); a refusal or a declared legacy segment is top-level FAIL_CLOSED with six fields (exit 1) (DEFAULT, C6 convergence c; #12 item 1 open for Rigel); live copies read through git (clone or 2cc58cec bundle) only (C6 a); a segment always applies, segment-less contracts via --org-contract (C6 b); verification and current-state basis reported separately
+readback: observation only; a successful read has no top-level disposition (exit 0); a refusal or a declared legacy segment is top-level FAIL_CLOSED with six fields (exit 1) (DEFAULT, C6 convergence c; #12 item 1 open for Rigel); live copies read through git (clone or 2cc58cec bundle) only (C6 a); a segment always applies, segment-less contracts via --org-contract (C6 b); verification and current-state basis reported separately; C6 never-waivable set, organization-chain predicate names, empty ledger refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 1-3); success as ALLOW under readback/v1 pending Rigel on #12 item 1 (C6 parity 4, not applied)
 live_basis: BASIS_ABSENT (head receipt carries no current_state)
 tt_fixture_t_011_present_at_ba3cca71: false
 sdk_manifest_builder_present: false (build_manifest/manifest refused with SDK_MANIFEST_BUILDER_NOT_PRESENT)

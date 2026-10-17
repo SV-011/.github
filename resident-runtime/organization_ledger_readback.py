@@ -292,23 +292,6 @@ def project_current_state(head_receipt: Any) -> dict[str, Any]:
     }
 
 
-def empty_ledger_report(location: str) -> dict[str, Any]:
-    """No HEAD at the location: no state id, no times, no scopes, no digest."""
-    return {
-        "schema": OBSERVATION_SCHEMA,
-        "location": location,
-        "ledger_empty": True,
-        "readback": "OBSERVATION_ONLY",
-        "records_no_transition": True,
-        "verification": {"organization_chain_verifies": False, "repository_chain_verifies": False},
-        "chain_length": 0,
-        "authority_constraint": "NONE_READBACK_ONLY",
-        "time_constraint": "HEARTBEAT_EPOCH",
-        "production_receipt_claimed": False,
-        **_incomplete("BASIS_ABSENT", BASIS_INPUT_FIELDS, "ORGANIZATION_LEDGER_EMPTY"),
-    }
-
-
 class ReadbackRefused(Exception):
     def __init__(self, failed_predicate: str, detail: str, failure_code: str | None = None,
                  next_attempt: str | None = None) -> None:
@@ -383,24 +366,50 @@ def _repository_location(location: str, namespace: str) -> str:
     return str(Path(locator) / namespace)
 
 
-def _verify_chain(store: Any, schema: str, required: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+# DEFAULT pending owner confirmation (C6 parity 2 and 3): the organization chain
+# uses C6's predicate names, and a missing HEAD is the refusal
+# ORGANIZATION_LEDGER_HEAD_ABSENT on ORGANIZATION_LEDGER_HEAD_PRESENT, as C6
+# refuses it. The repository chain keeps its names.
+ORGANIZATION_CHAIN_PREDICATES = {
+    "head": "ORGANIZATION_LEDGER_HEAD_PRESENT",
+    "acyclic": "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC",
+    "complete": "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+    "self_hash": "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY",
+}
+REPOSITORY_CHAIN_PREDICATES = {
+    "head": "LEDGER_HEAD_PRESENT",
+    "acyclic": "LEDGER_CHAIN_IS_ACYCLIC",
+    "complete": "LEDGER_CHAIN_IS_COMPLETE",
+    "self_hash": "RECEIPT_VERIFIES_AGAINST_ITS_BODY",
+}
+HEAD_ABSENT_FAILURE_CODE = "ORGANIZATION_LEDGER_HEAD_ABSENT"
+HEAD_ABSENT_NEXT = ("an empty ledger opens only through a manifest-directed GENESIS append; "
+                    "the readback writes nothing")
+
+
+def _verify_chain(store: Any, schema: str, required: list[str],
+                  names: Mapping[str, str] = REPOSITORY_CHAIN_PREDICATES,
+                  location: str = "") -> tuple[dict[str, Any], list[dict[str, Any]]]:
     head = store.get(ledger_store.HEAD_KEY)
     if not isinstance(head, dict) or not isinstance(head.get("receipt_sha256"), str):
-        raise ReadbackRefused("LEDGER_HEAD_PRESENT", "no HEAD at the supplied location")
+        if names is ORGANIZATION_CHAIN_PREDICATES:
+            raise ReadbackRefused(names["head"], "no HEAD at " + (location or "the supplied location"),
+                                  failure_code=HEAD_ABSENT_FAILURE_CODE, next_attempt=HEAD_ABSENT_NEXT)
+        raise ReadbackRefused(names["head"], "no HEAD at the supplied location")
     chain: list[dict[str, Any]] = []
     cursor = head["receipt_sha256"]
     seen: set[str] = set()
     while cursor is not None:
         if cursor in seen:
-            raise ReadbackRefused("LEDGER_CHAIN_IS_ACYCLIC", str(cursor))
+            raise ReadbackRefused(names["acyclic"], str(cursor))
         seen.add(cursor)
         receipt = store.get(ledger_store.receipt_key(cursor))
         if not isinstance(receipt, dict):
-            raise ReadbackRefused("LEDGER_CHAIN_IS_COMPLETE", "missing " + str(cursor))
+            raise ReadbackRefused(names["complete"], "missing " + str(cursor))
         if receipt.get("schema") != schema:
             raise ReadbackRefused("RECEIPT_SCHEMA_MATCHES_THE_CONTRACT", str(cursor))
         if receipt.get("receipt_sha256") != cursor or _body_sha(receipt) != cursor:
-            raise ReadbackRefused("RECEIPT_VERIFIES_AGAINST_ITS_BODY", str(cursor))
+            raise ReadbackRefused(names["self_hash"], str(cursor))
         missing = [field for field in required if field not in receipt]
         if missing:
             raise ReadbackRefused("RECEIPT_HAS_THE_CONTRACT_FIELDS", ",".join(missing))
@@ -430,11 +439,15 @@ SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
 # DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED; it is never ALLOW.
 LEGACY_SEGMENT_MEMBERS = ("receipts", "waived_predicate", "six_fields", "ledger_tip_commit",
                           "re_minted", "reported_as_source_retained", "declaration_sha256")
-LEGACY_INTEGRITY_PREDICATES = ("ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY",
-                               "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
-                               "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC",
-                               "RECEIPT_VERIFIES_AGAINST_ITS_BODY", "LEDGER_CHAIN_IS_COMPLETE",
-                               "LEDGER_CHAIN_IS_ACYCLIC")
+# DEFAULT pending owner confirmation (C6 parity 1): C6's never-waivable set
+# (C6 ebf4aaf INTEGRITY_PREDICATES), exactly. A waived_predicate naming any of
+# them is refused LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE.
+LEGACY_INTEGRITY_PREDICATES = frozenset({
+    "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY", "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+    "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC", "ORGANIZATION_LEDGER_HEAD_PRESENT",
+    "REPOSITORY_CHAIN_VERIFIES", "REPOSITORY_LEDGER_HEAD_PRESENT",
+    "RECEIPT_SELF_HASH", "CHAIN_LINKAGE", "SELF_HASH", "LINKAGE",
+})
 DECLARED_LEGACY_FAILURE_CODE = "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED"
 DECLARATION_NEXT = ("correct the committed legacy-segment declaration in org-contract.json "
                     "(source_receipt_retention.legacy_pre_retention_segment) and read back again; "
@@ -707,7 +720,7 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
 
     The organization head receipt's ``current_state`` is projected against the
     TT current-state basis. A location with no HEAD and no result to check is
-    an empty ledger, reported as such.
+    an empty ledger, refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 3).
 
     DEFAULT pending owner confirmation (C6 convergence c): a successful read is
     an observation with no top-level ``disposition``
@@ -732,11 +745,9 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     repo_required = list(contract.get("required_fields") or [])
     organization_store = ledger_store.open_store(ledger_store.parse_locator(location))
     repository_store = ledger_store.open_store(_repository_location(location, repository_namespace))
-    if (ingress_result is None and transition_result is None
-            and not isinstance(organization_store.get(ledger_store.HEAD_KEY), dict)):
-        return empty_ledger_report(location)
     org_head, org_chain = _verify_chain(
-        organization_store, "stegverse.organization-transition-receipt/v1", org_required)
+        organization_store, "stegverse.organization-transition-receipt/v1", org_required,
+        ORGANIZATION_CHAIN_PREDICATES, location)
     repo_head, repo_chain = _verify_chain(
         repository_store, "stegverse.repo-transition-receipt/v1", repo_required)
     repo_digests = {receipt["receipt_sha256"] for receipt in repo_chain}
