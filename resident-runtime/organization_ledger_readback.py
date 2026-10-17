@@ -409,6 +409,64 @@ def _verify_chain(store: Any, schema: str, required: list[str]) -> tuple[dict[st
     return head, chain
 
 
+SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
+
+
+def source_receipt_retention(store: Any, org_chain: list[dict[str, Any]],
+                             repo_chain: list[dict[str, Any]], org: Mapping[str, Any]) -> dict[str, Any]:
+    """Source-receipt retention per organization receipt (DEFAULT pending owner confirmation, H45).
+
+    A receipt after the declared legacy segment names its source in
+    ``source_transition_sha256`` and the ledger holds that source under
+    ``source-receipts/``, verifying against its body and equal to the
+    repository receipt it names; otherwise the readback is refused. A receipt in
+    the legacy segment predates retention: it is reported as legacy, verified
+    only through the repository chain, and never as source-retained.
+    """
+    rule = org.get("source_receipt_retention") or {}
+    segment = rule.get("legacy_pre_retention_segment") or {}
+    legacy_declared = set(segment.get("receipts") or [])
+    repo_by_digest = {receipt["receipt_sha256"]: receipt for receipt in repo_chain}
+    retained, legacy = [], []
+    for receipt in org_chain:
+        digest = receipt["receipt_sha256"]
+        source_digest = receipt.get("source_transition_sha256")
+        if source_digest is None and digest in legacy_declared:
+            legacy.append(digest)
+            continue
+        source = store.get(ledger_store.source_key(source_digest)) if isinstance(source_digest, str) else None
+        if (not isinstance(source, dict) or source_digest != receipt.get("repo_receipt_sha256")
+                or source.get("receipt_sha256") != source_digest or _body_sha(source) != source_digest
+                or source != repo_by_digest.get(source_digest)):
+            raise ReadbackRefused(SOURCE_RETENTION_PREDICATE, str(digest) + " source " + str(source_digest))
+        retained.append(digest)
+    report: dict[str, Any] = {
+        "rule_status": rule.get("status"),
+        "prefix": ledger_store.SOURCE_PREFIX,
+        "retained": retained,
+        "legacy_pre_retention": legacy,
+        "legacy_segment_ledger_tip_commit": segment.get("ledger_tip_commit"),
+        "legacy_receipts_re_minted": False,
+        "every_source_receipt_retained_and_verifies": not legacy,
+        "legacy_segment_finding": None,
+    }
+    if legacy:
+        report["legacy_segment_finding"] = non_allow.fields(
+            failure_code=SOURCE_RETENTION_PREDICATE,
+            failed_predicate="EVERY_ORGANIZATION_RECEIPT_RETAINS_AND_VERIFIES_ITS_SOURCE_RECEIPT",
+            required_evidence_or_repair=(
+                "the receipts in the declared legacy pre-retention segment (" + ", ".join(legacy)
+                + ") predate source-receipts/ and are never re-minted; a readback that requires retention "
+                  "for every receipt needs an explicit legacy-segment rule in the shared organization-ledger "
+                  "readback component (H28 C6) naming this segment, or reports this FAIL_CLOSED"),
+            retry_entrypoint="SV-011/.github resident-runtime/organization_ledger_readback.py::main; "
+                             "StegVerse-Labs/.github data/reusable-task-components/ (readback component)",
+            owning_existing_goal=non_allow.LEDGER_GOAL,
+            next_attempt="read back again once the component readback carries the legacy-segment rule; "
+                         "receipts appended from here on are retained and checked")
+    return report
+
+
 def _communication_id(receipt: Mapping[str, Any]) -> Any:
     evidence = receipt.get("evidence")
     if isinstance(evidence, dict):
@@ -504,6 +562,8 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
         "ledger_empty": False,
         "head_receipt_declares_current_state": "current_state" in org_chain[-1],
     }
+    result["source_receipt_retention"] = source_receipt_retention(
+        organization_store, org_chain, repo_chain, org)
     result.update(project_current_state(org_chain[-1]))
     if transition_result is not None:
         result.update(_transition_result_in_chains(transition_result, repo_chain, org_chain))

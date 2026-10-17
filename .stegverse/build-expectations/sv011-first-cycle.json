@@ -32,7 +32,12 @@
       "HEAD.json",
       "receipts/<new organization receipt sha256 hex>.json",
       "repository-ledger/SV-011/.github/HEAD.json",
-      "repository-ledger/SV-011/.github/receipts/<new repository receipt sha256 hex>.json"
+      "repository-ledger/SV-011/.github/receipts/<new repository receipt sha256 hex>.json",
+      "source-receipts/<new repository receipt sha256 hex>.json"
+    ],
+    "head_source_transition_sha256_equals_repo_receipt_sha256": true,
+    "source_receipt_retention_legacy_pre_retention": [
+      "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51"
     ]
   },
   "delta_definition": {

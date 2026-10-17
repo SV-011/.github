@@ -117,6 +117,17 @@
         ".stegverse/build-expectations/sv011-first-cycle.json"
       ],
       "revert": "delete the artifact"
+    },
+    {
+      "item": "H45",
+      "audit_item": "P1 N5 SOURCE_RECEIPT_RETAINED_AND_VERIFIES",
+      "change": "new organization receipts name source_transition_sha256 and retain the repository receipt under source-receipts/ (forward only); the receipt at tip 2cc58cec is declared the legacy pre-retention segment, reported as legacy with a six-field FAIL_CLOSED finding, never re-minted",
+      "surfaces": [
+        "resident-runtime/aggregate_repo_transition.py::append",
+        "resident-runtime/organization_ledger_readback.py::source_receipt_retention",
+        ".stegverse/transition-ledger/org-contract.json source_receipt_retention"
+      ],
+      "revert": "drop source_transition_sha256 and the retained document from append, and drop source_receipt_retention from the readback and the contract"
     }
   ],
   "defaults_status": "DEFAULT_PENDING_OWNER_CONFIRMATION"

@@ -46,6 +46,22 @@
   "optional_fields": [
     "current_state"
   ],
+  "source_receipt_retention": {
+    "status": "DEFAULT_PENDING_OWNER_CONFIRMATION_H45",
+    "source": "StegVerse-org/.github@10d14104 resident-runtime/aggregate_repo_transition.py (retained source receipt) and resident-runtime/organization_ledger_readback.py (SOURCE_RECEIPT_RETAINED_AND_VERIFIES)",
+    "prefix": "source-receipts/",
+    "receipt_field": "source_transition_sha256",
+    "applies_to": "every organization receipt appended after the legacy pre-retention segment",
+    "legacy_pre_retention_segment": {
+      "receipts": [
+        "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51"
+      ],
+      "ledger_tip_commit": "2cc58cec07117909750a760933641725b86a204b",
+      "verified_by": "repo_receipt_sha256 names a receipt on the repository-ledger/SV-011/.github chain that verifies against its body",
+      "re_minted": false,
+      "reported_as_source_retained": false
+    }
+  },
   "transition_request_intake": {
     "directory": ".stegverse/transition-requests/",
     "request_schema": "stegverse.organization-transition-request/v1",

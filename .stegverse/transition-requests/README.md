@@ -42,6 +42,8 @@ A refused request is `FAIL_CLOSED` with `failure_code: ORGANIZATION_TRANSITION_R
 - `verification`: whether the organization chain verifies, whether the repository chain verifies, and whether every organization receipt names a repository receipt that is present. A closure result handed to it must match the `evidence.disposition` already inside the receipts it names (`closure_result_matches_receipt_evidence`).
 - the current-state basis: `basis_established`, `current_state_reason`, and `current_state`. A basis that is not established also carries the six fields in `current_state_finding`; a refused readback carries them at the top level.
 
+`source_receipt_retention` reports, per organization receipt, whether its source receipt is retained under `source-receipts/` (DEFAULT pending owner confirmation, H45). The receipt at tip `2cc58cec` predates retention and is reported as legacy with the six fields; it is not rewritten.
+
 A disposition appears only inside the original receipts, as evidence that a transition occurred. It does not satisfy the authority constraint or the time constraint.
 
 The head receipt on the live ref (`2cc58cec`, organization receipt `sha256:3db9008d…`) carries no `current_state`, so the readback reports `BASIS_ABSENT` with `current_state` null. That code is never turned into a current state.

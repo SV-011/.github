@@ -138,6 +138,10 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "repository": C["repository"],
         "org_transition_class": org_transition_class,
         "repo_receipt_sha256": source_sha,
+        # DEFAULT pending owner confirmation (H45): the consumed source receipt
+        # is named and retained under source-receipts/, as on StegVerse-org's
+        # ledger. Receipts already on the ref are not rewritten.
+        "source_transition_sha256": source_sha,
         "predecessor_state_sha256": predecessor_state,
         "successor_state_sha256": successor_state,
         "evidence": dict(boundary_evidence),
@@ -157,8 +161,9 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "organization": C["organization"],
         "receipt_sha256": digest,
     }
+    retained = {ledger_store.source_key(source_sha): dict(source_receipt)}
     if target.append_transaction(
             ledger_store.receipt_key(digest), receipt,
-            head if isinstance(head, dict) else None, new_head):
+            head if isinstance(head, dict) else None, new_head, immutable=retained):
         return receipt
     raise RuntimeError("ledger_append_lost_comparison")

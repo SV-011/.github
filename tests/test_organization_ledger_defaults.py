@@ -163,6 +163,12 @@ class FirstCurrentStateB2(_EnvCase):
         repo_receipt = json.loads(ledger.show(
             NAMESPACE + "/receipts/" + result["repository_receipt_sha256"].split(":")[1] + ".json"))
         self.assertEqual(repo_receipt["evidence"]["constraint_set"]["node_standing"]["mode"], "ESTABLISH_GENESIS")
+        self.assertEqual(head["source_transition_sha256"], head["repo_receipt_sha256"])
+        retained = json.loads(ledger.show("source-receipts/" + result["repository_receipt_sha256"].split(":")[1] + ".json"))
+        self.assertEqual(retained, repo_receipt)
+        retention = report["source_receipt_retention"]
+        self.assertEqual(retention["retained"], [result["organization_receipt_sha256"]])
+        self.assertEqual(retention["legacy_pre_retention"], expected["source_receipt_retention_legacy_pre_retention"])
         # The published receipt is unchanged and still readable.
         self.assertEqual(ledger.show("receipts/" + LIVE_ORG_HEAD.split(":")[1] + ".json"),
                          (LIVE / ("receipts/" + LIVE_ORG_HEAD.split(":")[1] + ".json")).read_bytes())
@@ -187,7 +193,7 @@ class DefaultsAreListed(unittest.TestCase):
         register = json.loads(REGISTER.read_text(encoding="utf-8"))
         self.assertEqual(register["defaults_status"], "DEFAULT_PENDING_OWNER_CONFIRMATION")
         listed = {entry["item"]: entry for entry in register["defaults_pending_owner_confirmation"]}
-        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9"})
+        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9", "H45"})
         for entry in listed.values():
             self.assertTrue(entry["revert"])
             for surface in entry["surfaces"]:
@@ -202,6 +208,72 @@ class DefaultsAreListed(unittest.TestCase):
             text = path.read_text(encoding="utf-8").lower()
             for needle in needles:
                 self.assertNotIn(needle, text, path.name + ": " + needle.strip())
+
+
+class SourceReceiptRetentionH45(_EnvCase):
+    """H45 (P1 N5): forward retention under source-receipts/; the pre-retention segment is legacy."""
+
+    def test_live_ledger_reports_its_receipt_as_legacy_with_six_fields(self):
+        ledger = LedgerRepo(self.base, seed=LIVE)
+        code, report = self.readback_cli(ledger.org)
+        self.assertEqual(code, 0, report)
+        retention = report["source_receipt_retention"]
+        self.assertEqual(retention["legacy_pre_retention"], [LIVE_ORG_HEAD])
+        self.assertEqual(retention["retained"], [])
+        self.assertIs(retention["every_source_receipt_retained_and_verifies"], False)
+        self.assertIs(retention["legacy_receipts_re_minted"], False)
+        self.assertEqual(retention["legacy_segment_ledger_tip_commit"], "2cc58cec07117909750a760933641725b86a204b")
+        finding = retention["legacy_segment_finding"]
+        self.assertEqual(finding["failure_code"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        for name in SIX:
+            self.assertTrue(finding[name], name)
+        self.assertNotIn("disposition", report)
+
+    def test_a_ledger_from_genesis_retains_every_source_receipt(self):
+        ledger = LedgerRepo(self.base)
+        self.bind(ledger)
+        result = transition.apply_request(request())
+        code, report = self.readback_cli(ledger.org, transition_result=result)
+        self.assertEqual(code, 0, report)
+        retention = report["source_receipt_retention"]
+        self.assertIs(retention["every_source_receipt_retained_and_verifies"], True)
+        self.assertIsNone(retention["legacy_segment_finding"])
+        self.assertEqual(retention["retained"], [result["organization_receipt_sha256"]])
+
+    def _chain(self):
+        repo = {"schema": "stegverse.repo-transition-receipt/v1", "n": 1}
+        repo["receipt_sha256"] = readback._body_sha(repo)
+        org = {"repo_receipt_sha256": repo["receipt_sha256"], "source_transition_sha256": repo["receipt_sha256"]}
+        org["receipt_sha256"] = readback._body_sha(org)
+        return repo, org
+
+    def test_a_receipt_after_the_segment_without_its_source_is_refused(self):
+        rule = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+        repo, org = self._chain()
+        stores = {
+            "missing": {},
+            "different": {"source-receipts/" + repo["receipt_sha256"][7:] + ".json": dict(repo, n=2)},
+        }
+        for name, documents in stores.items():
+            with self.assertRaises(readback.ReadbackRefused, msg=name) as caught:
+                readback.source_receipt_retention(documents, [org], [repo], rule)
+            self.assertEqual(caught.exception.failed_predicate, "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        undeclared = {key: value for key, value in org.items() if key != "source_transition_sha256"}
+        with self.assertRaises(readback.ReadbackRefused):
+            readback.source_receipt_retention({}, [undeclared], [repo], rule)
+        held = {"source-receipts/" + repo["receipt_sha256"][7:] + ".json": repo}
+        self.assertEqual(readback.source_receipt_retention(held, [org], [repo], rule)["retained"],
+                         [org["receipt_sha256"]])
+
+    def test_contract_names_the_segment_and_the_canonical_layout(self):
+        org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+        rule = org["source_receipt_retention"]
+        self.assertEqual(rule["status"], "DEFAULT_PENDING_OWNER_CONFIRMATION_H45")
+        self.assertEqual(rule["prefix"], "source-receipts/")
+        self.assertEqual(rule["receipt_field"], "source_transition_sha256")
+        self.assertEqual(rule["legacy_pre_retention_segment"]["receipts"], [LIVE_ORG_HEAD])
+        self.assertIs(rule["legacy_pre_retention_segment"]["re_minted"], False)
+        self.assertNotIn("source_transition_sha256", org["required_fields"])
 
 
 if __name__ == "__main__":
