@@ -177,8 +177,12 @@ class TemporaryRefClosureTests(unittest.TestCase):
              "+" + self.ref + ":" + self.ref],
             check=False, capture_output=True, text=True)
         self.assertEqual(fetched.returncode, 0, fetched.stderr)
+        # A ledger from genesis holds no declared legacy receipt, so it is read
+        # with a contract that declares no segment (C6 convergence b, DEFAULT).
+        segmentless = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+        segmentless["source_receipt_retention"].pop("legacy_pre_retention_segment")
         verified = readback.readback(
-            "git+" + str(fresh.resolve()) + "#" + self.ref, cli, self.namespace)
+            "git+" + str(fresh.resolve()) + "#" + self.ref, cli, self.namespace, None, segmentless)
         self.assertNotIn("disposition", verified)
         self.assertEqual(verified["readback"], "OBSERVATION_ONLY")
         self.assertIs(verified["records_no_transition"], True)

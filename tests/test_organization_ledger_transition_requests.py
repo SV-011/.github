@@ -140,6 +140,27 @@ class LedgerRepo:
         return subprocess.check_output(["git", "-C", str(self.path), "show", REF + ":" + path])
 
 
+def segmentless_contract(base: Path) -> Path:
+    """This checkout's org-contract.json without a legacy segment, for ledgers read from genesis.
+
+    DEFAULT pending owner confirmation (C6 convergence b): a declared segment
+    applies to every ledger it is read against, so a ledger that does not hold
+    the declared receipts is read with a contract that declares none.
+    """
+    org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+    org["source_receipt_retention"].pop("legacy_pre_retention_segment")
+    path = base / "org-contract.segmentless.json"
+    path.write_text(json.dumps(org, indent=2), encoding="utf-8")
+    return path
+
+
+def live_ledger(base: Path) -> "LedgerRepo":
+    """A git clone of the published ref (from the 2cc58cec bundle), the only way a live copy is read."""
+    root = base / "live-bundle"
+    root.mkdir(exist_ok=True)
+    return LedgerRepo(root, LIVE)
+
+
 class _EnvCase(unittest.TestCase):
     def setUp(self):
         self._work = tempfile.TemporaryDirectory()
@@ -168,9 +189,12 @@ class _EnvCase(unittest.TestCase):
             env={**os.environ, "STEGVERSE_ORG_LEDGER_ROOT": ledger.org, "STEGVERSE_REPO_LEDGER_ROOT": ledger.repo})
         return completed.returncode, json.loads(completed.stdout)
 
-    def readback_cli(self, location: str, transition_result=None, ingress_result=None) -> tuple[int, dict]:
+    def readback_cli(self, location: str, transition_result=None, ingress_result=None,
+                     org_contract: Path | None = None) -> tuple[int, dict]:
         argv = [PYTHON, str(ROOT / "resident-runtime/organization_ledger_readback.py"),
                 "--location", location, "--repository-namespace", NAMESPACE]
+        if org_contract is not None:
+            argv += ["--org-contract", str(org_contract)]
         if transition_result is not None:
             path = self.base / "transition-result.json"
             path.write_text(json.dumps(transition_result), encoding="utf-8")
@@ -214,20 +238,31 @@ class LiveReceiptReadbackTests(_EnvCase):
         self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
         self.assertEqual(result["current_state_detail"], "HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE")
         self.assertEqual(sorted(result["current_state_fields"]), sorted(readback.BASIS_INPUT_FIELDS))
-        self.assertNotIn("failed_predicate", result)
+        # The declared legacy segment keeps the whole-ledger result FAIL_CLOSED (G4, C6 c).
+        self.assert_declared_legacy(result)
         self.assertIs(result["production_receipt_claimed"], False)
 
-    def test_directory_copy_of_the_live_ref_reads_back_with_basis_absent(self):
+    def assert_declared_legacy(self, result):
+        self.assertEqual(result["disposition"], "FAIL_CLOSED")
+        self.assertEqual(result["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+        self.assertEqual(result["failed_predicate"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        self.assertEqual(result["undeclared_failures"], [])
+        self.assertEqual(result["source_receipt_retention"]["legacy_pre_retention"], [LIVE_ORG_HEAD])
+
+    def test_a_directory_copy_of_the_live_ref_is_refused_and_the_bundle_reads_back(self):
         copy = self.base / "live"
         shutil.copytree(LIVE, copy)
-        self._assert_live_basis_absent(readback.readback(str(copy), None, NAMESPACE))
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.readback(str(copy), None, NAMESPACE)
+        self.assertEqual(caught.exception.failure_code, "LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE")
+        self._assert_live_basis_absent(readback.readback(live_ledger(self.base).org, None, NAMESPACE))
 
     def test_git_ref_with_the_live_tree_reads_back_and_the_closure_still_correlates(self):
         ledger = LedgerRepo(self.base, LIVE)
         closure = {"disposition": "ALLOW", "communication_id": LIVE_COMMUNICATION_ID,
                    "repository_receipt_sha256": LIVE_REPO_HEAD, "organization_receipt_sha256": LIVE_ORG_HEAD}
         code, result = self.readback_cli(ledger.org, ingress_result=closure)
-        self.assertEqual(code, 0, result)
+        self.assertEqual(code, 1, result)
         self._assert_live_basis_absent(result)
         self.assertIs(result["ingress_organization_receipt_in_chain"], True)
         self.assertIs(result["communication_id_on_repository_receipt"], True)
@@ -240,7 +275,9 @@ class LiveReceiptReadbackTests(_EnvCase):
         self.assertEqual(ledger.show("receipts/3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51.json"),
                          live_bytes)
         code, result = self.readback_cli(ledger.org, transition_result=applied)
-        self.assertEqual(code, 0, result)
+        self.assertEqual(code, 1, result)
+        self.assert_declared_legacy(result)
+        self.assertEqual(result["source_receipt_retention"]["retained"], [result["head_receipt_sha256"]])
         self.assertEqual(result["chain_length"], 2)
         self.assertEqual(result["genesis_receipt_sha256"], LIVE_ORG_HEAD)
         self.assertEqual(result["repository_ledger"]["chain_length"], 2)
@@ -275,8 +312,10 @@ class RequestIntakeTests(_EnvCase):
         subprocess.run(["git", "init", "--bare", "-q", str(fresh)], check=True)
         subprocess.run(["git", "--git-dir", str(fresh), "fetch", "-q", str(ledger.path), "+" + REF + ":" + REF],
                        check=True)
-        code, result = self.readback_cli("git+" + str(fresh.resolve()) + "#" + REF, transition_result=applied)
+        code, result = self.readback_cli("git+" + str(fresh.resolve()) + "#" + REF, transition_result=applied,
+                                         org_contract=segmentless_contract(self.base))
         self.assertEqual(code, 0, result)
+        self.assertNotIn("disposition", result)
         self.assertIs(result["basis_established"], True)
         self.assertEqual(result["current_state_reason"], "HEAD_RECEIPT_CURRENT_STATE")
         state = result["current_state"]
@@ -308,7 +347,8 @@ class RequestIntakeTests(_EnvCase):
         ledger = LedgerRepo(self.base)
         code, applied = self.apply_cli(ledger, request())
         self.assertEqual(code, 0, applied)
-        code, result = self.readback_cli(ledger.org, transition_result=applied)
+        code, result = self.readback_cli(ledger.org, transition_result=applied,
+                                         org_contract=segmentless_contract(self.base))
         self.assertEqual(code, 0, result)
         self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
         self.assertEqual(result["current_state_detail"], "HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE")
@@ -455,7 +495,13 @@ def _workflow_step_script(step_name: str) -> str:
 
 
 class ObservationOnlyReadbackTests(_EnvCase):
-    """#12 fix 1: a readback records no transition and carries no disposition."""
+    """#12 fix 1: a readback records no transition; a successful read carries no disposition.
+
+    DEFAULT pending owner confirmation (C6 convergence c): a refusal or a
+    non-ALLOW read carries a top-level FAIL_CLOSED with the six fields and
+    exits 1; a successful read stays disposition-free (B3). Open for Rigel:
+    #12 item 1 against C6 convergence.
+    """
 
     def _closure(self, disposition="ALLOW"):
         return {"disposition": disposition, "communication_id": LIVE_COMMUNICATION_ID,
@@ -469,11 +515,33 @@ class ObservationOnlyReadbackTests(_EnvCase):
         self.assertIs(result["records_no_transition"], True)
         self.assertIn("verification", result)
 
+    def assert_fail_closed(self, result):
+        self.assertEqual(result["disposition"], "FAIL_CLOSED")
+        for name in ("failure_code", "failed_predicate", "required_evidence_or_repair",
+                     "retry_entrypoint", "owning_existing_goal", "next_attempt"):
+            self.assertTrue(result[name], name)
+        self.assertNotIn("ingress_disposition", result)
+        self.assertNotIn("disposition_is_transition_evidence", result)
+        self.assertEqual(result["readback"], "OBSERVATION_ONLY")
+        self.assertIs(result["records_no_transition"], True)
+
+    def test_a_successful_read_from_genesis_carries_no_disposition(self):
+        ledger = LedgerRepo(self.base)
+        code, applied = self.apply_cli(ledger, request(state=current_state()))
+        self.assertEqual(code, 0, applied)
+        code, result = self.readback_cli(ledger.org, transition_result=applied,
+                                         org_contract=segmentless_contract(self.base))
+        self.assertEqual(code, 0, result)
+        self.assert_observation_only(result)
+        self.assertIs(result["source_receipt_retention"]["every_source_receipt_retained_and_verifies"], True)
+
     def test_verification_and_basis_are_reported_separately_for_the_live_head(self):
         ledger = LedgerRepo(self.base, LIVE)
         code, result = self.readback_cli(ledger.org, ingress_result=self._closure())
-        self.assertEqual(code, 0, result)
-        self.assert_observation_only(result)
+        self.assertEqual(code, 1, result)
+        self.assert_fail_closed(result)
+        self.assertEqual(result["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+        self.assertIs(result["ingress_receipt_in_fully_verified_suffix"], False)
         self.assertEqual(result["verification"], {
             "organization_chain_verifies": True,
             "repository_chain_verifies": True,
@@ -490,8 +558,8 @@ class ObservationOnlyReadbackTests(_EnvCase):
         receipt = json.loads((LIVE / "receipts" / (LIVE_ORG_HEAD[7:] + ".json")).read_text(encoding="utf-8"))
         self.assertEqual(receipt["evidence"]["disposition"], "ALLOW")
         self.assertIs(receipt["disposition_is_transition_evidence"], True)
-        result = readback.readback(str(LIVE), None, NAMESPACE)
-        self.assert_observation_only(result)
+        result = readback.readback(live_ledger(self.base).org, None, NAMESPACE)
+        self.assert_fail_closed(result)
         self.assertNotIn("ALLOW", json.dumps({k: v for k, v in result.items() if k != "location"}))
 
     def test_a_closure_result_is_not_required_to_hold_any_disposition_value(self):
@@ -499,7 +567,7 @@ class ObservationOnlyReadbackTests(_EnvCase):
         for disposition in ("DENY", "FAIL_CLOSED"):
             code, result = self.readback_cli(ledger.org, ingress_result=self._closure(disposition))
             self.assertEqual(code, 1, result)
-            self.assert_observation_only(result)
+            self.assert_fail_closed(result)
             self.assertIn(result["failed_predicate"], (
                 "CLOSURE_RESULT_MATCHES_REPOSITORY_RECEIPT_EVIDENCE",
                 "CLOSURE_RESULT_MATCHES_ORGANIZATION_RECEIPT_EVIDENCE"))
@@ -508,10 +576,10 @@ class ObservationOnlyReadbackTests(_EnvCase):
         self.assertNotIn("INGRESS_DISPOSITION_IS_ALLOW", source)
         self.assertNotIn('"ALLOW"', source)
 
-    def test_a_refused_readback_carries_no_disposition_and_no_basis(self):
+    def test_a_refused_readback_carries_fail_closed_and_no_basis(self):
         code, result = self.readback_cli(str(self.base / "absent"), ingress_result=self._closure())
         self.assertEqual(code, 1, result)
-        self.assert_observation_only(result)
+        self.assert_fail_closed(result)
         self.assertIs(result["basis_established"], False)
         self.assertIsNone(result["current_state"])
 
@@ -581,7 +649,8 @@ class PublicationAndIntakeVerificationTests(_EnvCase):
         self.assertEqual(code, 0, again)
         self.assertEqual(again["organization_receipt_sha256"], first["organization_receipt_sha256"])
         self.assertEqual(ledger.tip(), tip)
-        code, result = self.readback_cli(ledger.org, transition_result=again)
+        code, result = self.readback_cli(ledger.org, transition_result=again,
+                                         org_contract=segmentless_contract(self.base))
         self.assertEqual(code, 0, result)
         self.assertIs(result["request_receipt_is_head"], False)
         self.assertEqual(result["current_state"]["state_id"], "sv011.synthetic.state-2")

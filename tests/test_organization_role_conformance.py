@@ -28,6 +28,17 @@ SIX = ("failure_code", "failed_predicate", "required_evidence_or_repair",
 LEDGER_GOAL = "SV011-TT-CAPABILITY-MAP-OBSERVATION-001"
 BOUNDARY_GOAL = "ORG-FED-SV-011-001"
 LIVE = ROOT / "tests/fixtures/organization-ledger-2cc58cec"
+LIVE_BUNDLE = ROOT / "tests/fixtures/organization-ledger-2cc58cec.bundle"
+LEDGER_REF = "refs/stegverse/organization-ledger"
+
+
+def live_clone(base):
+    """A git clone of the published ref from the 2cc58cec bundle (C6 convergence a)."""
+    path = Path(base) / "live-clone.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(path)], check=True)
+    subprocess.run(["git", "--git-dir", str(path), "fetch", "-q", str(LIVE_BUNDLE),
+                    "+" + LEDGER_REF + ":" + LEDGER_REF], check=True)
+    return "git+" + str(path.resolve()) + "#" + LEDGER_REF
 NAMESPACE = "repository-ledger/SV-011/.github"
 WORKFLOW = ROOT / ".github/workflows/organization-ledger-transition.yml"
 REGISTER = ROOT / "data/organization-role-exemption-register.json"
@@ -203,15 +214,19 @@ class TransitionRequestNonAllow(Workspace):
 
 
 class ReadbackNonAllow(Workspace):
-    """N4/N5: refused readbacks and unestablished bases carry six fields, no disposition."""
+    """N4/N5: refused readbacks carry FAIL_CLOSED and six fields; unestablished bases carry six fields.
 
-    def test_a_refused_readback_carries_six_fields_and_no_disposition(self):
+    DEFAULT pending owner confirmation (C6 convergence c): a refusal carries a
+    top-level disposition FAIL_CLOSED; a successful read carries none.
+    """
+
+    def test_a_refused_readback_carries_fail_closed_and_six_fields(self):
         script = ROOT / "resident-runtime/organization_ledger_readback.py"
         for extra, goal in ((["--ingress-result", LIVE / "HEAD.json"], BOUNDARY_GOAL),):
             code, refused = self.run_cli(script, "--location", self.base / "absent",
                                          "--repository-namespace", NAMESPACE, *extra)
             self.assertEqual(code, 1, refused)
-            self.assertNotIn("disposition", refused)
+            self.assertEqual(refused["disposition"], "FAIL_CLOSED")
             self.assertEqual(refused["failure_code"], "ORGANIZATION_LEDGER_READBACK_FAILED")
             self.assert_six(refused, goal)
         code, refused = self.run_cli(script, "--location", self.base / "absent",
@@ -225,15 +240,16 @@ class ReadbackNonAllow(Workspace):
                                     "repository_receipt_sha256": "sha256:" + "2" * 64,
                                     "organization_receipt_sha256": "sha256:" + "3" * 64}), encoding="utf-8")
         code, refused = self.run_cli(ROOT / "resident-runtime/organization_ledger_readback.py",
-                                     "--location", str(LIVE), "--repository-namespace", NAMESPACE,
+                                     "--location", live_clone(self.base), "--repository-namespace", NAMESPACE,
                                      "--transition-result", path)
         self.assertEqual(code, 1, refused)
         self.assertEqual(refused["failed_predicate"], "REQUEST_REPOSITORY_RECEIPT_IS_IN_THE_REPOSITORY_LEDGER")
         self.assert_six(refused, "SYNTHETIC-TEST-GOAL")
 
     def test_the_live_head_basis_absent_carries_six_fields(self):
-        result = readback.readback(str(LIVE), None, NAMESPACE)
-        self.assertNotIn("disposition", result)
+        result = readback.readback(live_clone(self.base), None, NAMESPACE)
+        self.assertEqual(result["disposition"], "FAIL_CLOSED")
+        self.assertEqual(result["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
         self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
         finding = result["current_state_finding"]
         self.assertEqual(finding["failure_code"], "BASIS_ABSENT")

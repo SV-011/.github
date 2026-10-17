@@ -74,7 +74,7 @@
       },
       "declaration_sha256": "sha256:36c43b78e2c820d5448d7edb7f4bf7222d22faf9a91925ad18e3e50a54267375"
     },
-    "legacy_segment_rule": "shared readback component C6 legacy-segment rule (P1 Ecosystem AI lane, local commit 6d683cb8c21f0dad21ab2d63d3bedd889fa8eae1); DEFAULT pending owner confirmation",
+    "legacy_segment_rule": "shared readback component C6 legacy-segment rule (P1 Ecosystem AI lane, local commit 6d683cb8c21f0dad21ab2d63d3bedd889fa8eae1; converged with C6 at ebf4aaf: git-bound reads only, the segment always applies, exit 1 on any non-ALLOW); DEFAULT pending owner confirmation",
     "declaration_digest_rule": "sha256 over json.dumps(segment without declaration_sha256, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded UTF-8"
   },
   "transition_request_intake": {

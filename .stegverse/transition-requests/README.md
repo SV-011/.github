@@ -37,12 +37,12 @@ A refused request is `FAIL_CLOSED` with `failure_code: ORGANIZATION_TRANSITION_R
 
 ## Readback
 
-`resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. Its report has no top-level `disposition`. It reports two things separately:
+`resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. A successful read has no top-level `disposition` and exits 0. A refusal, or a read holding the declared legacy segment, carries a top-level `disposition: FAIL_CLOSED` with the six fields and exits 1. This is a DEFAULT pending owner confirmation (C6 convergence c; #12 item 1 is the open question for Rigel). A copy of the ledger is read through a `git+` locator (a clone, or `tests/fixtures/organization-ledger-2cc58cec.bundle`), not a directory copy. A ledger that does not hold the declared segment is read with `--org-contract` naming a contract that declares none. The report covers two things separately:
 
 - `verification`: whether the organization chain verifies, whether the repository chain verifies, and whether every organization receipt names a repository receipt that is present. A closure result handed to it must match the `evidence.disposition` already inside the receipts it names (`closure_result_matches_receipt_evidence`).
 - the current-state basis: `basis_established`, `current_state_reason`, and `current_state`. A basis that is not established also carries the six fields in `current_state_finding`; a refused readback carries them at the top level.
 
-`source_receipt_retention` reports, per organization receipt, whether its source receipt is retained under `source-receipts/` (DEFAULT pending owner confirmation, H45). The receipt at tip `2cc58cec` predates retention and is reported as legacy with the six fields; it is not rewritten.
+`source_receipt_retention` reports, per organization receipt, whether its source receipt is retained under `source-receipts/` (DEFAULT pending owner confirmation, H45). The receipt at tip `2cc58cec` predates retention and is the declared legacy segment, so a read of the live ref is `FAIL_CLOSED` `DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED` with the six fields (never ALLOW); it is not rewritten.
 
 A disposition appears only inside the original receipts, as evidence that a transition occurred. It does not satisfy the authority constraint or the time constraint.
 

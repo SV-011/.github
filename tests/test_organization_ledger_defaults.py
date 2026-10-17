@@ -9,7 +9,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -23,6 +25,7 @@ _spec.loader.exec_module(_cases)
 LIVE, LIVE_ORG_HEAD, NAMESPACE = _cases.LIVE, _cases.LIVE_ORG_HEAD, _cases.NAMESPACE
 LedgerRepo, _EnvCase, _module = _cases.LedgerRepo, _cases._EnvCase, _cases._module
 request, tt_basis_digest = _cases.request, _cases.tt_basis_digest
+segmentless_contract, live_ledger = _cases.segmentless_contract, _cases.live_ledger
 transition = _module("organization_ledger_transition_defaults", "resident-runtime/organization_ledger_transition.py")
 readback = _module("organization_ledger_readback_defaults", "resident-runtime/organization_ledger_readback.py")
 DECLARATION = ROOT / ".stegverse/declarations/SV011-ORG-STATE-0001.request.json"
@@ -148,7 +151,10 @@ class FirstCurrentStateB2(_EnvCase):
         result = transition.apply_request(self.declaration())
         self.assertEqual(result["disposition"], "ALLOW")
         code, report = self.readback_cli(ledger.org, transition_result=result)
-        self.assertEqual(code, 0, report)
+        # The declared legacy segment keeps the whole-ledger read FAIL_CLOSED (G4, C6 c).
+        self.assertEqual(code, 1, report)
+        self.assertEqual(report["disposition"], "FAIL_CLOSED")
+        self.assertEqual(report["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
         self.assertEqual(report["schema"], "stegverse.organization-ledger-observation/v1")
         expected = json.loads(EXPECTATION.read_text(encoding="utf-8"))["expected"]
         self.assertEqual(report["chain_length"], 1 + expected["organization_receipts_added"])
@@ -218,31 +224,32 @@ class SourceReceiptRetentionH45(_EnvCase):
     def test_live_ledger_reports_its_receipt_as_legacy_with_six_fields(self):
         ledger = LedgerRepo(self.base, seed=LIVE)
         code, report = self.readback_cli(ledger.org)
-        self.assertEqual(code, 0, report)
+        self.assertEqual(code, 1, report)
         retention = report["source_receipt_retention"]
         self.assertEqual(retention["legacy_pre_retention"], [LIVE_ORG_HEAD])
         self.assertEqual(retention["retained"], [])
         self.assertIs(retention["every_source_receipt_retained_and_verifies"], False)
         self.assertIs(retention["legacy_receipts_re_minted"], False)
-        self.assertEqual(retention["legacy_segment_ledger_tip_commit"], "2cc58cec07117909750a760933641725b86a204b")
-        finding = retention["legacy_segment_finding"]
-        self.assertEqual(finding["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
-        self.assertEqual(finding["failed_predicate"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
-        self.assertEqual(finding["disposition"], "FAIL_CLOSED")
-        self.assertIs(retention["legacy_segment"]["ledger_tip_commit_verified"], True)
+        self.assertEqual(retention["legacy_segment"]["ledger_tip_commit"], "2cc58cec07117909750a760933641725b86a204b")
+        self.assertIs(retention["legacy_segment"]["ledger_tip_commit_on_ref"], True)
+        self.assertNotIn("legacy_segment_finding", retention)
+        self.assertEqual(report["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+        self.assertEqual(report["failed_predicate"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        self.assertEqual(report["disposition"], "FAIL_CLOSED")
         for name in SIX:
-            self.assertTrue(finding[name], name)
-        self.assertNotIn("disposition", report)
+            self.assertTrue(report[name], name)
 
     def test_a_ledger_from_genesis_retains_every_source_receipt(self):
         ledger = LedgerRepo(self.base)
         self.bind(ledger)
         result = transition.apply_request(request())
-        code, report = self.readback_cli(ledger.org, transition_result=result)
+        code, report = self.readback_cli(ledger.org, transition_result=result,
+                                         org_contract=segmentless_contract(self.base))
         self.assertEqual(code, 0, report)
+        self.assertNotIn("disposition", report)
         retention = report["source_receipt_retention"]
         self.assertIs(retention["every_source_receipt_retained_and_verifies"], True)
-        self.assertIsNone(retention["legacy_segment_finding"])
+        self.assertIsNone(retention["legacy_segment"])
         self.assertEqual(retention["retained"], [result["organization_receipt_sha256"]])
 
     def _chain(self):
@@ -252,8 +259,8 @@ class SourceReceiptRetentionH45(_EnvCase):
         org["receipt_sha256"] = readback._body_sha(org)
         return repo, org
 
-    def test_a_receipt_after_the_segment_without_its_source_is_refused(self):
-        rule = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+    def test_a_receipt_without_its_source_is_refused_when_no_segment_is_declared(self):
+        rule = json.loads(segmentless_contract(self.base).read_text(encoding="utf-8"))
         repo, org = self._chain()
         stores = {
             "missing": {},
@@ -361,9 +368,11 @@ class LegacySegmentDeclarationG4(_EnvCase):
     def test_the_tip_commit_is_bound_to_the_published_ref(self):
         ledger = LedgerRepo(self.base, seed=LIVE)
         code, report = self.readback_cli(ledger.org)
-        self.assertEqual(code, 0, report)
+        self.assertEqual(code, 1, report)
+        self.assertEqual(report["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
         segment = report["source_receipt_retention"]["legacy_segment"]
-        self.assertIs(segment["ledger_tip_commit_verified"], True)
+        self.assertIs(segment["ledger_tip_commit_on_ref"], True)
+        self.assertEqual(segment["declaration_digest_canonicalization"], readback.CANONICAL_JSON)
         self.assertEqual(segment["ledger_tip_commit"], _cases.LIVE_TIP_COMMIT)
         self.assertEqual([finding["receipt_sha256"] for finding in segment["findings"]], [LIVE_ORG_HEAD])
         for finding in segment["findings"]:
@@ -380,13 +389,34 @@ class LegacySegmentDeclarationG4(_EnvCase):
         for name in SIX:
             self.assertTrue(refused[name], name)
 
-    def test_a_directory_copy_stays_readable_and_fail_closed(self):
-        report = readback.readback(str(LIVE), None, NAMESPACE)
-        retention = report["source_receipt_retention"]
-        self.assertIs(retention["legacy_segment"]["ledger_tip_commit_verified"], False)
-        self.assertEqual(retention["legacy_segment_finding"]["disposition"], "FAIL_CLOSED")
-        self.assertEqual(retention["legacy_segment_finding"]["failure_code"],
+    def test_a_directory_copy_is_refused_as_unverifiable(self):
+        """C6 convergence (a), DEFAULT: a live copy is read only through git (a clone or the bundle)."""
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.readback(str(LIVE), None, NAMESPACE)
+        self.assertEqual(caught.exception.failure_code, "LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE")
+        code, refused = self.readback_cli(str(LIVE))
+        self.assertEqual(code, 1)
+        self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+        self.assertEqual(refused["failure_code"], "LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE")
+        for name in SIX:
+            self.assertTrue(refused[name], name)
+        self.assertEqual(readback.readback(live_ledger(self.base).org, None, NAMESPACE)["failure_code"],
                          "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+
+    def test_a_ledger_without_the_declared_receipts_is_refused(self):
+        """C6 convergence (b), DEFAULT: a declared segment always applies; none of it in the chain refuses."""
+        ledger = LedgerRepo(self.base)
+        self.bind(ledger)
+        result = transition.apply_request(request())
+        code, refused = self.readback_cli(ledger.org, transition_result=result)
+        self.assertEqual(code, 1, refused)
+        self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+        self.assertEqual(refused["failure_code"], "LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN")
+        self.assertIn(LIVE_ORG_HEAD, refused["required_evidence_or_repair"])
+        code, report = self.readback_cli(ledger.org, transition_result=result,
+                                         org_contract=segmentless_contract(self.base))
+        self.assertEqual(code, 0, report)
+        self.assertNotIn("disposition", report)
 
     def synthetic(self):
         repo = {"schema": "stegverse.repo-transition-receipt/v1", "n": 1}
@@ -398,32 +428,47 @@ class LegacySegmentDeclarationG4(_EnvCase):
         second["receipt_sha256"] = readback._body_sha(second)
         return repo, first, second
 
-    def rule_for(self, receipts):
+    def rule_for(self, receipts, tip=None):
         segment = self.segment()
         segment["receipts"] = receipts
+        if tip is not None:
+            segment["ledger_tip_commit"] = tip
         return {"source_receipt_retention": {"legacy_pre_retention_segment": self.rebind(segment)}}
+
+    def synthetic_ledger(self, head):
+        """A git ledger whose only commit has HEAD.json naming ``head``: a segment can end there."""
+        tree = self.base / "synthetic-tree"
+        tree.mkdir()
+        (tree / "HEAD.json").write_text(json.dumps({"receipt_sha256": head}), encoding="utf-8")
+        root = self.base / "synthetic"
+        root.mkdir()
+        return LedgerRepo(root, seed=tree)
 
     def test_prefix_and_overlap_follow_c6(self):
         repo, first, second = self.synthetic()
         held = {"source-receipts/" + repo["receipt_sha256"][7:] + ".json": repo}
+        live = live_ledger(self.base).org
         cases = {
             "LEGACY_SEGMENT_NOT_A_CONTIGUOUS_PREFIX": [second["receipt_sha256"]],
             "LEGACY_SEGMENT_OVERLAPS_RETENTION": [first["receipt_sha256"], second["receipt_sha256"]],
+            "LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN": [first["receipt_sha256"], "sha256:" + "9" * 64],
         }
         for code, receipts in cases.items():
             with self.assertRaises(readback.ReadbackRefused, msg=code) as caught:
-                readback.source_receipt_retention(held, [first, second], [repo], self.rule_for(receipts),
-                                                  str(self.base))
+                readback.source_receipt_retention(held, [first, second], [repo], self.rule_for(receipts), live)
             self.assertEqual(caught.exception.failure_code, code)
-        report = readback.source_receipt_retention(held, [first, second], [repo],
-                                                   self.rule_for([first["receipt_sha256"]]), str(self.base))
+        ledger = self.synthetic_ledger(first["receipt_sha256"])
+        rule = self.rule_for([first["receipt_sha256"]], tip=ledger.tip())
+        report = readback.source_receipt_retention(held, [first, second], [repo], rule, ledger.org)
         self.assertEqual(report["legacy_pre_retention"], [first["receipt_sha256"]])
         self.assertEqual(report["legacy_segment"]["fully_verified_receipts"], [second["receipt_sha256"]])
         self.assertEqual(report["legacy_segment_finding"]["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
         with self.assertRaises(readback.ReadbackRefused) as caught:
-            readback.source_receipt_retention({}, [first, second], [repo],
-                                              self.rule_for([first["receipt_sha256"]]), str(self.base))
+            readback.source_receipt_retention({}, [first, second], [repo], rule, ledger.org)
         self.assertEqual(caught.exception.failure_code, "UNDECLARED_SOURCE_RECEIPT_RETENTION_FAILURE")
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.source_receipt_retention(held, [first, second], [repo], rule, str(self.base))
+        self.assertEqual(caught.exception.failure_code, "LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE")
 
     def test_the_legacy_segment_is_never_allow(self):
         source = (ROOT / "resident-runtime/organization_ledger_readback.py").read_text(encoding="utf-8")
@@ -433,9 +478,42 @@ class LegacySegmentDeclarationG4(_EnvCase):
     def test_the_workflow_holds_the_readback_fail_closed(self):
         workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
         self.assertEqual(workflow.count("- name: Hold the readback FAIL_CLOSED on a declared legacy segment"), 2)
+        self.assertEqual(workflow.count("--out \"$RUNNER_TEMP/results/readback.json\" || status=1"), 1)
+        self.assertEqual(workflow.count("--out \"$RUNNER_TEMP/results/$name.readback.json\" || status=1"), 1)
+        self.assertEqual(workflow.count('if "disposition" in report:'), 2)
         self.assertEqual(workflow.count('"readback_step_passes_on_a_declared_legacy_segment": False'), 2)
         self.assertEqual(workflow.count("sys.exit(1 if held else 0)"), 2)
         self.assertNotIn("ingress_receipt_in_fully_verified_suffix", workflow)
+
+    def test_the_hold_step_reads_the_disposition_and_the_status(self):
+        script = _cases._workflow_step_script("Hold the readback FAIL_CLOSED on a declared legacy segment")
+        results = self.base / "results"
+        results.mkdir()
+
+        def hold(report, status):
+            path = results / "readback.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            status_path = results / "readback.status"
+            if status is None:
+                status_path.unlink(missing_ok=True)
+            else:
+                status_path.write_text(status + "\n", encoding="utf-8")
+            completed = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                       env={**os.environ, "RUNNER_TEMP": str(self.base)})
+            return completed.returncode, completed.stdout
+
+        observation = {"schema": readback.OBSERVATION_SCHEMA, "readback": "OBSERVATION_ONLY"}
+        self.assertEqual(hold(observation, "0")[0], 0)
+        self.assertEqual(hold(observation, "1")[0], 1)
+        self.assertEqual(hold(observation, None)[0], 1)
+        fail_closed = dict(observation, disposition="FAIL_CLOSED",
+                           **{name: name.upper() for name in SIX})
+        code, printed = hold(fail_closed, "1")
+        self.assertEqual(code, 1)
+        printed = json.loads(printed)
+        self.assertEqual(printed["disposition"], "FAIL_CLOSED")
+        for name in SIX:
+            self.assertEqual(printed[name], name.upper())
 
 
 if __name__ == "__main__":
