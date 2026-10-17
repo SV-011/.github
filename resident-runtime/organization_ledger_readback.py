@@ -97,6 +97,15 @@ BASIS_INPUT_FIELDS = (
 )
 MANIFEST_SCOPE_IDS = ("transition_element", "role_escalation")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# DEFAULT pending owner confirmation (B3, audit item N7). This readback is
+# observation only and carries no disposition, so it does not use
+# stegverse.organization-ledger-readback/v1: that id names StegVerse-org's
+# canonical readback (top-level disposition ALLOW), which the SDK reader
+# stegverse/organization_ledger_evidence.py consumes. A separate id keeps one id
+# from naming two shapes; the SDK reader refuses this document on its schema
+# rather than on a missing disposition. Revert by restoring the old id here.
+OBSERVATION_SCHEMA = "stegverse.organization-ledger-observation/v1"
+SUPERSEDED_SCHEMA = "stegverse.organization-ledger-readback/v1"
 TRANSITION_ID = re.compile(r"^T-[0-9]{3}$")
 FIXTURE_REF = re.compile(r"^fixtures/transition-elements/[a-z0-9.-]+\.json$")
 UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -280,7 +289,7 @@ def project_current_state(head_receipt: Any) -> dict[str, Any]:
 def empty_ledger_report(location: str) -> dict[str, Any]:
     """No HEAD at the location: no state id, no times, no scopes, no digest."""
     return {
-        "schema": "stegverse.organization-ledger-readback/v1",
+        "schema": OBSERVATION_SCHEMA,
         "location": location,
         "ledger_empty": True,
         "readback": "OBSERVATION_ONLY",
@@ -468,7 +477,7 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
             raise ReadbackRefused("ORGANIZATION_RECEIPT_PRESERVES_REPOSITORY_RECEIPT",
                                   str(receipt.get("receipt_sha256")))
     result: dict[str, Any] = {
-        "schema": "stegverse.organization-ledger-readback/v1",
+        "schema": OBSERVATION_SCHEMA,
         "location": location,
         "readback": "OBSERVATION_ONLY",
         "records_no_transition": True,
@@ -545,7 +554,7 @@ def _refusal(location: str, exc: BaseException,
     predicate = getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK")
     detail = getattr(exc, "detail", str(exc))
     return {
-        "schema": "stegverse.organization-ledger-readback/v1",
+        "schema": OBSERVATION_SCHEMA,
         "location": location,
         "readback": "OBSERVATION_ONLY",
         "records_no_transition": True,

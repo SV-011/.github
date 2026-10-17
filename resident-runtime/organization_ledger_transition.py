@@ -21,6 +21,13 @@ Existing receipts are not rewritten.
 Authority and time stay constraint variables. A disposition on the resulting
 receipt is evidence that the append happened.
 
+Constraint set and route (DEFAULT pending owner confirmation)
+--------------------------------------------------------------
+``constraint_set.node_standing`` replaces the top-level ``standing`` (B1,
+option B); ``manifested_route`` names the route bound in
+``.stegverse/transition-ledger/org-contract.json`` (B5). Both are recorded on
+the repository receipt; the route is also recorded on the organization receipt.
+
 Dispositions
 ------------
 An applied request records ``disposition: ALLOW`` in the evidence of both
@@ -85,6 +92,84 @@ def _digest(value: Any, name: str) -> str:
     return value
 
 
+# DEFAULT pending owner confirmation (B1, constraint_set Option B; see
+# docs/ORGANIZATION_ROLE_CONFORMANCE.md "Defaults pending owner confirmation").
+# The node standing vocabulary follows StegVerse-org/.github@c483d441
+# docs/CANONICAL_NODE_INGRESS_CONTRACT_001.json standing_modes: the predecessor
+# key is required, null only with ESTABLISH_GENESIS. VERIFY_EXISTING needs the
+# SDK successor_predecessor_binding, which is not in this repository, so it is
+# refused rather than checked.
+REQUEST_FIELDS = (
+    "schema", "request_id", "owning_existing_goal", "purpose", "constraint_set", "manifested_route",
+    "transition_id", "transition_class", "org_transition_class", "predecessor_state_sha256",
+    "successor_state_sha256", "authority_constraint", "evidence", "current_state", "hb_epoch",
+)
+NODE_STANDING_MODES = ("ESTABLISH_GENESIS", "VERIFY_EXISTING")
+DECLARED_VALUES = ("satisfies", "does_not_satisfy")
+DECLARED_KEYS = ("authority", "time")
+ROUTE_FIELDS = ("capability_profile_id", "route_id", "destination_repository",
+                "destination_operation", "destination_ref")
+CONTRACT = ROOT / ".stegverse/transition-ledger/org-contract.json"
+
+
+def validate_constraint_set(value: Any) -> dict[str, Any]:
+    """constraint_set.node_standing plus an optional declared block, or a refusal."""
+    if not isinstance(value, dict):
+        raise TransitionRequestRefused("TRANSITION_REQUEST_CONSTRAINT_SET_PRESENT", "constraint_set")
+    outside = sorted(name for name in value if name not in ("node_standing", "declared"))
+    if outside:
+        raise TransitionRequestRefused("TRANSITION_REQUEST_FIELD_OUTSIDE_THE_CONTRACT",
+                                       ",".join("constraint_set." + name for name in outside))
+    standing = value.get("node_standing")
+    if not isinstance(standing, dict):
+        raise TransitionRequestRefused("TRANSITION_REQUEST_CONSTRAINT_SET_PRESENT", "constraint_set.node_standing")
+    outside = sorted(name for name in standing if name not in ("mode", "node_ref", "predecessor"))
+    if outside:
+        raise TransitionRequestRefused("TRANSITION_REQUEST_FIELD_OUTSIDE_THE_CONTRACT",
+                                       ",".join("constraint_set.node_standing." + name for name in outside))
+    mode = standing.get("mode")
+    if mode not in NODE_STANDING_MODES:
+        raise TransitionRequestRefused("NODE_STANDING_MODE_IS_DECLARED", "constraint_set.node_standing.mode")
+    _text(standing.get("node_ref"), "constraint_set.node_standing.node_ref")
+    if "predecessor" not in standing:
+        raise TransitionRequestRefused("NODE_STANDING_PREDECESSOR_KEY_PRESENT",
+                                       "constraint_set.node_standing.predecessor")
+    if mode == "VERIFY_EXISTING":
+        raise TransitionRequestRefused(
+            "PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT",
+            "VERIFY_EXISTING needs the SDK successor_predecessor_binding, which this repository does not hold")
+    if standing["predecessor"] is not None:
+        raise TransitionRequestRefused("NODE_STANDING_GENESIS_PREDECESSOR_IS_NULL",
+                                       "constraint_set.node_standing.predecessor")
+    result = {"node_standing": {"mode": mode, "node_ref": standing["node_ref"], "predecessor": None}}
+    if "declared" in value:
+        declared = value["declared"]
+        if not isinstance(declared, dict) or any(
+                name not in DECLARED_KEYS or declared[name] not in DECLARED_VALUES for name in declared):
+            raise TransitionRequestRefused("CONSTRAINT_SET_DECLARED_VALUES", "constraint_set.declared")
+        # Stored as declared input only; nothing here verifies it.
+        result["declared"] = dict(declared)
+    return result
+
+
+def bound_route() -> dict[str, Any]:
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    return dict(contract["transition_request_intake"]["manifested_route_binding"])
+
+
+def validate_manifested_route(value: Any) -> dict[str, Any]:
+    """DEFAULT pending owner confirmation (B5): the request names the bound route."""
+    if not isinstance(value, dict):
+        raise TransitionRequestRefused("REQUEST_NAMES_A_MANIFESTED_CAPABILITY_AND_ROUTE", "manifested_route")
+    route = {name: _text(value.get(name), "manifested_route." + name) for name in ROUTE_FIELDS}
+    if sorted(value) != sorted(ROUTE_FIELDS):
+        raise TransitionRequestRefused("TRANSITION_REQUEST_FIELD_OUTSIDE_THE_CONTRACT", "manifested_route")
+    binding = {name: bound_route().get(name) for name in ROUTE_FIELDS}
+    if route != binding:
+        raise TransitionRequestRefused("ROUTE_NOT_BOUND_IN_THIS_ORGANIZATION", json.dumps(route, sort_keys=True))
+    return route
+
+
 def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
     """Return the request this repository can append, or refuse it.
 
@@ -98,11 +183,15 @@ def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
             "this repository appends the committed transition fields; it does not build or admit an SDK manifest")
     if document.get("schema") != REQUEST_SCHEMA:
         raise TransitionRequestRefused("TRANSITION_REQUEST_SCHEMA", str(document.get("schema")))
-    standing = document.get("standing")
-    if not isinstance(standing, dict) or not standing:
-        raise TransitionRequestRefused("TRANSITION_REQUEST_STANDING_PRESENT", "standing")
-    _text(standing.get("mode"), "standing.mode")
-    _text(standing.get("node_ref"), "standing.node_ref")
+    if "standing" in document:
+        raise TransitionRequestRefused(
+            "TRANSITION_REQUEST_STANDING_REPLACED_BY_CONSTRAINT_SET",
+            "top-level standing moved to constraint_set.node_standing (DEFAULT pending owner confirmation, B1)")
+    outside = sorted(name for name in document if name not in REQUEST_FIELDS)
+    if outside:
+        raise TransitionRequestRefused("TRANSITION_REQUEST_FIELD_OUTSIDE_THE_CONTRACT", ",".join(outside))
+    constraint_set = validate_constraint_set(document.get("constraint_set"))
+    route = validate_manifested_route(document.get("manifested_route"))
     evidence = document.get("evidence", {})
     if not isinstance(evidence, dict):
         raise TransitionRequestRefused("TRANSITION_REQUEST_EVIDENCE_IS_AN_OBJECT", "evidence")
@@ -123,7 +212,8 @@ def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
         "schema": REQUEST_SCHEMA,
         "request_id": _text(document.get("request_id"), "request_id"),
         "owning_existing_goal": _text(document.get("owning_existing_goal"), "owning_existing_goal"),
-        "standing": standing,
+        "constraint_set": constraint_set,
+        "manifested_route": route,
         "transition_id": _text(document.get("transition_id"), "transition_id"),
         "transition_class": _text(document.get("transition_class"), "transition_class"),
         "org_transition_class": _text(document.get("org_transition_class"), "org_transition_class"),
@@ -162,7 +252,8 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
     evidence = dict(request["evidence"])
     evidence["request_id"] = request["request_id"]
     evidence["owning_existing_goal"] = request["owning_existing_goal"]
-    evidence["standing"] = request["standing"]
+    evidence["constraint_set"] = request["constraint_set"]
+    evidence["manifested_route"] = request["manifested_route"]
     evidence["disposition"] = APPLIED
     if request["current_state"] is not None:
         evidence["current_state"] = request["current_state"]
@@ -177,6 +268,7 @@ def apply_request(document: Mapping[str, Any]) -> dict[str, Any]:
         {"request_id": request["request_id"],
          "owning_existing_goal": request["owning_existing_goal"],
          "transition_id": request["transition_id"],
+         "manifested_route": request["manifested_route"],
          "disposition": APPLIED},
         request["authority_constraint"],
         hb_epoch=repository_receipt["hb_reference"]["epoch"],

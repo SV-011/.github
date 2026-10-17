@@ -43,6 +43,9 @@ on:
       - 'data/organization-role-exemption-register.json'
       - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
       - 'tests/test_organization_role_conformance.py'
+      - 'tests/test_organization_ledger_defaults.py'
+      - '.stegverse/declarations/**'
+      - '.stegverse/build-expectations/**'
   push:
     branches: [main]
     paths:
@@ -64,6 +67,9 @@ on:
       - 'data/organization-role-exemption-register.json'
       - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
       - 'tests/test_organization_role_conformance.py'
+      - 'tests/test_organization_ledger_defaults.py'
+      - '.stegverse/declarations/**'
+      - '.stegverse/build-expectations/**'
   workflow_dispatch:
     inputs:
       communication_id:
@@ -100,7 +106,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate ledger contracts, self-closure, request intake, readback, and six-field conformance on a redirected root
-        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_organization_ledger_transition_requests tests.test_intr_destination_capability tests.test_organization_role_conformance -v
+        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_organization_ledger_transition_requests tests.test_intr_destination_capability tests.test_organization_role_conformance tests.test_organization_ledger_defaults -v
 
       - name: Validate every committed transition request before any append
         run: python3 resident-runtime/organization_ledger_transition.py --validate-tree .stegverse/transition-requests

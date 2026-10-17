@@ -53,7 +53,17 @@
     "workflow": ".github/workflows/organization-ledger-transition.yml",
     "workflow_job": "request-transition",
     "applies": "resident-runtime/organization_ledger_transition.py",
-    "sdk_manifest": "REFUSED_SDK_MANIFEST_BUILDER_NOT_PRESENT"
+    "sdk_manifest": "REFUSED_SDK_MANIFEST_BUILDER_NOT_PRESENT",
+    "constraint_set": "constraint_set.node_standing {mode ESTABLISH_GENESIS|VERIFY_EXISTING, node_ref, predecessor} plus optional constraint_set.declared {authority, time: satisfies|does_not_satisfy}; VERIFY_EXISTING refused PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT",
+    "constraint_set_status": "DEFAULT_PENDING_OWNER_CONFIRMATION_B1",
+    "manifested_route_binding": {
+      "capability_profile_id": "organization-ledger-transition-request",
+      "route_id": "stegverse.route.sv011.organization-ledger-request.v1",
+      "destination_repository": "SV-011/.github",
+      "destination_operation": "resident-runtime/organization_ledger_transition.py::apply_request",
+      "destination_ref": "refs/stegverse/organization-ledger"
+    },
+    "manifested_route_binding_status": "DEFAULT_PENDING_OWNER_CONFIRMATION_B5"
   },
   "current_state_basis": {
     "source_repository": "Admissible-Existence/TT",

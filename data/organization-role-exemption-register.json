@@ -50,7 +50,8 @@
       "expires_or_review_on": "2026-11-17",
       "registered_on": "2026-10-17",
       "audit_item": "N1",
-      "authority_effect": "NONE_REGISTER_ONLY"
+      "authority_effect": "NONE_REGISTER_ONLY",
+      "default_review": "B8 default (.stegverse/self-closure-requests/) not applied: the dispatch inputs are the InTr hop lane's chaining surface (StegVerse-Labs/.github#2897, INDEX H30 dispatch held, H35), so replacing them here changes another lane's surface; see docs/ORGANIZATION_ROLE_CONFORMANCE.md B8"
     },
     {
       "surface": "SV-011/.github:.github/workflows/organization-ledger-transition.yml ledger fetch and push (workflow GITHUB_TOKEN via the checkout transport header, contents: write)",
@@ -66,22 +67,57 @@
       "registered_on": "2026-10-17",
       "audit_item": "N8",
       "authority_effect": "NONE_REGISTER_ONLY"
-    },
-    {
-      "surface": "SV-011/.github:resident-runtime/organization_ledger_transition.py::validate_request (stegverse.organization-transition-request/v1)",
-      "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
-      "disposition": "FAIL_CLOSED",
-      "failure_code": "ORGANIZATION_ROLE_CONFORMANCE_NOT_DECLARED",
-      "failed_predicate": "REQUEST_NAMES_A_MANIFESTED_CAPABILITY_AND_ROUTE",
-      "why_manifest_bound_state_transition_is_not_yet_possible": "Standard item 1 requires a manifested capability and route. The request carries transition_class and org_transition_class, which are classes, not a capability and route, and no source defines the route field's name or vocabulary for this intake.",
-      "required_evidence_or_repair": "An owner decision on the route field (proposed: a required manifested_route object with capability_profile_id, route_id, destination_repository and destination_operation, checked against this organization's declared bindings); then require it in validate_request and record it on both receipts.",
-      "retry_entrypoint": "SV-011/.github:resident-runtime/organization_ledger_transition.py::validate_request",
-      "next_attempt": "repair once the route field is decided, and remove this exemption in the same change",
-      "expires_or_review_on": "2026-11-17",
-      "registered_on": "2026-10-17",
-      "audit_item": "N11",
-      "authority_effect": "NONE_REGISTER_ONLY"
     }
   ],
-  "authority_effect": "NONE_REGISTER_ONLY"
+  "authority_effect": "NONE_REGISTER_ONLY",
+  "defaults_pending_owner_confirmation": [
+    {
+      "item": "B1",
+      "audit_item": "#12 item 2",
+      "change": "top-level standing replaced by constraint_set.node_standing {mode, node_ref, predecessor} plus optional constraint_set.declared {authority, time}; VERIFY_EXISTING refused PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT",
+      "surfaces": [
+        "resident-runtime/organization_ledger_transition.py::validate_constraint_set",
+        ".stegverse/transition-ledger/org-contract.json transition_request_intake.constraint_set"
+      ],
+      "revert": "restore the standing check in validate_request and the standing key in evidence; drop validate_constraint_set"
+    },
+    {
+      "item": "B2",
+      "audit_item": "first current_state",
+      "change": "first current_state declared as a request held outside the intake (T-181 fallback; TT has no t-011)",
+      "surfaces": [
+        ".stegverse/declarations/SV011-ORG-STATE-0001.request.json"
+      ],
+      "revert": "delete the declaration file; it has appended nothing"
+    },
+    {
+      "item": "B3",
+      "audit_item": "N7",
+      "change": "readback schema id stegverse.organization-ledger-observation/v1 (was stegverse.organization-ledger-readback/v1)",
+      "surfaces": [
+        "resident-runtime/organization_ledger_readback.py OBSERVATION_SCHEMA"
+      ],
+      "revert": "set OBSERVATION_SCHEMA back to SUPERSEDED_SCHEMA"
+    },
+    {
+      "item": "B5",
+      "audit_item": "N11",
+      "change": "required manifested_route on every request, equal to the binding in org-contract.json; otherwise ROUTE_NOT_BOUND_IN_THIS_ORGANIZATION",
+      "surfaces": [
+        "resident-runtime/organization_ledger_transition.py::validate_manifested_route",
+        ".stegverse/transition-ledger/org-contract.json transition_request_intake.manifested_route_binding"
+      ],
+      "revert": "drop validate_manifested_route and the binding, and restore the N11 exemption entry"
+    },
+    {
+      "item": "B9",
+      "audit_item": "build expectation",
+      "change": "declared first-cycle build expectation, delta definition and return path; delta computation and the SDK leg are FAIL_CLOSED inside the artifact",
+      "surfaces": [
+        ".stegverse/build-expectations/sv011-first-cycle.json"
+      ],
+      "revert": "delete the artifact"
+    }
+  ],
+  "defaults_status": "DEFAULT_PENDING_OWNER_CONFIRMATION"
 }

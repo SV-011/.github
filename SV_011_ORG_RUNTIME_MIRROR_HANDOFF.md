@@ -316,16 +316,20 @@ readback: observation only; no top-level disposition; verification and current-s
 live_basis: BASIS_ABSENT (head receipt carries no current_state)
 tt_fixture_t_011_present_at_ba3cca71: false
 sdk_manifest_builder_present: false (build_manifest/manifest refused with SDK_MANIFEST_BUILDER_NOT_PRESENT)
-standing_to_constraint_set: on hold (SV-011/.github#12 item 2)
+standing_to_constraint_set: DEFAULT pending owner confirmation, option B (SV-011/.github#12 item 2)
+readback_schema: stegverse.organization-ledger-observation/v1 (DEFAULT, B3)
+manifested_route: required, bound in org-contract.json (DEFAULT, B5)
+first_current_state: .stegverse/declarations/SV011-ORG-STATE-0001.request.json, unsubmitted (DEFAULT, B2; T-181 fallback)
+build_expectation: .stegverse/build-expectations/sv011-first-cycle.json (DEFAULT, B9)
 ```
 
 ### Six-field conformance
 
-Every non-ALLOW outcome on the intake, readback, intr-destination ingress, egress, and the ledger workflow carries `failure_code`, `failed_predicate`, `required_evidence_or_repair`, `retry_entrypoint`, `owning_existing_goal` and `next_attempt` (`StegVerse-org/.github@c483d441` `docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md`, item 5). An absent far-side answer is `FAIL_CLOSED` `FAR_SIDE_ANSWER_NOT_MATERIALIZED` with `receiver_unavailable_disposition: DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION`; it writes nothing and nothing waits on the receiver. Surfaces not yet conforming are held in `data/organization-role-exemption-register.json` (N1 dispatch-driven self-closure, N8 ledger transport credential, N11 manifested route). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
+Every non-ALLOW outcome on the intake, readback, intr-destination ingress, egress, and the ledger workflow carries `failure_code`, `failed_predicate`, `required_evidence_or_repair`, `retry_entrypoint`, `owning_existing_goal` and `next_attempt` (`StegVerse-org/.github@c483d441` `docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md`, item 5). An absent far-side answer is `FAIL_CLOSED` `FAR_SIDE_ANSWER_NOT_MATERIALIZED` with `receiver_unavailable_disposition: DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION`; it writes nothing and nothing waits on the receiver. Surfaces not yet conforming are held in `data/organization-role-exemption-register.json` (N1 dispatch-driven self-closure, N8 ledger transport credential; N11 is repaired by default B5). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
 
 ```text
 non_allow_six_fields: resident-runtime/non_allow.py
-exemption_register: data/organization-role-exemption-register.json (3 entries, review 2026-11-17)
+exemption_register: data/organization-role-exemption-register.json (2 entries N1 and N8, review 2026-11-17; defaults listed with revert paths)
 tests: tests/test_organization_role_conformance.py
 ```
 

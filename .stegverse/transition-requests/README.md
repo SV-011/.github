@@ -7,13 +7,14 @@ Storage is the layout already on that ref. The repository receipt goes to `repos
 The request schema is `stegverse.organization-transition-request/v1`. Required fields:
 
 - `request_id`, `owning_existing_goal`
-- `standing` with `mode` and `node_ref`
+- `constraint_set` with `node_standing` (`mode` `ESTABLISH_GENESIS` or `VERIFY_EXISTING`, `node_ref`, and the `predecessor` key, `null` for genesis) and an optional `declared` block (`authority`, `time`: `satisfies` or `does_not_satisfy`, stored as declared only). `VERIFY_EXISTING` is refused with `PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT`. DEFAULT pending owner confirmation (B1).
+- `manifested_route` equal to `transition_request_intake.manifested_route_binding` in `.stegverse/transition-ledger/org-contract.json`, else `ROUTE_NOT_BOUND_IN_THIS_ORGANIZATION`. DEFAULT pending owner confirmation (B5).
 - `transition_id`, `transition_class`, `org_transition_class`
 - `predecessor_state_sha256`, `successor_state_sha256` (`sha256:` plus 64 hex digits)
 - `authority_constraint` (the authority constraint variable, recorded as given)
 - `evidence` (an object; it can be empty)
 
-Optional `hb_epoch` is an integer time constraint.
+Optional `hb_epoch` is an integer time constraint. Optional `purpose` is free text. A top-level `standing`, or any other field, is refused.
 
 Optional `current_state` follows the Current-state basis section of `Admissible-Existence/TT` commit `ba3cca71b6928cf739ab6b321c939860fd1edbb1`, `docs/SV_011_NEXT_REQUIRED_CAPABILITY_DERIVATION_CONTRACT.md` (blob `8f7d4cc2127325b155e1a91edfe531b5737f7c75`). It declares `state_id`, `as_of`, `fresh_until`, `declared_transition_element`, `declared_role_escalation`, and `satisfied_scope_ids`:
 
@@ -49,4 +50,4 @@ The head receipt on the live ref (`2cc58cec`, organization receipt `sha256:3db90
 
 ## Open
 
-The `standing` field is unchanged. Its replacement by a constraint-set shape is on hold until that shape is defined (SV-011/.github#12, item 2).
+`standing` is replaced by `constraint_set` as a DEFAULT pending owner confirmation (SV-011/.github#12, item 2; option B). The readback schema id is `stegverse.organization-ledger-observation/v1` (B3). The first `current_state` is held, unsubmitted, in `.stegverse/declarations/` (B2). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.

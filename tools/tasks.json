@@ -25,6 +25,11 @@
       "id": "organization_role_conformance",
       "command": ["python", "-m", "unittest", "tests.test_organization_role_conformance"],
       "enabled": true
+    },
+    {
+      "id": "organization_ledger_defaults",
+      "command": ["python", "-m", "unittest", "tests.test_organization_ledger_defaults"],
+      "enabled": true
     }
   ]
 }

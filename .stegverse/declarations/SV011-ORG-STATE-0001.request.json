@@ -1,0 +1,46 @@
+{
+  "schema": "stegverse.organization-transition-request/v1",
+  "request_id": "SV011-ORG-STATE-0001-REQUEST-001",
+  "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+  "purpose": "DEFAULT pending owner confirmation (B2). First current_state declaration for SV-011/.github. Held outside .stegverse/transition-requests/, so it appends nothing; committing it under that directory on main is the manifest that appends.",
+  "constraint_set": {
+    "node_standing": {
+      "mode": "ESTABLISH_GENESIS",
+      "node_ref": "SV-011/.github",
+      "predecessor": null
+    }
+  },
+  "manifested_route": {
+    "capability_profile_id": "organization-ledger-transition-request",
+    "route_id": "stegverse.route.sv011.organization-ledger-request.v1",
+    "destination_repository": "SV-011/.github",
+    "destination_operation": "resident-runtime/organization_ledger_transition.py::apply_request",
+    "destination_ref": "refs/stegverse/organization-ledger"
+  },
+  "transition_id": "sv011-first-current-state-0001",
+  "transition_class": "CURRENT_STATE_DECLARATION",
+  "org_transition_class": "REPO_STATE_PROPAGATION",
+  "predecessor_state_sha256": "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51",
+  "successor_state_sha256": "sha256:02db42d906e8ba8b0e05c4b18d63dc6d378095b1441d057beb6b063d25f8a04a",
+  "authority_constraint": "NONE",
+  "evidence": {
+    "predecessor_state_source": "head organization receipt on refs/stegverse/organization-ledger at 2cc58cec",
+    "successor_state_source": "basis_digest of current_state (resident-runtime/organization_ledger_readback.py::basis_digest)",
+    "transition_element_fallback": "T-181: Admissible-Existence/TT@ba3cca71 has no t-011 fixture"
+  },
+  "current_state": {
+    "state_id": "SV011-ORG-STATE-0001",
+    "as_of": "2026-10-17T14:04:30Z",
+    "fresh_until": "2026-10-24T14:04:30Z",
+    "declared_transition_element": {
+      "transition_id": "T-181",
+      "fixture_ref": "fixtures/transition-elements/t-181.receipt-record.json"
+    },
+    "declared_role_escalation": {
+      "role_id": "sv011.context-to-evidence",
+      "from_role": "context",
+      "to_role": "evidence"
+    },
+    "satisfied_scope_ids": []
+  }
+}

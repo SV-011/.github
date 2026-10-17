@@ -54,7 +54,14 @@ def request(**overrides):
         "schema": "stegverse.organization-transition-request/v1",
         "request_id": "CONFORMANCE-REQUEST-001",
         "owning_existing_goal": "SYNTHETIC-TEST-GOAL",
-        "standing": {"mode": "synthetic", "node_ref": "unit-test"},
+        "constraint_set": {"node_standing": {"mode": "ESTABLISH_GENESIS", "node_ref": "unit-test", "predecessor": None}},
+        "manifested_route": {
+            "capability_profile_id": "organization-ledger-transition-request",
+            "route_id": "stegverse.route.sv011.organization-ledger-request.v1",
+            "destination_repository": "SV-011/.github",
+            "destination_operation": "resident-runtime/organization_ledger_transition.py::apply_request",
+            "destination_ref": "refs/stegverse/organization-ledger",
+        },
         "transition_id": "conformance-transition-001",
         "transition_class": "SYNTHETIC_TRANSITION_REQUEST",
         "org_transition_class": "REPO_STATE_PROPAGATION",
@@ -167,11 +174,11 @@ class TransitionRequestNonAllow(Workspace):
         self.assert_six(refused, LEDGER_GOAL)
         tree = self.base / "requests"
         tree.mkdir()
-        (tree / "bad.json").write_text(json.dumps(request(standing={})), encoding="utf-8")
+        (tree / "bad.json").write_text(json.dumps(request(constraint_set={})), encoding="utf-8")
         code, refused = self.run_cli(ROOT / "resident-runtime/organization_ledger_transition.py",
                                      "--validate-tree", tree)
         self.assertEqual(code, 1)
-        self.assertEqual(refused["failed_predicate"], "TRANSITION_REQUEST_STANDING_PRESENT")
+        self.assertEqual(refused["failed_predicate"], "TRANSITION_REQUEST_CONSTRAINT_SET_PRESENT")
         self.assertIn("bad.json", refused["required_evidence_or_repair"])
         self.assert_six(refused, LEDGER_GOAL)
 
@@ -370,7 +377,7 @@ class ExemptionRegister(SixFields):
         self.assertEqual(register["authority_effect"], "NONE_REGISTER_ONLY")
         self.assertEqual(register["non_allow_result_fields"], list(SIX))
         prohibited = [item.lower().replace("_", " ") for item in register["prohibited_justifications"]]
-        self.assertEqual({entry["audit_item"] for entry in register["exemptions"]}, {"N1", "N8", "N11"})
+        self.assertEqual({entry["audit_item"] for entry in register["exemptions"]}, {"N1", "N8"})
         for entry in register["exemptions"]:
             for name in register["required_fields"]:
                 self.assertIn(name, entry, (name, entry["surface"]))
