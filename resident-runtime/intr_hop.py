@@ -36,6 +36,13 @@ Time is a constraint variable supplied by the caller as ``hb_epoch``. Every
 phase requires it, and no phase reads a clock to fill it in. Authority is a
 constraint variable too. A disposition is transition evidence only.
 
+Every non-ALLOW result carries the six fields of the Organization Role
+conformance standard: ``failure_code``, ``failed_predicate``,
+``required_evidence_or_repair``, ``retry_entrypoint``,
+``owning_existing_goal`` and ``next_attempt``. No phase waits on or polls the
+peer; a phase that has not yet run at the peer is a state of the hop, read
+from the ledgers when they are read.
+
 This module does not decide where receipts land. The ledger location already
 selected for emission (``STEGVERSE_REPO_LEDGER_ROOT`` /
 ``STEGVERSE_ORG_LEDGER_ROOT``, or the published ref by default) is used.
@@ -80,6 +87,10 @@ CONSTRAINTS = {
     "disposition_role": "TRANSITION_EVIDENCE_ONLY",
     "federation_directory_read": False,
 }
+OWNING_EXISTING_GOAL = "StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody"
+RETRY_ENTRYPOINT = ".github/workflows/intr-destination-hop.yml"
+NON_ALLOW_FIELDS = ("failure_code", "failed_predicate", "required_evidence_or_repair",
+                    "retry_entrypoint", "owning_existing_goal", "next_attempt")
 SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 HOP_STANDING = {"mode": "ESTABLISH_GENESIS", "node_ref": "intr-destination-hop", "predecessor": None}
 
@@ -265,10 +276,29 @@ def hop_payload(origin_slug: str, destination_slug: str, communication_id: str) 
     }
 
 
+def non_allow(failure_code: str, failed_predicate: str, required_evidence_or_repair: str,
+              retry_entrypoint: str, next_attempt: str) -> dict[str, Any]:
+    """The six fields every non-ALLOW result carries."""
+    return {
+        "failure_code": failure_code,
+        "failed_predicate": failed_predicate,
+        "required_evidence_or_repair": required_evidence_or_repair,
+        "retry_entrypoint": retry_entrypoint,
+        "owning_existing_goal": OWNING_EXISTING_GOAL,
+        "next_attempt": next_attempt,
+    }
+
+
 def _refusal(phase: str, exc: HopRefused, **extra: Any) -> dict[str, Any]:
-    return {"schema": SCHEMA, "phase": phase, "disposition": FAIL_CLOSED,
-            "failed_predicate": exc.failed_predicate, "detail": exc.detail,
-            "receipts_appended": False, **extra, **CONSTRAINTS}
+    return {"schema": SCHEMA, "phase": phase, "disposition": FAIL_CLOSED, "detail": exc.detail,
+            "receipts_appended": False, **extra,
+            **non_allow("INTR_HOP_" + phase.upper() + "_PREDICATE_NOT_SATISFIED", exc.failed_predicate,
+                        "supply " + phase + " inputs that satisfy " + exc.failed_predicate
+                        + " (" + exc.detail[:200] + "); nothing was appended",
+                        RETRY_ENTRYPOINT + " phase=" + phase,
+                        "re-dispatch phase=" + phase + " with corrected inputs at a supplied hb_epoch; "
+                        "a transition already recorded is answered from the ledger"),
+            **CONSTRAINTS}
 
 
 def send(destination_slug: str, communication_id: str, hb_epoch: int, *, peer_root: Path) -> dict[str, Any]:
@@ -474,8 +504,20 @@ def _answer(packet, organization, sender, address, payload, result, hb_epoch, *,
     if result.get("disposition") != ALLOW or not result.get("communication_acknowledged", True):
         # A refusal is recorded by the operation. It is not answered, so the
         # sender's crossing stays observable as unclosed.
-        return {**base, "disposition": result.get("disposition") or DENY, "answered": False,
-                "failed_predicate": result.get("failed_predicate"), "detail": result.get("detail")}
+        disposition = result.get("disposition") or DENY
+        refused = {**base, "disposition": disposition, "answered": False, "detail": result.get("detail")}
+        if disposition == ALLOW:
+            refused["failed_predicate"] = result.get("failed_predicate")
+            return refused
+        return {**refused, **non_allow(
+            result.get("failure_code") or "INTR_DESTINATION_INGRESS_NOT_ADMITTED",
+            result.get("failed_predicate") or "INTR_DESTINATION_INGRESS_ADMITS_THE_COMMUNICATION",
+            result.get("required_evidence_or_repair")
+            or "a frame whose payload satisfies the intr-destination ingress; the refusal is recorded "
+               "in this organization's ledgers and is not answered",
+            result.get("retry_entrypoint") or RETRY_ENTRYPOINT + " phase=send at the origin",
+            result.get("next_attempt")
+            or "the origin sends a new hop with a new communication_id; this refusal stays recorded")}
     chain = far_side_chain(packet["packet_id"], address, k.sha(packet["payload"]))
     execution = {
         "application_result": {
@@ -494,6 +536,16 @@ def _answer(packet, organization, sender, address, payload, result, hb_epoch, *,
             "response_packet_id": response.get("packet_id"), "far_side_terminal_receipt": chain[-1],
             "response_frame_sha256": response_frame.get("frame_sha256"),
             "frame": encode_frame(response_frame)}
+
+
+def _closure_refused(findings: Any) -> dict[str, Any]:
+    findings = [str(item) for item in (findings or [])] or ["ORGANIZATION_EGRESS_CLOSURE_VERIFIES"]
+    return non_allow(
+        "INTR_HOP_CLOSURE_REFUSED", ",".join(findings),
+        "an acknowledgement from the dispatched destination that satisfies " + ",".join(findings)
+        + "; the refused closure is recorded in this organization's ledgers",
+        RETRY_ENTRYPOINT + " phase=send",
+        "send a new hop with a new communication_id; re-dispatching this close answers the recorded refusal")
 
 
 def close(response_frame: Mapping[str, Any], destination_slug: str, communication_id: str,
@@ -534,7 +586,7 @@ def close(response_frame: Mapping[str, Any], destination_slug: str, communicatio
         if prior is not None:
             evidence = prior.get("evidence") or {}
             closed = recorded_class == e.CLOSED_CLASS
-            return {
+            replayed = {
                 "schema": SCHEMA, "phase": "close", "organization": origin,
                 "disposition": evidence.get("disposition"), "closed": closed,
                 "closure_findings": evidence.get("closure_findings"), "communication_id": communication_id,
@@ -545,6 +597,9 @@ def close(response_frame: Mapping[str, Any], destination_slug: str, communicatio
                 "transition_class": recorded_class, "receipts_appended": False, "transition_replayed": True,
                 "peer_serves_this_capability_is_proven_here": closed, **CONSTRAINTS,
             }
+            if replayed["disposition"] != ALLOW:
+                replayed.update(_closure_refused(evidence.get("closure_findings")))
+            return replayed
     resolved = dict(emission)
     row = {
         "organization": responder,
@@ -567,7 +622,7 @@ def close(response_frame: Mapping[str, Any], destination_slug: str, communicatio
     appended = e._record(transition_class + ":" + packet_id, transition_class,
                          e.sha({"packet_id": packet_id, "communication_id": communication_id}),
                          e.sha(closure), closure, hb_epoch)
-    return {
+    closed_result = {
         "schema": SCHEMA, "phase": "close", "organization": origin,
         "disposition": closure.get("disposition"), "closed": not findings,
         "closure_findings": findings, "communication_id": communication_id, "packet_id": packet_id,
@@ -580,6 +635,9 @@ def close(response_frame: Mapping[str, Any], destination_slug: str, communicatio
         "transition_class": transition_class, "receipts_appended": True, "transition_replayed": False,
         "peer_serves_this_capability_is_proven_here": not findings, **CONSTRAINTS,
     }
+    if closed_result["disposition"] != ALLOW:
+        closed_result.update(_closure_refused(findings))
+    return closed_result
 
 
 def readback(location: str, namespace: str, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -625,7 +683,7 @@ def readback(location: str, namespace: str, result: Mapping[str, Any]) -> dict[s
         findings.append("RECEIPT_CARRIES_THE_HOP_COMMUNICATION_ID")
     if repo_receipt is not None and ((repo_receipt.get("hb_reference") or {}).get("epoch") != result.get("hb_epoch")):
         findings.append("RECEIPT_CARRIES_THE_SUPPLIED_EPOCH")
-    return {
+    read = {
         "schema": SCHEMA + "#readback", "phase": result.get("phase"), "location": location,
         "repository_namespace": namespace, "communication_id": result.get("communication_id"),
         "transition_class": (repo_receipt or {}).get("transition_class"),
@@ -633,6 +691,13 @@ def readback(location: str, namespace: str, result: Mapping[str, Any]) -> dict[s
         "disposition": ALLOW if not findings else FAIL_CLOSED, "failed_predicates": findings,
         **CONSTRAINTS,
     }
+    if findings:
+        read.update(non_allow(
+            "INTR_HOP_LEDGER_READBACK_INCOMPLETE", ",".join(findings),
+            "the phase's repository and organization receipts on a fresh fetch of " + LEDGER_REF,
+            RETRY_ENTRYPOINT + " readback step",
+            "read back again from a fresh fetch; the phase result is not appended a second time"))
+    return read
 
 
 def _write(result: Mapping[str, Any], out: Path | None) -> None:

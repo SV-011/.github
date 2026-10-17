@@ -24,6 +24,12 @@ name: InTr Destination Hop
 # dispatched at the epoch this phase was given, plus one. No phase reads a
 # clock for it. Authority and time are constraint variables; a disposition is
 # transition evidence only. Governance and remediation routes are not touched.
+#
+# Every non-ALLOW outcome, here and in intr_hop.py, carries failure_code,
+# failed_predicate, required_evidence_or_repair, retry_entrypoint,
+# owning_existing_goal and next_attempt. No phase waits on or polls the peer:
+# dispatching the next phase is the send transition, and the peer's phase is
+# observed only as receipts in the peer's organization ledger.
 on:
   pull_request:
     branches: [main]
@@ -125,10 +131,17 @@ jobs:
           import json, os, re, sys
           slug = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
           phase = os.environ["PHASE"]
-          def refuse(predicate, detail):
-              print(json.dumps({"disposition": "FAIL_CLOSED", "phase": phase, "failed_predicate": predicate,
-                                "detail": detail, "receipts_appended": False,
-                                "retry_entrypoint": ".github/workflows/intr-destination-hop.yml"}, sort_keys=True))
+          def refuse(predicate, detail, repair=None):
+              result = {"disposition": "FAIL_CLOSED", "phase": phase, "detail": detail, "receipts_appended": False,
+                        "failure_code": "INTR_HOP_DISPATCH_INPUT_REFUSED", "failed_predicate": predicate,
+                        "required_evidence_or_repair": repair or ("dispatch inputs that satisfy " + predicate + "; nothing was appended"),
+                        "retry_entrypoint": ".github/workflows/intr-destination-hop.yml phase=" + phase,
+                        "owning_existing_goal": "StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody",
+                        "next_attempt": "re-dispatch phase=" + phase + " with corrected inputs at a supplied hb_epoch"}
+              rendered = json.dumps(result, sort_keys=True)
+              print(rendered)
+              with open(os.path.join(os.environ["RUNNER_TEMP"], "results", phase + ".json"), "w", encoding="utf-8") as out:
+                  out.write(rendered + "\n")
               sys.exit(1)
           if phase not in ("send", "receive", "close"):
               refuse("PHASE_IS_SEND_RECEIVE_OR_CLOSE", phase)
@@ -146,7 +159,9 @@ jobs:
           forward = os.environ.get("INPUT_FORWARD", "true") == "true"
           if os.environ.get("HOP_TOKEN_PRESENT") != "true" and (phase == "send" or (phase == "receive" and forward)):
               refuse("FEDERATION_HOP_TOKEN_IS_CONFIGURED",
-                     "repository secret FEDERATION_HOP_TOKEN reads the destination advertisement and dispatches the next phase")
+                     "repository secret FEDERATION_HOP_TOKEN reads the destination advertisement and dispatches the next phase",
+                     "a credential that reads the destination advertisement and dispatches the next phase; "
+                     "TV/TVC issuance is the pending owner decision on StegVerse-Labs/.github#2897")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write("HOP_PEER_SLUG=%s\nHOP_FORWARD=%s\n" % (peer, "true" if forward else "false"))
           PY
@@ -187,7 +202,7 @@ jobs:
           echo "::add-mask::$basic"
           if ! git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic" \
               clone -q --depth 1 "https://github.com/$HOP_PEER_SLUG/.github.git" "$RUNNER_TEMP/destination"; then
-            echo '{"disposition":"FAIL_CLOSED","phase":"send","failed_predicate":"DESTINATION_ADVERTISEMENT_IS_READABLE","detail":"<slug>/.github could not be read with FEDERATION_HOP_TOKEN","receipts_appended":false}'
+            echo '{"disposition":"FAIL_CLOSED","phase":"send","failure_code":"INTR_HOP_DESTINATION_ADVERTISEMENT_UNREADABLE","failed_predicate":"DESTINATION_ADVERTISEMENT_IS_READABLE","detail":"<slug>/.github could not be read with FEDERATION_HOP_TOKEN","required_evidence_or_repair":"a readable <slug>/.github advertisement (org-runtime/interlock-intr.json and its service row); nothing was appended","retry_entrypoint":".github/workflows/intr-destination-hop.yml phase=send","owning_existing_goal":"StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody","next_attempt":"re-dispatch phase=send once the advertisement is readable","receipts_appended":false}' | tee "$RUNNER_TEMP/results/send.json"
             exit 1
           fi
 
@@ -223,7 +238,7 @@ jobs:
             echo "nothing appended by this phase"; exit 0
           fi
           if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this phase published nothing","retry_entrypoint":".github/workflows/intr-destination-hop.yml","next_attempt":"re-dispatch the same phase; a recorded transition is answered from the ledger"}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this phase published nothing","retry_entrypoint":".github/workflows/intr-destination-hop.yml phase='"$PHASE"'","owning_existing_goal":"StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody","next_attempt":"re-dispatch the same phase; a recorded transition is answered from the ledger"}'
             exit 1
           fi
           echo "published $LEDGER_REF at $(git rev-parse "$LEDGER_REF")"
@@ -239,7 +254,7 @@ jobs:
           git init -q --bare "$fresh"
           auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
           if [ -z "$auth_header" ]; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"AUTHENTICATED_LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_AUTHENTICATED"}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"AUTHENTICATED_LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_AUTHENTICATED","required_evidence_or_repair":"a checkout that persists its workflow credential so the published ledger ref can be fetched fresh","retry_entrypoint":".github/workflows/intr-destination-hop.yml readback step","owning_existing_goal":"StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody","next_attempt":"re-dispatch the same phase; the recorded transition is answered from the ledger and read back"}'
             exit 1
           fi
           git --git-dir="$fresh" -c http.https://github.com/.extraheader="$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
@@ -278,10 +293,13 @@ jobs:
               env.write("NEXT_REPOSITORY=%s\nNEXT_PHASE=%s\nOWN_SLUG=%s\n" % (repository, nxt, own_slug))
           PY
           next_epoch=$((INPUT_HB_EPOCH + 1))
-          gh workflow run intr-destination-hop.yml -R "$NEXT_REPOSITORY" \
+          if ! gh workflow run intr-destination-hop.yml -R "$NEXT_REPOSITORY" \
             -f phase="$NEXT_PHASE" -f peer_slug="$OWN_SLUG" \
             -f communication_id="$INPUT_COMMUNICATION_ID" -f hb_epoch="$next_epoch" \
-            -F frame=@"$RUNNER_TEMP/next-frame.b64" -f forward=true
+            -F frame=@"$RUNNER_TEMP/next-frame.b64" -f forward=true; then
+            echo '{"disposition":"FAIL_CLOSED","phase":"'"$PHASE"'","failure_code":"INTR_HOP_NEXT_PHASE_NOT_DISPATCHED","failed_predicate":"NEXT_PHASE_DISPATCH_ACCEPTED","required_evidence_or_repair":"an accepted workflow_dispatch of '"$NEXT_PHASE"' at '"$NEXT_REPOSITORY"'; this phase'"'"'s receipts stand","retry_entrypoint":".github/workflows/intr-destination-hop.yml phase='"$PHASE"'","owning_existing_goal":"StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody","next_attempt":"re-dispatch phase='"$PHASE"'; its recorded transition is answered from the ledger and the next phase is dispatched again"}' | tee "$RUNNER_TEMP/results/$PHASE-dispatch.json"
+            exit 1
+          fi
           echo "dispatched $NEXT_PHASE at $NEXT_REPOSITORY (hb_epoch $next_epoch)"
 
       - name: Phase disposition

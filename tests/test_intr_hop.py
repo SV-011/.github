@@ -101,6 +101,19 @@ class Side:
         return list(reversed(receipts))
 
 
+NON_ALLOW_FIELDS = ("failure_code", "failed_predicate", "required_evidence_or_repair",
+                    "retry_entrypoint", "owning_existing_goal", "next_attempt")
+OWNING_GOAL = "StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody"
+
+
+def assert_six_fields(test: unittest.TestCase, result: dict) -> None:
+    test.assertNotEqual(result.get("disposition"), "ALLOW", result)
+    for field in NON_ALLOW_FIELDS:
+        test.assertIsInstance(result.get(field), str, (field, result))
+        test.assertTrue(result[field].strip(), (field, result))
+    test.assertEqual(result["owning_existing_goal"], OWNING_GOAL)
+
+
 def frame_file(text: str) -> str:
     path = Path(tempfile.mkdtemp()) / "frame.b64"
     path.write_text(text, encoding="ascii")
@@ -216,6 +229,7 @@ class OneWayHopTests(unittest.TestCase):
             self.assertNotEqual(code, 0, args)
             self.assertEqual(result["disposition"], "FAIL_CLOSED", result)
             self.assertIs(result["receipts_appended"], False)
+            assert_six_fields(self, result)
         self.assertEqual(sender.chain(repository=True), [])
 
     def test_answer_for_another_communication_is_not_a_closure(self) -> None:
@@ -228,6 +242,7 @@ class OneWayHopTests(unittest.TestCase):
                                         "--origin-slug", "someone-else", "--hb-epoch", "7001")
         self.assertNotEqual(code, 0)
         self.assertEqual(arrived["failed_predicate"], "FRAME_ORIGIN_IS_THE_DISPATCHING_PEER")
+        assert_six_fields(self, arrived)
         code, arrived = destination.run("receive", "--frame-file", frame_file(sent["frame"]),
                                         "--origin-slug", self.slug, "--hb-epoch", "7001")
         self.assertEqual(code, 0, arrived)
@@ -236,8 +251,49 @@ class OneWayHopTests(unittest.TestCase):
                                   "--hb-epoch", "7002")
         self.assertNotEqual(code, 0)
         self.assertEqual(closed["failed_predicate"], "ANSWER_CARRIES_THE_HOP_COMMUNICATION_ID")
+        assert_six_fields(self, closed)
         self.assertEqual([item["transition_class"] for item in sender.chain(repository=True)],
                          ["ORGANIZATION_EGRESS_EMITTED"])
+
+    def test_readback_without_receipts_carries_the_six_fields(self) -> None:
+        sender, _ = self.sides("readback-empty")
+        result_path = Path(tempfile.mkdtemp()) / "phase.json"
+        result_path.write_text(json.dumps({"phase": "send", "communication_id": "c", "hb_epoch": 1,
+                                           "repository_receipt_sha256": "sha256:" + "0" * 64}), encoding="utf-8")
+        subprocess.run(["git", "-C", str(sender.ledger), "commit", "-q", "--allow-empty", "-m", "seed"], check=True)
+        subprocess.run(["git", "-C", str(sender.ledger), "update-ref", REF, "HEAD"], check=True)
+        code, read = sender.run("readback", "--location", "git+%s#%s" % (sender.ledger, REF),
+                                "--repository-namespace", namespace(sender.root), "--result", str(result_path))
+        self.assertNotEqual(code, 0)
+        self.assertEqual(read["disposition"], "FAIL_CLOSED")
+        assert_six_fields(self, read)
+
+    def test_refused_ingress_and_closure_carry_the_six_fields(self) -> None:
+        sys.path.insert(0, str(ROOT / "resident-runtime"))
+        try:
+            import intr_hop
+        finally:
+            sys.path.pop(0)
+        refused = intr_hop._closure_refused(["FAR_SIDE_INTR_DESTINATION_ACKNOWLEDGED_THIS_COMMUNICATION"])
+        assert_six_fields(self, {"disposition": "DENY", **refused})
+        self.assertEqual(refused["failed_predicate"], "FAR_SIDE_INTR_DESTINATION_ACKNOWLEDGED_THIS_COMMUNICATION")
+        assert_six_fields(self, {"disposition": "DENY", **intr_hop._closure_refused([])})
+
+    def test_workflow_non_allow_outcomes_carry_the_six_fields(self) -> None:
+        workflow = (ROOT / ".github/workflows/intr-destination-hop.yml").read_text(encoding="utf-8")
+        lines = [line for line in workflow.splitlines() if '"disposition":"FAIL_CLOSED"' in line
+                 or '"disposition": "FAIL_CLOSED"' in line]
+        self.assertGreaterEqual(len(lines), 4)
+        for line in lines:
+            if line.strip().startswith("result = {"):
+                start = workflow.index(line)
+                line = workflow[start:workflow.index("}", start)]
+            for field in NON_ALLOW_FIELDS:
+                self.assertIn('"%s"' % field, line, (field, line[:120]))
+        self.assertIn(OWNING_GOAL, workflow)
+        code = "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
+        for waiting in ("sleep ", "poll", "wave_timeout", "gh run watch"):
+            self.assertNotIn(waiting, code)
 
     def test_the_hop_does_not_read_the_federation_directory(self) -> None:
         source = (ROOT / "resident-runtime/intr_hop.py").read_text(encoding="utf-8")
