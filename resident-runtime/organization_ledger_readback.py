@@ -76,6 +76,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -304,10 +305,11 @@ def empty_ledger_report(location: str) -> dict[str, Any]:
 
 
 class ReadbackRefused(Exception):
-    def __init__(self, failed_predicate: str, detail: str) -> None:
+    def __init__(self, failed_predicate: str, detail: str, failure_code: str | None = None) -> None:
         super().__init__(failed_predicate + ": " + detail)
         self.failed_predicate = failed_predicate
         self.detail = detail
+        self.failure_code = failure_code
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -410,60 +412,218 @@ def _verify_chain(store: Any, schema: str, required: list[str]) -> tuple[dict[st
 
 
 SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
+# DEFAULT pending owner confirmation (H45, G4). The legacy-segment declaration
+# follows the shared readback component C6 rule (P1 Ecosystem AI lane, local
+# commit 6d683cb8): the same required members, the same digest rule and the same
+# failure codes. Only SOURCE_RECEIPT_RETAINED_AND_VERIFIES is waived, and only for
+# the declared receipts; self-hash and chain linkage are never waived. The
+# whole-ledger result for a declared segment stays FAIL_CLOSED with
+# DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED; it is never ALLOW.
+LEGACY_SEGMENT_MEMBERS = ("receipts", "waived_predicate", "six_fields", "ledger_tip_commit",
+                          "re_minted", "reported_as_source_retained", "declaration_sha256")
+LEGACY_INTEGRITY_PREDICATES = ("ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY",
+                               "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+                               "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC",
+                               "RECEIPT_VERIFIES_AGAINST_ITS_BODY", "LEDGER_CHAIN_IS_COMPLETE",
+                               "LEDGER_CHAIN_IS_ACYCLIC")
+DECLARED_LEGACY_FAILURE_CODE = "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED"
+UNVERIFIED_TIP = object()
+_SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
+
+
+def legacy_declaration_digest(segment: Mapping[str, Any]) -> str:
+    """sha256 over the sorted-key compact UTF-8 JSON of the segment without declaration_sha256."""
+    body = {key: value for key, value in segment.items() if key != "declaration_sha256"}
+    return "sha256:" + hashlib.sha256(canon(body)).hexdigest()
+
+
+def _declaration_refused(failure_code: str, predicate: str, detail: str) -> ReadbackRefused:
+    return ReadbackRefused(predicate, detail, failure_code=failure_code)
+
+
+def validate_legacy_segment(segment: Any) -> dict[str, Any]:
+    """Static checks on the declared legacy segment, in C6's order. Refuses six-field."""
+    if not isinstance(segment, dict):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID", "LEGACY_SEGMENT_IS_AN_OBJECT",
+                                   "legacy_pre_retention_segment must be an object")
+    missing = [name for name in LEGACY_SEGMENT_MEMBERS if name not in segment]
+    if missing:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INCOMPLETE",
+                                   "LEGACY_SEGMENT_DECLARES_EVERY_REQUIRED_MEMBER",
+                                   "legacy_pre_retention_segment lacks " + ", ".join(missing))
+    waived = segment["waived_predicate"]
+    named = waived if isinstance(waived, list) else [waived]
+    if not named or any(not isinstance(item, str) or item in LEGACY_INTEGRITY_PREDICATES for item in named):
+        raise _declaration_refused("LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE",
+                                   "LEGACY_SEGMENT_NEVER_WAIVES_SELF_HASH_OR_LINKAGE", json.dumps(waived))
+    if named != [SOURCE_RETENTION_PREDICATE]:
+        raise _declaration_refused("LEGACY_SEGMENT_WAIVES_A_NON_WAIVABLE_PREDICATE",
+                                   "LEGACY_SEGMENT_WAIVES_ONLY_SOURCE_RETENTION", json.dumps(waived))
+    receipts = segment["receipts"]
+    if (not isinstance(receipts, list) or not receipts or len(set(map(str, receipts))) != len(receipts)
+            or any(not isinstance(item, str) or not _SHA256_REF.fullmatch(item) for item in receipts)):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_RECEIPTS_ARE_DISTINCT_SHA256_DIGESTS", "receipts")
+    six = segment["six_fields"]
+    if (not isinstance(six, dict) or set(six) != set(non_allow.SIX_FIELDS)
+            or any(not isinstance(six[name], str) or not six[name].strip() for name in non_allow.SIX_FIELDS)):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID", "LEGACY_SEGMENT_CARRIES_SIX_FIELDS",
+                                   "six_fields must hold exactly the six fields as non-empty strings")
+    if segment["re_minted"] is not False or segment["reported_as_source_retained"] is not False:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_IS_NEVER_RE_MINTED_OR_REPORTED_RETAINED",
+                                   "re_minted and reported_as_source_retained must both be false")
+    tip = segment["ledger_tip_commit"]
+    if not isinstance(tip, str) or not _COMMIT_HEX.fullmatch(tip):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_LEDGER_TIP_COMMIT_IS_40_HEX", str(tip))
+    expected = legacy_declaration_digest(segment)
+    if segment["declaration_sha256"] != expected:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_DIGEST_MISMATCH",
+                                   "LEGACY_SEGMENT_DECLARATION_IS_DIGEST_BOUND",
+                                   "declaration_sha256 must be " + expected)
+    return segment
+
+
+def _tip_head(location: str, tip: str) -> Any:
+    """The organization HEAD receipt digest at the declared ledger commit on the ref read."""
+    locator = ledger_store.parse_locator(location)
+    if not isinstance(locator, ledger_store.GitLocator) or locator.namespace:
+        # A directory copy has no commits to bind. C6 refuses it
+        # (LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE); this observation reports the
+        # binding as unverified instead, so a copy of the published receipt stays
+        # readable. The whole-ledger result is FAIL_CLOSED either way.
+        return UNVERIFIED_TIP
+    ancestor = subprocess.run(["git", "-C", str(locator.repository), "merge-base", "--is-ancestor",
+                               tip, locator.ref], capture_output=True, text=True)
+    if ancestor.returncode != 0:
+        raise _declaration_refused("LEGACY_SEGMENT_TIP_COMMIT_NOT_ON_THE_LEDGER_REF",
+                                   "LEGACY_SEGMENT_TIP_COMMIT_IS_ON_THE_LEDGER_REF",
+                                   tip + " is not " + locator.ref + " or one of its ancestors")
+    shown = subprocess.run(["git", "-C", str(locator.repository), "show", tip + ":" + ledger_store.HEAD_KEY],
+                           capture_output=True, text=True)
+    try:
+        return json.loads(shown.stdout).get("receipt_sha256") if shown.returncode == 0 else None
+    except ValueError:
+        return None
 
 
 def source_receipt_retention(store: Any, org_chain: list[dict[str, Any]],
-                             repo_chain: list[dict[str, Any]], org: Mapping[str, Any]) -> dict[str, Any]:
+                             repo_chain: list[dict[str, Any]], org: Mapping[str, Any],
+                             location: str | None = None) -> dict[str, Any]:
     """Source-receipt retention per organization receipt (DEFAULT pending owner confirmation, H45).
 
     A receipt after the declared legacy segment names its source in
     ``source_transition_sha256`` and the ledger holds that source under
     ``source-receipts/``, verifying against its body and equal to the
-    repository receipt it names; otherwise the readback is refused. A receipt in
-    the legacy segment predates retention: it is reported as legacy, verified
-    only through the repository chain, and never as source-retained.
+    repository receipt it names; otherwise the readback is refused. The legacy
+    segment is validated first (members, digest), then bound to this chain: a
+    contiguous prefix from genesis ending at the HEAD of ``ledger_tip_commit``.
+    A ledger whose genesis is not the segment's first receipt is not the
+    declared ledger, so the segment does not apply to it.
     """
     rule = org.get("source_receipt_retention") or {}
-    segment = rule.get("legacy_pre_retention_segment") or {}
-    legacy_declared = set(segment.get("receipts") or [])
+    segment = validate_legacy_segment(rule.get("legacy_pre_retention_segment"))
+    declared = list(segment["receipts"])
+    order = [receipt["receipt_sha256"] for receipt in org_chain]
+    present = [digest for digest in declared if digest in order]
+    applies = bool(order) and order[0] == declared[0]
+    if present and not applies:
+        raise _declaration_refused("LEGACY_SEGMENT_NOT_A_CONTIGUOUS_PREFIX",
+                                   "LEGACY_SEGMENT_IS_A_CONTIGUOUS_PREFIX_FROM_GENESIS", ", ".join(present))
     repo_by_digest = {receipt["receipt_sha256"]: receipt for receipt in repo_chain}
-    retained, legacy = [], []
+    legacy: list[str] = []
+    findings: list[dict[str, Any]] = []
+    tip_verified = False
+    if applies:
+        absent = [digest for digest in declared if digest not in order]
+        if absent:
+            raise _declaration_refused("LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN",
+                                       "LEGACY_SEGMENT_RECEIPTS_ARE_IN_THE_CHAIN", ", ".join(absent))
+        if order[:len(declared)] != declared:
+            raise _declaration_refused("LEGACY_SEGMENT_NOT_A_CONTIGUOUS_PREFIX",
+                                       "LEGACY_SEGMENT_IS_A_CONTIGUOUS_PREFIX_FROM_GENESIS",
+                                       "the chain opens " + ", ".join(order[:len(declared)]))
+        by_digest = {receipt["receipt_sha256"]: receipt for receipt in org_chain}
+        tip_head = _tip_head(location or "", segment["ledger_tip_commit"])
+        tip_verified = tip_head is not UNVERIFIED_TIP
+        if ((tip_verified and tip_head != declared[-1])
+                or any("source_transition_sha256" in by_digest[d] for d in declared)):
+            raise _declaration_refused("LEGACY_SEGMENT_OVERLAPS_RETENTION",
+                                       "LEGACY_SEGMENT_ENDS_BEFORE_SOURCE_RETENTION_BEGINS",
+                                       "HEAD at " + segment["ledger_tip_commit"] + " names " + str(tip_head))
+        for digest in declared:
+            named = by_digest[digest].get("repo_receipt_sha256")
+            if not isinstance(named, str):
+                raise _declaration_refused("LEGACY_RECEIPT_NAMES_NO_SOURCE",
+                                           "LEGACY_RECEIPT_NAMES_ITS_REPOSITORY_RECEIPT", digest)
+            if named not in repo_by_digest:
+                raise _declaration_refused("LEGACY_RECEIPT_SOURCE_NOT_ON_THE_REPOSITORY_CHAIN",
+                                           "LEGACY_RECEIPT_SOURCE_IS_ON_THE_REPOSITORY_CHAIN", digest)
+            legacy.append(digest)
+            findings.append({
+                "receipt_sha256": digest,
+                "self_hash_verified": True,
+                "chain_link_verified": True,
+                "source_receipt_retained": False,
+                "names_source_receipt_sha256": named,
+                **non_allow.fields(**segment["six_fields"]),
+            })
+    retained: list[str] = []
     for receipt in org_chain:
         digest = receipt["receipt_sha256"]
-        source_digest = receipt.get("source_transition_sha256")
-        if source_digest is None and digest in legacy_declared:
-            legacy.append(digest)
+        if digest in legacy:
             continue
+        source_digest = receipt.get("source_transition_sha256")
         source = store.get(ledger_store.source_key(source_digest)) if isinstance(source_digest, str) else None
         if (not isinstance(source, dict) or source_digest != receipt.get("repo_receipt_sha256")
                 or source.get("receipt_sha256") != source_digest or _body_sha(source) != source_digest
                 or source != repo_by_digest.get(source_digest)):
-            raise ReadbackRefused(SOURCE_RETENTION_PREDICATE, str(digest) + " source " + str(source_digest))
+            raise ReadbackRefused(SOURCE_RETENTION_PREDICATE, str(digest) + " source " + str(source_digest),
+                                  failure_code="UNDECLARED_SOURCE_RECEIPT_RETENTION_FAILURE")
         retained.append(digest)
     report: dict[str, Any] = {
         "rule_status": rule.get("status"),
         "prefix": ledger_store.SOURCE_PREFIX,
         "retained": retained,
         "legacy_pre_retention": legacy,
-        "legacy_segment_ledger_tip_commit": segment.get("ledger_tip_commit"),
+        "legacy_segment": {
+            "applies_to_this_ledger": applies,
+            "declaration_sha256": segment["declaration_sha256"],
+            "receipts": declared,
+            "ledger_tip_commit": segment["ledger_tip_commit"],
+            "ledger_tip_commit_verified": tip_verified,
+            "ledger_tip_commit_unverified_reason": (
+                None if tip_verified or not applies
+                else "LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE: the location is not a git ledger ref"),
+            "waived_predicate": segment["waived_predicate"],
+            "fully_verified_receipts": retained,
+            "re_minted": False,
+            "reported_as_source_retained": False,
+            "findings": findings,
+        },
+        "legacy_segment_ledger_tip_commit": segment["ledger_tip_commit"],
         "legacy_receipts_re_minted": False,
         "every_source_receipt_retained_and_verifies": not legacy,
+        "undeclared_failures": [],
         "legacy_segment_finding": None,
     }
     if legacy:
-        report["legacy_segment_finding"] = non_allow.fields(
-            failure_code=SOURCE_RETENTION_PREDICATE,
-            failed_predicate="EVERY_ORGANIZATION_RECEIPT_RETAINS_AND_VERIFIES_ITS_SOURCE_RECEIPT",
-            required_evidence_or_repair=(
-                "the receipts in the declared legacy pre-retention segment (" + ", ".join(legacy)
-                + ") predate source-receipts/ and are never re-minted; a readback that requires retention "
-                  "for every receipt needs an explicit legacy-segment rule in the shared organization-ledger "
-                  "readback component (H28 C6) naming this segment, or reports this FAIL_CLOSED"),
-            retry_entrypoint="SV-011/.github resident-runtime/organization_ledger_readback.py::main; "
-                             "StegVerse-Labs/.github data/reusable-task-components/ (readback component)",
-            owning_existing_goal=non_allow.LEDGER_GOAL,
-            next_attempt="read back again once the component readback carries the legacy-segment rule; "
-                         "receipts appended from here on are retained and checked")
+        six = segment["six_fields"]
+        report["legacy_segment_finding"] = {
+            "disposition": "FAIL_CLOSED",
+            **non_allow.fields(
+                failure_code=DECLARED_LEGACY_FAILURE_CODE,
+                failed_predicate=SOURCE_RETENTION_PREDICATE,
+                required_evidence_or_repair=(
+                    "declared legacy receipts " + ", ".join(legacy) + " (declaration "
+                    + segment["declaration_sha256"] + ") are not source-retained and are never re-minted; "
+                    + six["required_evidence_or_repair"]),
+                retry_entrypoint=six["retry_entrypoint"],
+                owning_existing_goal=six["owning_existing_goal"],
+                next_attempt=six["next_attempt"]),
+        }
     return report
 
 
@@ -563,7 +723,7 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
         "head_receipt_declares_current_state": "current_state" in org_chain[-1],
     }
     result["source_receipt_retention"] = source_receipt_retention(
-        organization_store, org_chain, repo_chain, org)
+        organization_store, org_chain, repo_chain, org, location)
     result.update(project_current_state(org_chain[-1]))
     if transition_result is not None:
         result.update(_transition_result_in_chains(transition_result, repo_chain, org_chain))
@@ -622,7 +782,7 @@ def _refusal(location: str, exc: BaseException,
         "basis_established": False,
         "current_state": None,
         **non_allow.fields(
-            failure_code="ORGANIZATION_LEDGER_READBACK_FAILED",
+            failure_code=getattr(exc, "failure_code", None) or "ORGANIZATION_LEDGER_READBACK_FAILED",
             failed_predicate=predicate,
             required_evidence_or_repair="a ledger ref at the supplied location on which "
                                         + predicate + " holds (" + detail + ")",

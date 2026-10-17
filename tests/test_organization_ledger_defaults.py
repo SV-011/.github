@@ -7,7 +7,9 @@ temporary; the published fixture bytes are read, never rewritten.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import shutil
 import unittest
 from pathlib import Path
 
@@ -224,7 +226,10 @@ class SourceReceiptRetentionH45(_EnvCase):
         self.assertIs(retention["legacy_receipts_re_minted"], False)
         self.assertEqual(retention["legacy_segment_ledger_tip_commit"], "2cc58cec07117909750a760933641725b86a204b")
         finding = retention["legacy_segment_finding"]
-        self.assertEqual(finding["failure_code"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        self.assertEqual(finding["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+        self.assertEqual(finding["failed_predicate"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        self.assertEqual(finding["disposition"], "FAIL_CLOSED")
+        self.assertIs(retention["legacy_segment"]["ledger_tip_commit_verified"], True)
         for name in SIX:
             self.assertTrue(finding[name], name)
         self.assertNotIn("disposition", report)
@@ -274,6 +279,163 @@ class SourceReceiptRetentionH45(_EnvCase):
         self.assertEqual(rule["legacy_pre_retention_segment"]["receipts"], [LIVE_ORG_HEAD])
         self.assertIs(rule["legacy_pre_retention_segment"]["re_minted"], False)
         self.assertNotIn("source_transition_sha256", org["required_fields"])
+
+
+class LegacySegmentDeclarationG4(_EnvCase):
+    """G4/H45: the legacy-segment declaration follows the shared readback C6 rule."""
+
+    def contract(self):
+        return json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
+
+    def segment(self):
+        return copy.deepcopy(self.contract()["source_receipt_retention"]["legacy_pre_retention_segment"])
+
+    def refused_code(self, segment):
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.validate_legacy_segment(segment)
+        return caught.exception.failure_code
+
+    def rebind(self, segment):
+        segment.pop("declaration_sha256", None)
+        segment["declaration_sha256"] = readback.legacy_declaration_digest(segment)
+        return segment
+
+    def test_declaration_digest_is_the_c6_digest(self):
+        segment = self.segment()
+        self.assertEqual(segment["declaration_sha256"],
+                         "sha256:36c43b78e2c820d5448d7edb7f4bf7222d22faf9a91925ad18e3e50a54267375")
+        self.assertEqual(readback.legacy_declaration_digest(segment), segment["declaration_sha256"])
+        body = {key: value for key, value in segment.items() if key != "declaration_sha256"}
+        text = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.assertEqual("sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(), segment["declaration_sha256"])
+        escaped = json.dumps(body, sort_keys=True, separators=(",", ":"))
+        self.assertNotEqual("sha256:" + hashlib.sha256(escaped.encode("utf-8")).hexdigest(),
+                            segment["declaration_sha256"])
+        self.assertIs(readback.validate_legacy_segment(segment), segment)
+
+    def test_six_fields_are_the_h45_record(self):
+        six = self.segment()["six_fields"]
+        self.assertEqual(list(six), list(SIX))
+        self.assertEqual(six["failure_code"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+        self.assertEqual(six["owning_existing_goal"], "SV011-TT-CAPABILITY-MAP-OBSERVATION-001 (#167 lane B, #68)")
+        self.assertEqual(self.segment()["waived_predicate"], "SOURCE_RECEIPT_RETAINED_AND_VERIFIES")
+
+    def test_the_pr9_shape_without_the_three_members_is_incomplete(self):
+        segment = self.segment()
+        for name in ("waived_predicate", "six_fields", "declaration_sha256"):
+            segment.pop(name)
+        self.assertEqual(self.refused_code(segment), "LEGACY_SEGMENT_DECLARATION_INCOMPLETE")
+        for name in readback.LEGACY_SEGMENT_MEMBERS:
+            partial = self.segment()
+            partial.pop(name)
+            self.assertEqual(self.refused_code(partial), "LEGACY_SEGMENT_DECLARATION_INCOMPLETE", name)
+
+    def test_malformed_members_and_waivers_are_refused(self):
+        cases = {
+            "LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE": ("waived_predicate", "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY"),
+            "LEGACY_SEGMENT_WAIVES_A_NON_WAIVABLE_PREDICATE": ("waived_predicate", "RECEIPT_HAS_THE_CONTRACT_FIELDS"),
+        }
+        for code, (name, value) in cases.items():
+            segment = self.segment()
+            segment[name] = value
+            self.assertEqual(self.refused_code(self.rebind(segment)), code)
+        invalid = [("receipts", []), ("receipts", ["sha256:xyz"]), ("re_minted", True),
+                   ("reported_as_source_retained", True), ("ledger_tip_commit", "2cc58cec")]
+        for name, value in invalid:
+            segment = self.segment()
+            segment[name] = value
+            self.assertEqual(self.refused_code(self.rebind(segment)), "LEGACY_SEGMENT_DECLARATION_INVALID", name)
+        for field in SIX:
+            segment = self.segment()
+            segment["six_fields"][field] = " "
+            self.assertEqual(self.refused_code(self.rebind(segment)), "LEGACY_SEGMENT_DECLARATION_INVALID", field)
+        segment = self.segment()
+        segment["six_fields"].pop("next_attempt")
+        self.assertEqual(self.refused_code(self.rebind(segment)), "LEGACY_SEGMENT_DECLARATION_INVALID")
+
+    def test_an_edit_after_digesting_is_refused(self):
+        segment = self.segment()
+        segment["verified_by"] = segment["verified_by"] + " (edited)"
+        self.assertEqual(self.refused_code(segment), "LEGACY_SEGMENT_DECLARATION_DIGEST_MISMATCH")
+
+    def test_the_tip_commit_is_bound_to_the_published_ref(self):
+        ledger = LedgerRepo(self.base, seed=LIVE)
+        code, report = self.readback_cli(ledger.org)
+        self.assertEqual(code, 0, report)
+        segment = report["source_receipt_retention"]["legacy_segment"]
+        self.assertIs(segment["ledger_tip_commit_verified"], True)
+        self.assertEqual(segment["ledger_tip_commit"], _cases.LIVE_TIP_COMMIT)
+        self.assertEqual([finding["receipt_sha256"] for finding in segment["findings"]], [LIVE_ORG_HEAD])
+        for finding in segment["findings"]:
+            self.assertIs(finding["self_hash_verified"], True)
+            self.assertIs(finding["source_receipt_retained"], False)
+        # The same bytes under a commit that is not 2cc58cec do not carry the declaration.
+        copy_dir = self.base / "same-bytes"
+        shutil.copytree(LIVE, copy_dir)
+        (self.base / "other").mkdir()
+        other = LedgerRepo(self.base / "other", seed=copy_dir)
+        code, refused = self.readback_cli(other.org)
+        self.assertEqual(code, 1)
+        self.assertEqual(refused["failure_code"], "LEGACY_SEGMENT_TIP_COMMIT_NOT_ON_THE_LEDGER_REF")
+        for name in SIX:
+            self.assertTrue(refused[name], name)
+
+    def test_a_directory_copy_stays_readable_and_fail_closed(self):
+        report = readback.readback(str(LIVE), None, NAMESPACE)
+        retention = report["source_receipt_retention"]
+        self.assertIs(retention["legacy_segment"]["ledger_tip_commit_verified"], False)
+        self.assertEqual(retention["legacy_segment_finding"]["disposition"], "FAIL_CLOSED")
+        self.assertEqual(retention["legacy_segment_finding"]["failure_code"],
+                         "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+
+    def synthetic(self):
+        repo = {"schema": "stegverse.repo-transition-receipt/v1", "n": 1}
+        repo["receipt_sha256"] = readback._body_sha(repo)
+        first = {"repo_receipt_sha256": repo["receipt_sha256"], "previous_receipt_sha256": None}
+        first["receipt_sha256"] = readback._body_sha(first)
+        second = {"repo_receipt_sha256": repo["receipt_sha256"], "source_transition_sha256": repo["receipt_sha256"],
+                  "previous_receipt_sha256": first["receipt_sha256"]}
+        second["receipt_sha256"] = readback._body_sha(second)
+        return repo, first, second
+
+    def rule_for(self, receipts):
+        segment = self.segment()
+        segment["receipts"] = receipts
+        return {"source_receipt_retention": {"legacy_pre_retention_segment": self.rebind(segment)}}
+
+    def test_prefix_and_overlap_follow_c6(self):
+        repo, first, second = self.synthetic()
+        held = {"source-receipts/" + repo["receipt_sha256"][7:] + ".json": repo}
+        cases = {
+            "LEGACY_SEGMENT_NOT_A_CONTIGUOUS_PREFIX": [second["receipt_sha256"]],
+            "LEGACY_SEGMENT_OVERLAPS_RETENTION": [first["receipt_sha256"], second["receipt_sha256"]],
+        }
+        for code, receipts in cases.items():
+            with self.assertRaises(readback.ReadbackRefused, msg=code) as caught:
+                readback.source_receipt_retention(held, [first, second], [repo], self.rule_for(receipts),
+                                                  str(self.base))
+            self.assertEqual(caught.exception.failure_code, code)
+        report = readback.source_receipt_retention(held, [first, second], [repo],
+                                                   self.rule_for([first["receipt_sha256"]]), str(self.base))
+        self.assertEqual(report["legacy_pre_retention"], [first["receipt_sha256"]])
+        self.assertEqual(report["legacy_segment"]["fully_verified_receipts"], [second["receipt_sha256"]])
+        self.assertEqual(report["legacy_segment_finding"]["failure_code"], "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED")
+        with self.assertRaises(readback.ReadbackRefused) as caught:
+            readback.source_receipt_retention({}, [first, second], [repo],
+                                              self.rule_for([first["receipt_sha256"]]), str(self.base))
+        self.assertEqual(caught.exception.failure_code, "UNDECLARED_SOURCE_RECEIPT_RETENTION_FAILURE")
+
+    def test_the_legacy_segment_is_never_allow(self):
+        source = (ROOT / "resident-runtime/organization_ledger_readback.py").read_text(encoding="utf-8")
+        self.assertNotIn('"ALLOW"', source)
+        self.assertIn('"disposition": "FAIL_CLOSED"', source)
+
+    def test_the_workflow_holds_the_readback_fail_closed(self):
+        workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow.count("- name: Hold the readback FAIL_CLOSED on a declared legacy segment"), 2)
+        self.assertEqual(workflow.count('"readback_step_passes_on_a_declared_legacy_segment": False'), 2)
+        self.assertEqual(workflow.count("sys.exit(1 if held else 0)"), 2)
+        self.assertNotIn("ingress_receipt_in_fully_verified_suffix", workflow)
 
 
 if __name__ == "__main__":

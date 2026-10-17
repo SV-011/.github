@@ -321,7 +321,7 @@ readback_schema: stegverse.organization-ledger-observation/v1 (DEFAULT, B3)
 manifested_route: required, bound in org-contract.json (DEFAULT, B5)
 first_current_state: .stegverse/declarations/SV011-ORG-STATE-0001.request.json, unsubmitted (DEFAULT, B2; T-181 fallback)
 build_expectation: .stegverse/build-expectations/sv011-first-cycle.json (DEFAULT, B9)
-source_receipt_retention: forward only under source-receipts/; 3db9008d at 2cc58cec is the legacy pre-retention segment, never re-minted (DEFAULT, H45)
+source_receipt_retention: forward only under source-receipts/; 3db9008d at 2cc58cec is the legacy pre-retention segment, never re-minted (DEFAULT, H45); declaration per shared readback C6 (waived_predicate, six_fields, declaration_sha256 sha256:36c43b78…); whole-ledger readback FAIL_CLOSED DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED, workflow step held FAIL_CLOSED (G4)
 ```
 
 ### Six-field conformance

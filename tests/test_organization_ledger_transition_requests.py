@@ -22,6 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE = ROOT / "tests/fixtures/organization-ledger-2cc58cec"
+LIVE_BUNDLE = ROOT / "tests/fixtures/organization-ledger-2cc58cec.bundle"
+LIVE_TIP_COMMIT = "2cc58cec07117909750a760933641725b86a204b"
 LIVE_ORG_HEAD = "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51"
 LIVE_REPO_HEAD = "sha256:f8134042b274ab036fc022ea6d10d679d0284cfffe62bf3b3dba7f9c93881cd7"
 LIVE_COMMUNICATION_ID = "intr-selfclose-SV-011-20261017"
@@ -108,7 +110,12 @@ class LedgerRepo:
     def __init__(self, base: Path, seed: Path | None = None) -> None:
         self.path = base / "ledger"
         subprocess.run(["git", "init", "-q", str(self.path)], check=True)
-        if seed is not None:
+        if seed is not None and Path(seed).resolve() == LIVE.resolve():
+            # The published ref's own commits (2cc58cec and its parent), so the
+            # legacy segment's ledger_tip_commit binding is checked against them.
+            subprocess.run(["git", "-C", str(self.path), "fetch", "-q", str(LIVE_BUNDLE), "+" + REF + ":" + REF],
+                           check=True)
+        elif seed is not None:
             self._seed(base, seed)
         self.org = "git+" + str(self.path.resolve()) + "#" + REF
         self.repo = self.org + ":" + NAMESPACE

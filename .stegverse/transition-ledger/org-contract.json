@@ -38,7 +38,10 @@
     "operation": "ORGANIZATION_INTR_DESTINATION_INGRESS",
     "payload_schema": "stegverse.org-intr-destination-diagnostic/v1",
     "correlates_on": "communication_id",
-    "records": ["repository_receipt", "organization_receipt"]
+    "records": [
+      "repository_receipt",
+      "organization_receipt"
+    ]
   },
   "organization_ledger_ref": "refs/stegverse/organization-ledger",
   "organization_ledger_repository": "SV-011/.github",
@@ -59,8 +62,20 @@
       "ledger_tip_commit": "2cc58cec07117909750a760933641725b86a204b",
       "verified_by": "repo_receipt_sha256 names a receipt on the repository-ledger/SV-011/.github chain that verifies against its body",
       "re_minted": false,
-      "reported_as_source_retained": false
-    }
+      "reported_as_source_retained": false,
+      "waived_predicate": "SOURCE_RECEIPT_RETAINED_AND_VERIFIES",
+      "six_fields": {
+        "failure_code": "SOURCE_RECEIPT_RETAINED_AND_VERIFIES",
+        "failed_predicate": "EVERY_ORGANIZATION_RECEIPT_RETAINS_AND_VERIFIES_ITS_SOURCE_RECEIPT (SV-011/.github ledger, receipt sha256:3db9008d… at tip 2cc58cec; source_transition_sha256 absent, no source-receipts/)",
+        "required_evidence_or_repair": "forward retention (each new org receipt names source_transition_sha256 and retains its repository receipt under source-receipts/), plus an explicit legacy-segment rule for 3db9008d in the shared readback component (H28 C6); never re-mint",
+        "retry_entrypoint": "SV-011/.github resident-runtime/organization_ledger_readback.py::main; StegVerse-Labs/.github data/reusable-task-components/ (readback component)",
+        "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001 (#167 lane B, #68)",
+        "next_attempt": "after the component readback carries the legacy-segment rule, read the ref back with it; receipts appended after PR #9 merges are retained"
+      },
+      "declaration_sha256": "sha256:36c43b78e2c820d5448d7edb7f4bf7222d22faf9a91925ad18e3e50a54267375"
+    },
+    "legacy_segment_rule": "shared readback component C6 legacy-segment rule (P1 Ecosystem AI lane, local commit 6d683cb8c21f0dad21ab2d63d3bedd889fa8eae1); DEFAULT pending owner confirmation",
+    "declaration_digest_rule": "sha256 over json.dumps(segment without declaration_sha256, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded UTF-8"
   },
   "transition_request_intake": {
     "directory": ".stegverse/transition-requests/",

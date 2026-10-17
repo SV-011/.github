@@ -121,13 +121,14 @@
     {
       "item": "H45",
       "audit_item": "P1 N5 SOURCE_RECEIPT_RETAINED_AND_VERIFIES",
-      "change": "new organization receipts name source_transition_sha256 and retain the repository receipt under source-receipts/ (forward only); the receipt at tip 2cc58cec is declared the legacy pre-retention segment, reported as legacy with a six-field FAIL_CLOSED finding, never re-minted",
+      "change": "new organization receipts name source_transition_sha256 and retain the repository receipt under source-receipts/ (forward only); the receipt at tip 2cc58cec is declared the legacy pre-retention segment, reported as legacy with a six-field FAIL_CLOSED finding, never re-minted; G4: the segment carries waived_predicate, six_fields and declaration_sha256 (C6 rule), is validated and bound to ledger_tip_commit on the ref, and the workflow holds the readback FAIL_CLOSED (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED)",
       "surfaces": [
         "resident-runtime/aggregate_repo_transition.py::append",
         "resident-runtime/organization_ledger_readback.py::source_receipt_retention",
-        ".stegverse/transition-ledger/org-contract.json source_receipt_retention"
+        ".stegverse/transition-ledger/org-contract.json source_receipt_retention",
+        ".github/workflows/organization-ledger-transition.yml step Hold the readback FAIL_CLOSED on a declared legacy segment"
       ],
-      "revert": "drop source_transition_sha256 and the retained document from append, and drop source_receipt_retention from the readback and the contract"
+      "revert": "drop source_transition_sha256 and the retained document from append, and drop source_receipt_retention from the readback and the contract; drop the Hold step and validate_legacy_segment"
     }
   ],
   "defaults_status": "DEFAULT_PENDING_OWNER_CONFIRMATION"

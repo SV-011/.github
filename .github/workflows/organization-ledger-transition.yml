@@ -44,6 +44,7 @@ on:
       - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
       - 'tests/test_organization_role_conformance.py'
       - 'tests/test_organization_ledger_defaults.py'
+      - 'tests/fixtures/organization-ledger-2cc58cec.bundle'
       - '.stegverse/declarations/**'
       - '.stegverse/build-expectations/**'
   push:
@@ -68,6 +69,7 @@ on:
       - 'docs/ORGANIZATION_ROLE_CONFORMANCE.md'
       - 'tests/test_organization_role_conformance.py'
       - 'tests/test_organization_ledger_defaults.py'
+      - 'tests/fixtures/organization-ledger-2cc58cec.bundle'
       - '.stegverse/declarations/**'
       - '.stegverse/build-expectations/**'
   workflow_dispatch:
@@ -249,6 +251,25 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # DEFAULT pending owner confirmation (H45/G4): a declared legacy segment
+      # keeps the whole-ledger readback FAIL_CLOSED
+      # (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED), so this step fails even
+      # when this run's receipt is fully verified. Letting it pass is Rigel's
+      # decision; no pass path is implemented here.
+      - name: Hold the readback FAIL_CLOSED on a declared legacy segment
+        run: |
+          python3 - "$RUNNER_TEMP/results/readback.json" <<'PY'
+          import json, sys
+          held = False
+          for path in sys.argv[1:]:
+              report = json.load(open(path, encoding="utf-8"))
+              finding = (report.get("source_receipt_retention") or {}).get("legacy_segment_finding")
+              if finding is not None:
+                  held = True
+                  print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": finding["failure_code"], "failed_predicate": finding["failed_predicate"], "required_evidence_or_repair": finding["required_evidence_or_repair"], "retry_entrypoint": finding["retry_entrypoint"], "owning_existing_goal": finding["owning_existing_goal"], "next_attempt": finding["next_attempt"], "readback": path, "readback_step_passes_on_a_declared_legacy_segment": False, "production_receipt_claimed": False}, sort_keys=True))
+          sys.exit(1 if held else 0)
+          PY
+
       - name: Retain the run's evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -368,6 +389,26 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # DEFAULT pending owner confirmation (H45/G4): a declared legacy segment
+      # keeps the whole-ledger readback FAIL_CLOSED
+      # (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED), so this step fails even
+      # when this run's receipt is fully verified. Letting it pass is Rigel's
+      # decision; no pass path is implemented here.
+      - name: Hold the readback FAIL_CLOSED on a declared legacy segment
+        if: steps.select.outputs.present == 'true'
+        run: |
+          python3 - "$RUNNER_TEMP"/results/*.readback.json <<'PY'
+          import json, sys
+          held = False
+          for path in sys.argv[1:]:
+              report = json.load(open(path, encoding="utf-8"))
+              finding = (report.get("source_receipt_retention") or {}).get("legacy_segment_finding")
+              if finding is not None:
+                  held = True
+                  print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": finding["failure_code"], "failed_predicate": finding["failed_predicate"], "required_evidence_or_repair": finding["required_evidence_or_repair"], "retry_entrypoint": finding["retry_entrypoint"], "owning_existing_goal": finding["owning_existing_goal"], "next_attempt": finding["next_attempt"], "readback": path, "readback_step_passes_on_a_declared_legacy_segment": False, "production_receipt_claimed": False}, sort_keys=True))
+          sys.exit(1 if held else 0)
+          PY
 
       - name: Retain the run's evidence
         if: always() && steps.select.outputs.present == 'true'
