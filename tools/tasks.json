@@ -12,8 +12,8 @@
       "enabled": true
     },
     {
-      "id": "organization_ledger",
-      "command": ["python", "-m", "unittest", "tests.test_organization_ledger"],
+      "id": "organization_ledger_publication",
+      "command": ["python", "-m", "unittest", "tests.test_organization_ledger_publication"],
       "enabled": true
     }
   ]

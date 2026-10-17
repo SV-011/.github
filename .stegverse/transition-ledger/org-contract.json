@@ -4,21 +4,43 @@
   "repository": "SV-011/.github",
   "ledger_level": "ORGANIZATION",
   "consumes": [
-    "stegverse.repo-transition-receipt/v1",
-    "stegverse.canonical-state-transition-receipt/v1"
+    "stegverse.repo-transition-receipt/v1"
   ],
   "emits": "stegverse.organization-transition-receipt/v1",
+  "required_fields": [
+    "organization",
+    "repository",
+    "org_transition_class",
+    "repo_receipt_sha256",
+    "predecessor_state_sha256",
+    "successor_state_sha256",
+    "evidence",
+    "authority_constraint",
+    "time_constraint",
+    "disposition_is_transition_evidence",
+    "production_receipt_claimed",
+    "hb_reference",
+    "previous_receipt_sha256"
+  ],
   "replay_rule": "ORGANIZATION_REPLAY_MUST_REQUIRE_ONLY_VERIFIED_REPO_RECEIPTS_AND_ORG_RECEIPTS_NOT_ECOSYSTEM_REPLAY",
   "preserves_repo_receipt": true,
-  "preserves_source_transition_receipt": true,
   "append_only_receipts": true,
-  "organization_scope_rule": "EVERY_STATE_TRANSITION_OCCURRING_WITHIN_THE_ORGANIZATION_EMITS_AN_ORGANIZATION_RECEIPT",
-  "ledger_root_is_organization_runtime_reality_locus": true,
-  "ledger_lock": "ORGANIZATION_LEDGER_LOCK",
-  "write_mode": "MANIFEST_DIRECTED_APPEND",
   "authority_constraint": "NONE_CONTRACT_ONLY",
   "time_constraint": "HEARTBEAT_EPOCH",
+  "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+  "receipts_are_transition_evidence": true,
+  "organization_scope_rule": "EVERY_STATE_TRANSITION_OCCURRING_WITHIN_THE_ORGANIZATION_EMITS_AN_ORGANIZATION_RECEIPT",
+  "ledger_root_is_organization_runtime_reality_locus": true,
+  "runtime_reality_locus": "Organization",
+  "ledger_lock": "ORGANIZATION_LEDGER_LOCK",
+  "write_mode": "INTR_DESTINATION_DIAGNOSTIC_SELF_CLOSURE_APPEND",
+  "diagnostic_self_closure": {
+    "operation": "ORGANIZATION_INTR_DESTINATION_INGRESS",
+    "payload_schema": "stegverse.org-intr-destination-diagnostic/v1",
+    "correlates_on": "communication_id",
+    "records": ["repository_receipt", "organization_receipt"]
+  },
   "organization_ledger_ref": "refs/stegverse/organization-ledger",
   "organization_ledger_repository": "SV-011/.github",
-  "organization_ledger_ref_designation_source": "Owner designation for SV-011/.github. This ref starts empty and holds only transitions appended from SV-011 manifests."
+  "organization_ledger_ref_designation_source": "SV-011/.github organization ledger, published at refs/stegverse/organization-ledger"
 }

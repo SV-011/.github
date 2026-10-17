@@ -1,155 +1,164 @@
 name: Organization Ledger Transition
 
-# Action by manifest: a transition request committed under
-# .stegverse/transition-requests/ is appended to the SV-011 organization
-# ledger on refs/stegverse/organization-ledger, published by a
-# fast-forward-only push, and read back from a fresh fetch. The ledger is the
-# evidence; this run's success is not.
-#
-# Manifest build from an external SDK, mesh publication, and the governance
-# return workflow are not steps here. Those primitives are not in this
-# repository. A request that names an SDK manifest fails closed in
-# organization_ledger_transition.py.
+# A workflow_dispatch run performs an intr-destination diagnostic self-closure:
+# it appends the repository receipt and the organization receipt (both carry
+# communication_id) to refs/stegverse/organization-ledger, pushes that ref
+# fast-forward only, and reads both receipts back from a fresh fetch.
+# Pull requests run the redirected-root tests. They do not push the ref.
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.stegverse/transition-ledger/**'
+      - 'resident-runtime/ledger_store.py'
+      - 'resident-runtime/aggregate_repo_transition.py'
+      - 'resident-runtime/organization_ledger_readback.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'tests/test_organization_ledger_publication.py'
+      - 'tests/test_intr_destination_capability.py'
+      - '.github/workflows/organization-ledger-transition.yml'
   push:
     branches: [main]
     paths:
-      - '.stegverse/transition-requests/**'
+      - '.stegverse/transition-ledger/**'
+      - 'resident-runtime/ledger_store.py'
+      - 'resident-runtime/aggregate_repo_transition.py'
+      - 'resident-runtime/organization_ledger_readback.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'tests/test_organization_ledger_publication.py'
+      - 'tests/test_intr_destination_capability.py'
+      - '.github/workflows/organization-ledger-transition.yml'
   workflow_dispatch:
     inputs:
-      request:
-        description: 'Path of a committed transition request'
+      communication_id:
+        description: 'communication_id the closure correlates on'
         required: true
+        type: string
+      packet_id:
+        description: 'packet id for this diagnostic self-closure'
+        required: true
+        type: string
+      hb_epoch:
+        description: 'heartbeat epoch constraint (integer, at least 32)'
+        required: true
+        default: '32'
+        type: string
 
-permissions:
-  contents: write
-
-# ORGANIZATION_LEDGER_LOCK: one appender at a time. The push below is the
-# compare-and-swap against the published ref, so a writer that lost a race
+# ORGANIZATION_LEDGER_LOCK: one appender at a time. The push is the
+# compare-and-swap against the published ref, so a writer that lost the race
 # fails closed instead of overwriting.
 concurrency:
   group: organization-ledger
   cancel-in-progress: false
 
 jobs:
-  transition:
+  validate:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    env:
-      LEDGER_REF: refs/stegverse/organization-ledger
+    permissions:
+      contents: read
     steps:
       - name: Checkout organization boundary
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Validate the SV-011 ledger contract and the request intake before any append
-        run: |
-          python -m py_compile resident-runtime/organization_ledger_readback.py
-          python -m py_compile resident-runtime/organization_ledger_transition.py
-          python -m py_compile resident-runtime/aggregate_repo_transition.py
-          python -m py_compile .stegverse/transition-ledger/emit.py
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          contract = json.loads(Path(".stegverse/transition-ledger/org-contract.json").read_text())
-          assert contract["organization"] == "SV-011"
-          assert contract["organization_ledger_repository"] == "SV-011/.github"
-          assert contract["organization_ledger_ref"] == "refs/stegverse/organization-ledger"
-          location = json.loads(Path(".stegverse/transition-ledger/contract.json").read_text())["repository_ledger_location"]
-          assert location["repository"] == contract["organization_ledger_repository"]
-          assert location["ref"] == contract["organization_ledger_ref"]
-          assert location["new_ledger_root"] is False and location["namespace"]
-          assert location["namespace"] == "repository-ledger/SV-011/.github"
-          PY
-          python resident-runtime/organization_ledger_transition.py --validate-tree .stegverse/transition-requests
+      - name: Validate ledger contracts, self-closure, and readback on a redirected root
+        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_intr_destination_capability -v
 
-      - name: Bind the designated organization ledger ref and the repository ledger subtree within it
+  transition:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LEDGER_REF: refs/stegverse/organization-ledger
+      STEGVERSE_COMMUNICATION_ID: ${{ inputs.communication_id }}
+      STEGVERSE_PACKET_ID: ${{ inputs.packet_id }}
+      STEGVERSE_HB_EPOCH: ${{ inputs.hb_epoch }}
+    steps:
+      - name: Checkout organization boundary
+        uses: actions/checkout@v4
+
+      - name: Bind the designated organization ledger ref
         run: |
-          ref=$(python -c 'import json; c=json.load(open(".stegverse/transition-ledger/org-contract.json")); assert c["organization_ledger_repository"]=="SV-011/.github", c; print(c["organization_ledger_ref"])')
+          set -euo pipefail
+          locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
+          echo "$locators"
+          ref=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$locators")
           test "$ref" = "$LEDGER_REF"
-          namespace=$(python -c 'import json; l=json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]; assert l["ref"]=="refs/stegverse/organization-ledger", l; print(l["namespace"])')
+          namespace=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["namespace"])' "$locators")
+          org_root=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["organization_locator"])' "$locators")
+          repo_root=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
           echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
-          echo "repository ledger subtree: $namespace"
+          # Locators contain '#'. The append step exports them in its own shell.
+          test -n "$org_root" && test -n "$repo_root"
           if git ls-remote --exit-code origin "$LEDGER_REF" >/dev/null; then
             git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
             echo "ledger tip: $(git rev-parse "$LEDGER_REF")"
           else
-            echo "ledger ref not yet materialized; the first append opens it at genesis"
+            echo "ledger ref not yet materialized; the first append opens it"
           fi
 
-      - name: Select committed transition requests
-        env:
-          INPUT_REQUEST: ${{ github.event.inputs.request }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          if [ -n "$INPUT_REQUEST" ]; then
-            case "$INPUT_REQUEST" in
-              .stegverse/transition-requests/*.json) ;;
-              *) echo "FAIL_CLOSED: DISPATCH_REQUEST_OUTSIDE_COMMITTED_TRANSITION_REQUESTS" >&2; exit 1 ;;
-            esac
-            case "$INPUT_REQUEST" in
-              *../*|*/../*|*' '*) echo "FAIL_CLOSED: DISPATCH_REQUEST_PATH_INVALID" >&2; exit 1 ;;
-            esac
-            if ! INPUT_REQUEST="$INPUT_REQUEST" python -c 'import os,sys; p=os.environ["INPUT_REQUEST"]; sys.exit(0 if all(32 <= ord(c) <= 126 for c in p) else 1)'; then
-              echo "FAIL_CLOSED: DISPATCH_REQUEST_CONTROL_CHARACTER" >&2
-              exit 1
-            fi
-            if ! git ls-files --error-unmatch -- "$INPUT_REQUEST" >/dev/null 2>&1 || [ ! -f "$INPUT_REQUEST" ]; then
-              echo "FAIL_CLOSED: DISPATCH_REQUEST_NOT_COMMITTED" >&2
-              exit 1
-            fi
-            printf '%s\n' "$INPUT_REQUEST" > "$RUNNER_TEMP/requests.txt"
-          else
-            git diff --name-only --diff-filter=AM "$BEFORE" "$GITHUB_SHA" -- '.stegverse/transition-requests/*.json' > "$RUNNER_TEMP/requests.txt"
-          fi
-          cat "$RUNNER_TEMP/requests.txt"
-
-      - name: Append each committed request to the repository and organization ledgers
+      - name: Append the intr-destination diagnostic self-closure
         run: |
           set -euo pipefail
-          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF"
-          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          python3 - <<'PY'
+          import os, sys
+          for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID", "STEGVERSE_HB_EPOCH"):
+              value = os.environ.get(name, "")
+              if not value.strip() or any(ord(character) < 32 or ord(character) > 126 for character in value):
+                  print("FAIL_CLOSED: " + name + "_NOT_A_PRINTABLE_TOKEN")
+                  sys.exit(1)
+          epoch = int(os.environ["STEGVERSE_HB_EPOCH"])
+          if epoch < 32:
+              print("FAIL_CLOSED: HB_EPOCH_BEFORE_ANCHOR")
+              sys.exit(1)
+          PY
+          locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
+          export STEGVERSE_ORG_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["organization_locator"])' "$locators")
+          export STEGVERSE_REPO_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
+          case "$STEGVERSE_ORG_LEDGER_ROOT" in
+            git+*"#$LEDGER_REF") ;;
+            *) echo "FAIL_CLOSED: ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF" >&2; exit 1 ;;
+          esac
           mkdir -p "$RUNNER_TEMP/results"
-          while IFS= read -r request; do
-            [ -n "$request" ] || continue
-            name=$(basename "$request" .json)
-            out="$RUNNER_TEMP/results/$name"
-            mkdir -p "$out"
-            python resident-runtime/organization_ledger_transition.py --request "$request" | tee "$out/transition.json"
-          done < "$RUNNER_TEMP/requests.txt"
+          python3 resident-runtime/intr_destination_ingress.py --self-closure \
+            --registry org-boundary/registry/services.json \
+            --out "$RUNNER_TEMP/results/ingress.json"
+          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["disposition"]=="ALLOW", x; assert x.get("communication_id"); assert x["repository_receipt_observed"] is True; assert x["organization_receipt_observed"] is True; assert x["production_receipt_claimed"] is False; print("closure", x["communication_id"], x["repository_receipt_sha256"], x["organization_receipt_sha256"])' \
+            "$RUNNER_TEMP/results/ingress.json"
 
       - name: Publish the ledger ref (fast-forward only)
         run: |
+          set -euo pipefail
           if ! git rev-parse --verify --quiet "$LEDGER_REF" >/dev/null; then
-            echo "nothing appended; ledger ref not materialized"
-            exit 0
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_NOT_APPENDED","failed_predicate":"SELF_CLOSURE_APPENDED_TO_THE_REF","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            exit 1
           fi
           if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
-            echo '{"failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"re-run; a request already on the ledger is returned, not appended again"}'
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","detail":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"re-run; the same packet is answered from the ledger when it is already recorded","authority_constraint":"NONE_PUBLISH_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
 
       - name: Read the organization and repository ledgers back from a fresh fetch
         run: |
           set -euo pipefail
-          location=""
-          if git ls-remote --exit-code origin "$LEDGER_REF" >/dev/null 2>&1; then
-            fresh="$RUNNER_TEMP/readback.git"
-            git init -q --bare "$fresh"
-            auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
-            if [ -z "$auth_header" ]; then
-              echo '{"failure_code":"LEDGER_READBACK_FETCH_CREDENTIAL_UNAVAILABLE","failed_predicate":"FRESH_FETCH_CREDENTIAL_PRESENT","required_evidence_or_repair":"checkout credential unavailable for an independent fetch of the ledger ref","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry when the checkout credential can fetch the ledger ref"}'
-              exit 1
-            fi
-            git --git-dir="$fresh" -c http.https://github.com/.extraheader="$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
-            location="git+$fresh#$LEDGER_REF"
-          else
-            location="git+$GITHUB_WORKSPACE#$LEDGER_REF"
+          fresh="$RUNNER_TEMP/readback.git"
+          git init -q --bare "$fresh"
+          auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
+          if [ -z "$auth_header" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            exit 1
           fi
-          python resident-runtime/organization_ledger_readback.py \
-            --location "$location" --repository-namespace "$REPO_LEDGER_NAMESPACE" \
+          git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
+          python3 resident-runtime/organization_ledger_readback.py \
+            --location "git+$fresh#$LEDGER_REF" \
+            --repository-namespace "$REPO_LEDGER_NAMESPACE" \
+            --ingress-result "$RUNNER_TEMP/results/ingress.json" \
             --out "$RUNNER_TEMP/results/readback.json"
           {
+            echo '### organization ledger readback'
             echo '```json'
             cat "$RUNNER_TEMP/results/readback.json"
             echo '```'

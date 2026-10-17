@@ -14,6 +14,8 @@
     "evidence",
     "authority_constraint",
     "time_constraint",
+    "disposition_is_transition_evidence",
+    "production_receipt_claimed",
     "hb_reference",
     "previous_receipt_sha256"
   ],
@@ -24,9 +26,12 @@
     "namespace": "repository-ledger/SV-011/.github",
     "locator_form": "git+<checkout>#refs/stegverse/organization-ledger:repository-ledger/SV-011/.github",
     "new_ledger_root": false,
-    "designation_source": "org-contract.json organization_ledger_ref for SV-011/.github. The repository chain is a subtree of that ref. The ref starts empty.",
-    "rule": "The repository chain is kept in its own subtree of the designated organization ledger ref, published by the same fast-forward push under ORGANIZATION_LEDGER_LOCK. Repository replay walks repository-ledger/<repository>/HEAD.json back through its own receipts and never reads an organization receipt."
+    "designation_source": "org-contract.json organization_ledger_ref; preserves_repo_receipt: true; SV-011/.github organization ledger",
+    "rule": "The repository chain is kept in its own subtree of the designated organization ledger ref and is published by the same fast-forward push under ORGANIZATION_LEDGER_LOCK. Repository replay walks repository-ledger/SV-011/.github/HEAD.json back through its own receipts and does not read an organization receipt."
   },
+  "propagation_rule": "PROPAGATE_ONLY_EVIDENCE_NEEDED_BY_NEXT_HIGHER_LEVEL",
   "authority_constraint": "NONE_CONTRACT_ONLY",
-  "time_constraint": "HEARTBEAT_EPOCH"
+  "time_constraint": "HEARTBEAT_EPOCH",
+  "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+  "receipts_are_transition_evidence": true
 }

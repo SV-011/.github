@@ -19,7 +19,9 @@ repository does not claim StegOS already named it.
 Authority and time are constraint variables. Standing was already required at
 ingress. This operation does not re-decide it, and it does not select a
 processor. A disposition recorded here is transition evidence. Receipts written
-under a caller-supplied ledger root are not authentic production receipts.
+under a caller-supplied ledger root do not claim to be authentic production
+receipts. A dispatch supplies the designated organization ledger ref; a test
+supplies a redirected root.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -178,9 +181,51 @@ def _result(evidence: Mapping[str, Any], appended: Mapping[str, Any] | None, *,
     return result
 
 
+def _plain_token(value: str, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(name + " is required")
+    token = value.strip()
+    if len(token) > 240 or any(ord(character) < 32 or ord(character) > 126 for character in token):
+        raise SystemExit(name + " is not a printable token")
+    return token
+
+
+def diagnostic_payload(communication_id: str) -> dict[str, Any]:
+    """The diagnostic this organization acknowledges on a self-closure."""
+    return {
+        "message_class": COMMUNICATION_CLASS,
+        "communication_id": communication_id,
+        "subject": "purpose-neutral mesh diagnostic",
+        "body": {"schema": PAYLOAD_SCHEMA, "probe": "diagnostic-self-closure"},
+    }
+
+
+def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_id: str,
+                 hb_epoch: int | None = None) -> dict[str, Any]:
+    """Acknowledge this organization's own diagnostic and append both receipts.
+
+    ``_append`` writes the repository receipt and the organization receipt that
+    preserves it, both carrying ``communication_id``. The roots are the
+    caller-supplied locators. A dispatch passes the designated organization
+    ledger ref, with the repository chain in that ref's subtree. A redirected
+    root, including a test, writes that supplied store. This function does not
+    claim an authentic production receipt.
+    """
+    identifier = _plain_token(communication_id, "communication_id")
+    packet = _plain_token(packet_id, "packet_id")
+    return receive(diagnostic_payload(identifier), registry=registry, packet_id=packet,
+                   hb_epoch=hb_epoch)
+
+
 def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
             hb_epoch: int | None) -> tuple[dict[str, Any], bool]:
-    """Append at both levels. A replay of the same packet returns the recorded pair."""
+    """Append at both levels. A replay of the same packet returns the recorded pair.
+
+    The repository locator and the organization locator are caller-supplied.
+    On the published ref they are the same git ref: the organization chain at
+    the root and the repository chain in its subtree. Both receipts carry
+    ``communication_id``.
+    """
     predecessor = evidence["payload_sha256"]
     successor = sha({"disposition": evidence["disposition"], "packet_id": packet_id,
                      "communication_id": evidence.get("communication_id"),
@@ -244,16 +289,32 @@ def receive(payload: Any, *, registry: Mapping[str, Any], standing: Mapping[str,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--payload", type=Path, required=True)
+    parser.add_argument("--self-closure", action="store_true",
+                        help="acknowledge this organization's own diagnostic and append both receipts")
+    parser.add_argument("--communication-id", default=os.environ.get("STEGVERSE_COMMUNICATION_ID"))
+    parser.add_argument("--payload", type=Path, default=None)
     parser.add_argument("--registry", type=Path, required=True)
-    parser.add_argument("--packet-id", default="organization-intr-destination")
+    parser.add_argument("--packet-id", default=os.environ.get("STEGVERSE_PACKET_ID"))
     parser.add_argument("--hb-epoch", type=int, default=None)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
-    result = receive(
-        json.loads(args.payload.read_text(encoding="utf-8")),
-        registry=json.loads(args.registry.read_text(encoding="utf-8")),
-        packet_id=args.packet_id, hb_epoch=args.hb_epoch)
+    registry = json.loads(args.registry.read_text(encoding="utf-8"))
+    hb_epoch = args.hb_epoch
+    if hb_epoch is None and os.environ.get("STEGVERSE_HB_EPOCH"):
+        hb_epoch = int(os.environ["STEGVERSE_HB_EPOCH"])
+    if args.self_closure:
+        if not args.communication_id or not args.packet_id:
+            parser.error("--self-closure requires communication_id and packet_id")
+        result = self_closure(args.communication_id, registry=registry,
+                              packet_id=args.packet_id, hb_epoch=hb_epoch)
+    else:
+        if args.payload is None:
+            parser.error("--payload is required")
+        result = receive(
+            json.loads(args.payload.read_text(encoding="utf-8")),
+            registry=registry,
+            packet_id=args.packet_id or "organization-intr-destination",
+            hb_epoch=hb_epoch)
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
