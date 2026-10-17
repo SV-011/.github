@@ -202,7 +202,7 @@ class DefaultsAreListed(unittest.TestCase):
         register = json.loads(REGISTER.read_text(encoding="utf-8"))
         self.assertEqual(register["defaults_status"], "DEFAULT_PENDING_OWNER_CONFIRMATION")
         listed = {entry["item"]: entry for entry in register["defaults_pending_owner_confirmation"]}
-        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9", "H45"})
+        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9", "H45", "4b-a"})
         for entry in listed.values():
             self.assertTrue(entry["revert"])
             for surface in entry["surfaces"]:
@@ -553,6 +553,61 @@ C6_INTEGRITY_PREDICATES = {
     "REPOSITORY_CHAIN_VERIFIES", "REPOSITORY_LEDGER_HEAD_PRESENT",
     "RECEIPT_SELF_HASH", "CHAIN_LINKAGE", "SELF_HASH", "LINKAGE",
 }
+
+
+class PublishedRefReadbackJob4bA(_EnvCase):
+    """Item 4b, ECOSYSTEM_CAPABILITY_ABSENT (a): a read of the published ref with no append."""
+
+    def _job(self):
+        lines = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8").splitlines()
+        start = lines.index("  readback-published-ref:")
+        end = next(i for i in range(start + 1, len(lines))
+                   if lines[i].startswith("  ") and not lines[i].startswith("   ") and lines[i].strip().endswith(":"))
+        return "\n".join(lines[start:end])
+
+    def test_the_job_reads_only(self):
+        job = self._job()
+        self.assertIn("if: github.event_name != 'workflow_dispatch'", job)
+        self.assertIn("contents: read", job)
+        self.assertNotIn("contents: write", job)
+        for absent in ("git push", "update-ref", "intr_destination_ingress.py", "organization_ledger_transition.py",
+                       "aggregate_repo_transition", "--ingress-result", "--transition-result"):
+            self.assertNotIn(absent, job, absent)
+        self.assertIn('--location "git+$fresh#$LEDGER_REF"', job)
+        self.assertIn("LEDGER_REF: refs/stegverse/organization-ledger", job)
+
+    def test_the_check_step_records_conformance_not_a_disposition(self):
+        script = _cases._workflow_step_script("Check the published-ref observation conforms")
+        results = self.base / "results"
+        results.mkdir()
+
+        def check(report, status):
+            (results / "published.readback.json").write_text(json.dumps(report), encoding="utf-8")
+            (results / "published.readback.status").write_text(status + "\n", encoding="utf-8")
+            completed = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                       env={**os.environ, "RUNNER_TEMP": str(self.base)})
+            return completed.returncode, json.loads(completed.stdout)
+
+        observation = {"schema": readback.OBSERVATION_SCHEMA, "readback": "OBSERVATION_ONLY"}
+        code, line = check(observation, "0")
+        self.assertEqual(code, 0)
+        self.assertIsNone(line["ledger_disposition"])
+        held = dict(observation, disposition="FAIL_CLOSED", undeclared_failures=[],
+                    **{name: name.upper() for name in SIX})
+        code, line = check(held, "1")
+        self.assertEqual(code, 0)
+        self.assertEqual(line["ledger_disposition"], "FAIL_CLOSED")
+        self.assertIs(line["job_conclusion_is_not_the_ledger_disposition"], True)
+        for name in SIX:
+            self.assertEqual(line[name], name.upper())
+        for report, status in ((dict(held, undeclared_failures=["x"]), "1"),
+                               (dict(held, next_attempt=""), "1"),
+                               (observation, "1"), (held, "0"), ({}, "1")):
+            code, line = check(report, status)
+            self.assertEqual(code, 1, (report, status))
+            self.assertEqual(line["failure_code"], "PUBLISHED_REF_OBSERVATION_DOES_NOT_CONFORM")
+            for name in SIX:
+                self.assertTrue(line[name], name)
 
 
 class C6ParityGaps(_EnvCase):

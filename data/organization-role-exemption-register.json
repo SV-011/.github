@@ -129,6 +129,15 @@
         ".github/workflows/organization-ledger-transition.yml step Hold the readback FAIL_CLOSED on a declared legacy segment"
       ],
       "revert": "drop source_transition_sha256 and the retained document from append, and drop source_receipt_retention from the readback and the contract; drop the Hold step and validate_legacy_segment; for C6 convergence restore the directory-copy unverified tip, the genesis-scoped segment and the exit-0 observation with a nested finding; for C6 parity restore the previous waivable list, the LEDGER_/RECEIPT_ organization predicate names and empty_ledger_report"
+    },
+    {
+      "item": "4b-a",
+      "audit_item": "item 4b ECOSYSTEM_CAPABILITY_ABSENT (a) READBACK_ONLY_ENTRYPOINT_ON_THE_PUBLISHED_REF",
+      "change": "job readback-published-ref (pull_request and push, contents: read) fetches refs/stegverse/organization-ledger into a fresh bare repository and runs the readback CLI on it; it never pushes and runs no ingress, intake or append; its conclusion says whether a conforming observation was recorded (disposition-free, or FAIL_CLOSED with the six fields and no undeclared failures), not the ledger disposition, which is printed and written to the step summary; the transition job's Hold step is unchanged",
+      "surfaces": [
+        ".github/workflows/organization-ledger-transition.yml job readback-published-ref"
+      ],
+      "revert": "delete job readback-published-ref, or add the Hold step to it so it fails on any disposition"
     }
   ],
   "defaults_status": "DEFAULT_PENDING_OWNER_CONFIRMATION"

@@ -293,6 +293,95 @@ jobs:
           path: ${{ runner.temp }}/results
           if-no-files-found: ignore
 
+  # Item 4b / ECOSYSTEM_CAPABILITY_ABSENT (a), DEFAULT pending owner
+  # confirmation: a read of the published ref with no append, so a live read
+  # cites a run id. contents: read only; it fetches the ref into a fresh bare
+  # repository, never pushes, and never runs the ingress, the transition
+  # intake, or aggregate_repo_transition. The job conclusion says whether a
+  # conforming observation was recorded (a disposition-free observation, or a
+  # FAIL_CLOSED report with its six fields and no undeclared failures). It is
+  # not the ledger's disposition: that is printed in the log and the step
+  # summary. The transition job's Hold step is unchanged (no pass path).
+  # Revert: delete this job, or add the Hold step so it fails on any disposition.
+  readback-published-ref:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      LEDGER_REF: refs/stegverse/organization-ledger
+    steps:
+      - name: Checkout organization boundary
+        uses: actions/checkout@v4
+
+      - name: Read the published organization ledger ref back, observation only
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          namespace=$(python3 -c 'import json; print(json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]["namespace"])')
+          fresh="$RUNNER_TEMP/published.git"
+          git init -q --bare "$fresh"
+          auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
+          if [ -z "$auth_header" ]; then
+            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","required_evidence_or_repair":"the checkout transport header (job token scope contents: read) for a fetch of the published ref","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job readback-published-ref","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"re-run the job; nothing is appended","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}' | tee "$RUNNER_TEMP/results/published.readback.json"
+            echo 1 > "$RUNNER_TEMP/results/published.readback.status"
+            exit 0
+          fi
+          git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
+          tip=$(git --git-dir="$fresh" rev-parse "$LEDGER_REF")
+          echo "$tip" > "$RUNNER_TEMP/results/published.tip"
+          status=0
+          python3 resident-runtime/organization_ledger_readback.py \
+            --location "git+$fresh#$LEDGER_REF" \
+            --repository-namespace "$namespace" \
+            --out "$RUNNER_TEMP/results/published.readback.json" || status=1
+          echo "$status" > "$RUNNER_TEMP/results/published.readback.status"
+          echo "published ref $LEDGER_REF tip $tip; readback exit $status; code $(git rev-parse HEAD)"
+          cat "$RUNNER_TEMP/results/published.readback.json"
+          {
+            echo '### published organization ledger readback (observation only, nothing appended)'
+            echo "ref \`$LEDGER_REF\` tip \`$tip\`, readback exit $status, code \`$(git rev-parse HEAD)\`"
+            echo '```json'
+            cat "$RUNNER_TEMP/results/published.readback.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the published-ref observation conforms
+        run: |
+          python3 - "$RUNNER_TEMP/results/published.readback.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          path = sys.argv[1]
+          status_file = Path(path[:-len(".json")] + ".status")
+          status = status_file.read_text(encoding="utf-8").strip() if status_file.is_file() else "absent"
+          try:
+              report = json.load(open(path, encoding="utf-8"))
+          except (OSError, ValueError):
+              report = {}
+          six = ("failure_code", "failed_predicate", "required_evidence_or_repair", "retry_entrypoint", "owning_existing_goal", "next_attempt")
+          if report and "disposition" not in report and status == "0":
+              conforms = True
+          elif report.get("disposition") == "FAIL_CLOSED" and status == "1" and all(report.get(name) for name in six) and not report.get("undeclared_failures"):
+              conforms = True
+          else:
+              conforms = False
+          line = {"readback": path, "readback_status": status, "observation_recorded_and_conforms": conforms, "job_conclusion_is_not_the_ledger_disposition": True, "ledger_disposition": report.get("disposition"), "production_receipt_claimed": False}
+          if report.get("disposition"):
+              line.update({name: report.get(name) for name in six})
+          if not conforms:
+              line.update({"disposition": "FAIL_CLOSED", "failure_code": "PUBLISHED_REF_OBSERVATION_DOES_NOT_CONFORM", "failed_predicate": "READBACK_REPORT_IS_AN_OBSERVATION_OR_A_SIX_FIELD_FAIL_CLOSED_WITHOUT_UNDECLARED_FAILURES", "required_evidence_or_repair": "a readback report at " + path + " (status " + status + ") that is a disposition-free observation, or a FAIL_CLOSED report with its six fields and no undeclared failures", "retry_entrypoint": ".github/workflows/organization-ledger-transition.yml job readback-published-ref", "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001", "next_attempt": "re-run the job; nothing is appended"})
+          print(json.dumps(line, sort_keys=True))
+          sys.exit(0 if conforms else 1)
+          PY
+
+      - name: Retain the published-ref observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: organization-ledger-published-readback
+          path: ${{ runner.temp }}/results
+          if-no-files-found: ignore
+
   request-transition:
     if: github.event_name == 'push'
     needs: validate
