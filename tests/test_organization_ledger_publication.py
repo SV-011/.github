@@ -179,7 +179,12 @@ class TemporaryRefClosureTests(unittest.TestCase):
         self.assertEqual(fetched.returncode, 0, fetched.stderr)
         verified = readback.readback(
             "git+" + str(fresh.resolve()) + "#" + self.ref, cli, self.namespace)
-        self.assertEqual(verified["disposition"], "ALLOW")
+        self.assertNotIn("disposition", verified)
+        self.assertEqual(verified["readback"], "OBSERVATION_ONLY")
+        self.assertIs(verified["records_no_transition"], True)
+        self.assertIs(verified["verification"]["organization_chain_verifies"], True)
+        self.assertIs(verified["verification"]["repository_chain_verifies"], True)
+        self.assertIs(verified["closure_result_matches_receipt_evidence"], True)
         self.assertEqual(verified["communication_id"], communication_id)
         self.assertIs(verified["communication_id_on_repository_receipt"], True)
         self.assertIs(verified["communication_id_on_organization_receipt"], True)

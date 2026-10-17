@@ -26,4 +26,21 @@ A `current_state` that the readback would not accept as a basis is refused befor
 
 `build_manifest` and `manifest` are refused with `SDK_MANIFEST_BUILDER_NOT_PRESENT`. This repository does not build or admit an SDK manifest.
 
-No request is committed here. Committing one is the manifest that appends.
+No request is committed here. Committing one is the manifest that appends. A push that adds or changes no request file appends nothing.
+
+## Readback
+
+`resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. Its report has no top-level `disposition`. It reports two things separately:
+
+- `verification`: whether the organization chain verifies, whether the repository chain verifies, and whether every organization receipt names a repository receipt that is present. A closure result handed to it must match the `evidence.disposition` already inside the receipts it names (`closure_result_matches_receipt_evidence`).
+- the current-state basis: `basis_established`, `current_state_reason`, and `current_state`.
+
+A disposition appears only inside the original receipts, as evidence that a transition occurred. It does not satisfy the authority constraint or the time constraint.
+
+The head receipt on the live ref (`2cc58cec`, organization receipt `sha256:3db9008d…`) carries no `current_state`, so the readback reports `BASIS_ABSENT` with `current_state` null. That code is never turned into a current state.
+
+`Admissible-Existence/TT@ba3cca71` has no `fixtures/transition-elements/t-011.json`. A request that names a fixture TT does not hold is accepted here, because this repository does not open the fixture, and TT reports `BASIS_UNKNOWN` for it (`fixture_ref_resolution`).
+
+## Open
+
+The `standing` field is unchanged. Its replacement by a constraint-set shape is on hold until that shape is defined (SV-011/.github#12, item 2).

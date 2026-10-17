@@ -46,9 +46,19 @@ digest that does not match is ``BASIS_CONTRADICTORY``. In each case
 ``basis_established`` is false and ``current_state`` is null. Nothing is
 copied from an earlier receipt, the clock, or a default.
 
+Observation only
+----------------
+A readback records no transition, so its output carries no disposition. A
+disposition is evidence that a state transition occurred, and it stays inside
+the receipt that recorded that transition. The output reports two things
+separately: ``verification`` (the chains read back and each receipt verifies
+against its own body) and the current-state basis (``basis_established``,
+``current_state_reason``). A verified chain whose head declares no basis
+reports ``BASIS_ABSENT``; that is never turned into a current state.
+
 The readback does not select admission, routing, or execution. Authority and
-time stay constraint variables. A disposition here is transition evidence.
-This module does not claim an authentic production receipt.
+time stay constraint variables. This module does not claim an authentic
+production receipt.
 """
 from __future__ import annotations
 
@@ -234,6 +244,9 @@ def empty_ledger_report(location: str) -> dict[str, Any]:
         "schema": "stegverse.organization-ledger-readback/v1",
         "location": location,
         "ledger_empty": True,
+        "readback": "OBSERVATION_ONLY",
+        "records_no_transition": True,
+        "verification": {"organization_chain_verifies": False, "repository_chain_verifies": False},
         "chain_length": 0,
         "authority_constraint": "NONE_READBACK_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
@@ -299,7 +312,7 @@ def designated_locators(workspace: Path) -> dict[str, Any]:
         "repository_locator": "git+" + str(root) + "#" + str(ref) + ":" + str(namespace),
         "authority_constraint": "NONE_LOCATOR_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
-        "disposition_is_transition_evidence": True,
+        "records_no_transition": True,
         "production_receipt_claimed": False,
     }
 
@@ -418,8 +431,13 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     result: dict[str, Any] = {
         "schema": "stegverse.organization-ledger-readback/v1",
         "location": location,
-        "disposition": "ALLOW",
-        "disposition_is_transition_evidence": True,
+        "readback": "OBSERVATION_ONLY",
+        "records_no_transition": True,
+        "verification": {
+            "organization_chain_verifies": True,
+            "repository_chain_verifies": True,
+            "every_organization_receipt_preserves_a_repository_receipt": True,
+        },
         "head_receipt_sha256": org_head["receipt_sha256"],
         "chain_length": len(org_chain),
         "genesis_receipt_sha256": org_chain[0]["receipt_sha256"],
@@ -443,8 +461,6 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
         result.update(_transition_result_in_chains(transition_result, repo_chain, org_chain))
     if ingress_result is None:
         return result
-    if ingress_result.get("disposition") != "ALLOW":
-        raise ReadbackRefused("INGRESS_DISPOSITION_IS_ALLOW", str(ingress_result.get("disposition")))
     communication_id = ingress_result.get("communication_id")
     repo_sha = ingress_result.get("repository_receipt_sha256")
     org_sha = ingress_result.get("organization_receipt_sha256")
@@ -464,8 +480,15 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
         raise ReadbackRefused("REPOSITORY_RECEIPT_CARRIES_COMMUNICATION_ID", str(communication_id))
     if _communication_id(organization_receipt) != communication_id:
         raise ReadbackRefused("ORGANIZATION_RECEIPT_CARRIES_COMMUNICATION_ID", str(communication_id))
+    # The closure result is the writer's report. Its disposition must be the
+    # one the receipts recorded; the readback does not require any value.
+    for receipt, predicate in ((repository_receipt, "CLOSURE_RESULT_MATCHES_REPOSITORY_RECEIPT_EVIDENCE"),
+                               (organization_receipt, "CLOSURE_RESULT_MATCHES_ORGANIZATION_RECEIPT_EVIDENCE")):
+        evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
+        if "disposition" in ingress_result and evidence.get("disposition") != ingress_result.get("disposition"):
+            raise ReadbackRefused(predicate, str(receipt.get("receipt_sha256")))
     result.update({
-        "ingress_disposition": "ALLOW",
+        "closure_result_matches_receipt_evidence": True,
         "communication_id": communication_id,
         "repository_receipt_sha256": repo_sha,
         "organization_receipt_sha256": org_sha,
@@ -482,8 +505,11 @@ def _refusal(location: str, exc: BaseException) -> dict[str, Any]:
     return {
         "schema": "stegverse.organization-ledger-readback/v1",
         "location": location,
-        "disposition": "FAIL_CLOSED",
-        "disposition_is_transition_evidence": True,
+        "readback": "OBSERVATION_ONLY",
+        "records_no_transition": True,
+        "verification": {"organization_chain_verifies": False, "repository_chain_verifies": False},
+        "basis_established": False,
+        "current_state": None,
         "failure_code": "ORGANIZATION_LEDGER_READBACK_FAILED",
         "failed_predicate": getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK"),
         "detail": getattr(exc, "detail", str(exc)),

@@ -147,7 +147,10 @@ jobs:
           python3 resident-runtime/intr_destination_ingress.py --self-closure \
             --registry org-boundary/registry/services.json \
             --out "$RUNNER_TEMP/results/ingress.json"
-          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["disposition"]=="ALLOW", x; assert x.get("communication_id"); assert x["repository_receipt_observed"] is True; assert x["organization_receipt_observed"] is True; assert x["production_receipt_claimed"] is False; print("closure", x["communication_id"], x["repository_receipt_sha256"], x["organization_receipt_sha256"])' \
+          # The closure result's disposition is evidence of the recorded transition.
+          # It is printed, not required to hold a particular value. Publishing
+          # needs both receipts to have been recorded with communication_id.
+          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x.get("communication_id"), x; assert x["repository_receipt_observed"] is True, x; assert x["organization_receipt_observed"] is True, x; assert x["disposition_is_transition_evidence"] is True, x; assert x["production_receipt_claimed"] is False, x; print("closure", x["communication_id"], "recorded disposition evidence:", x.get("disposition"), x["repository_receipt_sha256"], x["organization_receipt_sha256"])' \
             "$RUNNER_TEMP/results/ingress.json"
 
       - name: Publish the ledger ref (fast-forward only)
@@ -169,7 +172,7 @@ jobs:
           git init -q --bare "$fresh"
           auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
           if [ -z "$auth_header" ]; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
@@ -283,7 +286,7 @@ jobs:
           git init -q --bare "$fresh"
           auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
           if [ -z "$auth_header" ]; then
-            echo '{"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
+            echo '{"readback":"OBSERVATION_ONLY","records_no_transition":true,"failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","detail":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","next_attempt":"retry with repository contents permission","authority_constraint":"NONE_READBACK_ONLY","time_constraint":"HEARTBEAT_EPOCH","production_receipt_claimed":false}'
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"

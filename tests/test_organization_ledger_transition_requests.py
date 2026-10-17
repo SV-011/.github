@@ -394,6 +394,7 @@ class ContractAndWordingTests(unittest.TestCase):
         "resident-runtime/organization_ledger_readback.py",
         "resident-runtime/organization_ledger_transition.py",
         ".github/workflows/organization-ledger-transition.yml",
+        "SV_011_ORG_RUNTIME_MIRROR_HANDOFF.md",
     )
 
     def test_the_contract_declares_the_intake_and_the_basis_source(self):
@@ -417,6 +418,221 @@ class ContractAndWordingTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding="utf-8").lower()
             for needle in needles:
                 self.assertNotIn(needle, text, relative + ": " + needle.strip())
+
+
+def _workflow_step_script(step_name: str) -> str:
+    """The ``run: |`` body of one step of the ledger workflow, without a YAML parser."""
+    lines = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.strip() == "- name: " + step_name)
+    run = next(index for index in range(start, len(lines)) if lines[index].strip() == "run: |")
+    body = []
+    for line in lines[run + 1:]:
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        body.append(line[10:])
+    return "\n".join(body) + "\n"
+
+
+class ObservationOnlyReadbackTests(_EnvCase):
+    """#12 fix 1: a readback records no transition and carries no disposition."""
+
+    def _closure(self, disposition="ALLOW"):
+        return {"disposition": disposition, "communication_id": LIVE_COMMUNICATION_ID,
+                "repository_receipt_sha256": LIVE_REPO_HEAD, "organization_receipt_sha256": LIVE_ORG_HEAD}
+
+    def assert_observation_only(self, result):
+        self.assertNotIn("disposition", result)
+        self.assertNotIn("ingress_disposition", result)
+        self.assertNotIn("disposition_is_transition_evidence", result)
+        self.assertEqual(result["readback"], "OBSERVATION_ONLY")
+        self.assertIs(result["records_no_transition"], True)
+        self.assertIn("verification", result)
+
+    def test_verification_and_basis_are_reported_separately_for_the_live_head(self):
+        ledger = LedgerRepo(self.base, LIVE)
+        code, result = self.readback_cli(ledger.org, ingress_result=self._closure())
+        self.assertEqual(code, 0, result)
+        self.assert_observation_only(result)
+        self.assertEqual(result["verification"], {
+            "organization_chain_verifies": True,
+            "repository_chain_verifies": True,
+            "every_organization_receipt_preserves_a_repository_receipt": True,
+        })
+        self.assertIs(result["basis_established"], False)
+        self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
+        self.assertIsNone(result["current_state"])
+        for key in ("state_id", "as_of", "fresh_until", "basis_digest", "satisfied_scope_ids"):
+            self.assertNotIn(key, result)
+        self.assertIs(result["closure_result_matches_receipt_evidence"], True)
+
+    def test_the_disposition_stays_inside_the_original_receipts(self):
+        receipt = json.loads((LIVE / "receipts" / (LIVE_ORG_HEAD[7:] + ".json")).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["evidence"]["disposition"], "ALLOW")
+        self.assertIs(receipt["disposition_is_transition_evidence"], True)
+        result = readback.readback(str(LIVE), None, NAMESPACE)
+        self.assert_observation_only(result)
+        self.assertNotIn("ALLOW", json.dumps({k: v for k, v in result.items() if k != "location"}))
+
+    def test_a_closure_result_is_not_required_to_hold_any_disposition_value(self):
+        ledger = LedgerRepo(self.base, LIVE)
+        for disposition in ("DENY", "FAIL_CLOSED"):
+            code, result = self.readback_cli(ledger.org, ingress_result=self._closure(disposition))
+            self.assertEqual(code, 1, result)
+            self.assert_observation_only(result)
+            self.assertIn(result["failed_predicate"], (
+                "CLOSURE_RESULT_MATCHES_REPOSITORY_RECEIPT_EVIDENCE",
+                "CLOSURE_RESULT_MATCHES_ORGANIZATION_RECEIPT_EVIDENCE"))
+            self.assertNotEqual(result["failed_predicate"], "INGRESS_DISPOSITION_IS_ALLOW")
+        source = (ROOT / "resident-runtime/organization_ledger_readback.py").read_text(encoding="utf-8")
+        self.assertNotIn("INGRESS_DISPOSITION_IS_ALLOW", source)
+        self.assertNotIn('"ALLOW"', source)
+
+    def test_a_refused_readback_carries_no_disposition_and_no_basis(self):
+        code, result = self.readback_cli(str(self.base / "absent"), ingress_result=self._closure())
+        self.assertEqual(code, 1, result)
+        self.assert_observation_only(result)
+        self.assertIs(result["basis_established"], False)
+        self.assertIsNone(result["current_state"])
+
+    def test_the_empty_ledger_report_is_observation_only(self):
+        empty = self.base / "empty"
+        empty.mkdir()
+        self.assert_observation_only(readback.readback(str(empty), None, NAMESPACE))
+
+    def test_the_dispatch_consumer_does_not_require_a_disposition_value(self):
+        workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
+        self.assertNotIn('x["disposition"]=="ALLOW"', workflow)
+        self.assertNotIn("INGRESS_DISPOSITION_IS_ALLOW", workflow)
+        self.assertNotIn('"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE"', workflow)
+
+
+class PublicationAndIntakeVerificationTests(_EnvCase):
+    """#12 fix 3: history, fast-forward publication, idempotency, no-request, fail-closed basis."""
+
+    def test_appending_keeps_the_published_history_as_an_ancestor(self):
+        ledger = LedgerRepo(self.base, LIVE)
+        seed = ledger.tip()
+        before = {path: ledger.show(path) for path in (
+            "HEAD.json", "receipts/" + LIVE_ORG_HEAD[7:] + ".json",
+            NAMESPACE + "/HEAD.json", NAMESPACE + "/receipts/" + LIVE_REPO_HEAD[7:] + ".json")}
+        code, applied = self.apply_cli(ledger, request(state=current_state()))
+        self.assertEqual(code, 0, applied)
+        self.assertEqual(subprocess.run(["git", "-C", str(ledger.path), "merge-base", "--is-ancestor", seed, ledger.tip()]
+                                        ).returncode, 0)
+        for path in before:
+            if path.endswith("HEAD.json"):
+                continue
+            self.assertEqual(ledger.show(path), before[path], path)
+        listed = subprocess.check_output(["git", "-C", str(ledger.path), "ls-tree", "-r", "--name-only", seed],
+                                         text=True).split()
+        for path in listed:
+            if not path.endswith("HEAD.json"):
+                self.assertEqual(ledger.show(path), (LIVE / path).read_bytes(), path)
+
+    def test_publication_is_fast_forward_only(self):
+        for step in ("Publish the ledger ref (fast-forward only)",):
+            script = _workflow_step_script(step)
+            self.assertIn('git push origin "$LEDGER_REF:$LEDGER_REF"', script)
+            self.assertNotIn("--force", script)
+            self.assertNotIn('"+$LEDGER_REF', script)
+        remote = self.base / "remote.git"
+        subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+        (self.base / "a").mkdir()
+        (self.base / "b").mkdir()
+        first = LedgerRepo(self.base / "a")
+        second = LedgerRepo(self.base / "b")
+        self.apply_cli(first, request("RACE-A", state=current_state()))
+        self.apply_cli(second, request("RACE-B", state=current_state()))
+        push = ["push", "-q", str(remote), REF + ":" + REF]
+        self.assertEqual(subprocess.run(["git", "-C", str(first.path)] + push, capture_output=True).returncode, 0)
+        published = subprocess.check_output(["git", "--git-dir", str(remote), "rev-parse", REF], text=True).strip()
+        raced = subprocess.run(["git", "-C", str(second.path)] + push, capture_output=True)
+        self.assertNotEqual(raced.returncode, 0)
+        self.assertEqual(subprocess.check_output(["git", "--git-dir", str(remote), "rev-parse", REF], text=True).strip(),
+                         published)
+
+    def test_reapplying_after_a_later_request_returns_the_first_receipts(self):
+        ledger = LedgerRepo(self.base)
+        _, first = self.apply_cli(ledger, request("IDEM-A", state=current_state()))
+        _, later = self.apply_cli(ledger, request("IDEM-B", state=current_state(state_id="sv011.synthetic.state-2")))
+        tip = ledger.tip()
+        code, again = self.apply_cli(ledger, request("IDEM-A", state=current_state()))
+        self.assertEqual(code, 0, again)
+        self.assertEqual(again["organization_receipt_sha256"], first["organization_receipt_sha256"])
+        self.assertEqual(ledger.tip(), tip)
+        code, result = self.readback_cli(ledger.org, transition_result=again)
+        self.assertEqual(code, 0, result)
+        self.assertIs(result["request_receipt_is_head"], False)
+        self.assertEqual(result["current_state"]["state_id"], "sv011.synthetic.state-2")
+
+    def test_a_changed_request_with_the_same_transition_id_fails_closed(self):
+        ledger = LedgerRepo(self.base)
+        self.apply_cli(ledger, request("COLLIDE", state=current_state()))
+        tip = ledger.tip()
+        code, refused = self.apply_cli(ledger, request("COLLIDE", state=current_state(state_id="other")))
+        self.assertEqual(code, 1, refused)
+        self.assertIs(refused["consequence_committed"], False)
+        self.assertEqual(ledger.tip(), tip)
+
+    def _select(self, repo: Path, before: str, sha: str) -> tuple[str, str]:
+        script = _workflow_step_script("Select the transition requests this push added or changed")
+        runner = self.base / ("runner-" + sha[:8])
+        runner.mkdir()
+        output = runner / "output"
+        output.write_text("", encoding="utf-8")
+        completed = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True,
+                                   env={**os.environ, "BEFORE": before, "GITHUB_SHA": sha,
+                                        "RUNNER_TEMP": str(runner), "GITHUB_OUTPUT": str(output)})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return output.read_text(encoding="utf-8"), (runner / "requests.txt").read_text(encoding="utf-8")
+
+    def test_a_push_without_a_request_selects_nothing_and_one_with_a_request_selects_it(self):
+        repo = self.base / "checkout"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+
+        def commit(path, text):
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", path], check=True, env=env)
+            return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+        base = commit(".stegverse/transition-requests/README.md", "intake\n")
+        docs = commit("docs/note.md", "no request\n")
+        output, selected = self._select(repo, base, docs)
+        self.assertIn("present=false", output)
+        self.assertEqual(selected.strip(), "")
+        added = commit(".stegverse/transition-requests/first.json", json.dumps(request()))
+        output, selected = self._select(repo, docs, added)
+        self.assertIn("present=true", output)
+        self.assertEqual(selected.split(), [".stegverse/transition-requests/first.json"])
+        later_steps = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
+        self.assertGreaterEqual(later_steps.count("if: steps.select.outputs.present == 'true'"), 4)
+
+    def test_fixture_ref_and_basis_faults_fail_closed_at_intake_with_nothing_appended(self):
+        ledger = LedgerRepo(self.base)
+        faults = [
+            current_state(declared_transition_element={"transition_id": "T-011",
+                                                       "fixture_ref": "construction/first-transition-element.json"}),
+            current_state(declared_transition_element={"transition_id": "T-011",
+                                                       "fixture_ref": "fixtures/transition-elements/T-011.json"}),
+            current_state(declared_role_escalation={"role_id": "r", "from_role": "context", "to_role": "context"}),
+            current_state(satisfied_scope_ids=["role_escalation"]),
+            current_state(fresh_until="2026-10-16T00:00:00Z"),
+            {key: value for key, value in current_state().items() if key != "declared_role_escalation"},
+        ]
+        for index, state in enumerate(faults):
+            code, refused = self.apply_cli(ledger, request("FAULT-%d" % index, state=state))
+            self.assertEqual(code, 1, refused)
+            self.assertEqual(refused["failed_predicate"], "TRANSITION_REQUEST_CURRENT_STATE_IS_A_BASIS")
+            self.assertTrue(refused["required_evidence_or_repair"].split(":")[0] in (
+                "BASIS_ABSENT", "BASIS_UNKNOWN", "BASIS_STALE", "BASIS_CONTRADICTORY"), refused)
+            self.assertIs(refused["consequence_committed"], False)
+        self.assertNotEqual(subprocess.run(["git", "-C", str(ledger.path), "rev-parse", "--verify", "--quiet", REF],
+                                           capture_output=True).returncode, 0)
 
 
 if __name__ == "__main__":
