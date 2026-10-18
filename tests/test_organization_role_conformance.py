@@ -175,9 +175,13 @@ class TransitionRequestNonAllow(Workspace):
             self.assertEqual(refused["failure_code"], "ORGANIZATION_TRANSITION_REQUEST_REFUSED")
             self.assertEqual(refused["failed_predicate"], predicate)
             self.assert_six(refused, goal)
-            self.assertIs(refused["refusal_recorded"], False)
-            self.assertIs(refused["disposition_is_transition_evidence"], False)
+            # Refused requests are recorded (ORRD Conformance item 1); a non-object leaves no receipt.
+            recorded = not isinstance(document, (str, list))
+            self.assertIs(refused["refusal_recorded"], recorded, refused)
+            self.assertIs(refused["disposition_is_transition_evidence"], recorded)
             self.assertIs(refused["consequence_committed"], False)
+            if not recorded:
+                self.assertEqual(refused["refusal_recorded_reason"], "REQUEST_IS_NOT_A_JSON_OBJECT_NO_RECEIPT_WRITTEN")
 
     def test_a_missing_request_path_and_a_refused_tree_carry_six_fields(self):
         code, refused = self.run_cli(ROOT / "resident-runtime/organization_ledger_transition.py")
@@ -216,7 +220,7 @@ class TransitionRequestNonAllow(Workspace):
 class ReadbackNonAllow(Workspace):
     """N4/N5: refused readbacks carry FAIL_CLOSED and six fields; unestablished bases carry six fields.
 
-    DEFAULT pending owner confirmation (C6 convergence c): a refusal carries a
+    DEFAULT in force (fail-closed) (C6 convergence c): a refusal carries a
     top-level disposition FAIL_CLOSED; a successful read carries none.
     """
 
@@ -397,7 +401,7 @@ class ExemptionRegister(SixFields):
         self.assertEqual(register["authority_effect"], "NONE_REGISTER_ONLY")
         self.assertEqual(register["non_allow_result_fields"], list(SIX))
         prohibited = [item.lower().replace("_", " ") for item in register["prohibited_justifications"]]
-        self.assertEqual({entry["audit_item"] for entry in register["exemptions"]}, {"N1", "N8"})
+        self.assertEqual({entry["audit_item"] for entry in register["exemptions"]}, {"N1", "N8", "M1"})
         for entry in register["exemptions"]:
             for name in register["required_fields"]:
                 self.assertIn(name, entry, (name, entry["surface"]))

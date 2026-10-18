@@ -312,14 +312,14 @@ head_organization_receipt: sha256:3db9008d… (intr-destination self-closure, di
 repository_receipt: repository-ledger/SV-011/.github/ sha256:f8134042…
 intake: .stegverse/transition-requests/*.json, push to main, job request-transition
 publication: fast-forward only, read back from a fresh fetch
-readback: observation only; a successful read has no top-level disposition (exit 0); a refusal or a declared legacy segment is top-level FAIL_CLOSED with six fields (exit 1) (DEFAULT, C6 convergence c; #12 item 1 open for Rigel); live copies read through git (clone or 2cc58cec bundle) only (C6 a); a segment always applies, segment-less contracts via --org-contract (C6 b); verification and current-state basis reported separately; C6 never-waivable set, organization-chain predicate names, empty ledger refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 1-3); success as ALLOW under readback/v1 pending Rigel on #12 item 1 (C6 parity 4, not applied)
+readback: observation only; a successful read has no top-level disposition (exit 0); a refusal or a declared legacy segment is top-level FAIL_CLOSED with six fields (exit 1) (DEFAULT, C6 convergence c; #12 item 1 a joint-discovery item); live copies read through git (clone or 2cc58cec bundle) only (C6 a); a segment always applies, segment-less contracts via --org-contract (C6 b); verification and current-state basis reported separately; C6 never-waivable set, organization-chain predicate names, empty ledger refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 1-3); success as ALLOW under readback/v1 a joint-discovery item with #12 item 1 (C6 parity 4, not applied)
 live_basis: BASIS_ABSENT (head receipt carries no current_state)
 tt_fixture_t_011_present_at_ba3cca71: false
 sdk_manifest_builder_present: false (build_manifest/manifest refused with SDK_MANIFEST_BUILDER_NOT_PRESENT)
-standing_to_constraint_set: DEFAULT pending owner confirmation, option B (SV-011/.github#12 item 2)
+standing_to_constraint_set: DEFAULT in force (fail-closed), option B (SV-011/.github#12 item 2)
 readback_schema: stegverse.organization-ledger-observation/v1 (DEFAULT, B3)
 manifested_route: required, bound in org-contract.json (DEFAULT, B5)
-first_current_state: .stegverse/declarations/SV011-ORG-STATE-0001.request.json, unsubmitted (DEFAULT, B2; T-181 fallback)
+first_current_state: .stegverse/transition-requests/SV011-ORG-STATE-0001.request.json, staged; appended by job request-transition when PR #9 is admitted (DEFAULT, B2; T-181 fallback; #167 comment 6245553028 item 3)
 build_expectation: .stegverse/build-expectations/sv011-first-cycle.json (DEFAULT, B9)
 source_receipt_retention: forward only under source-receipts/; 3db9008d at 2cc58cec is the legacy pre-retention segment, never re-minted (DEFAULT, H45); declaration per shared readback C6 (waived_predicate, six_fields, declaration_sha256 sha256:36c43b78…); whole-ledger readback FAIL_CLOSED DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED, workflow step held FAIL_CLOSED (G4)
 ```

@@ -44,7 +44,7 @@
       "failure_code": "ORGANIZATION_ROLE_CONFORMANCE_NOT_DECLARED",
       "failed_predicate": "SELF_CLOSURE_IS_DRIVEN_BY_A_COMMITTED_MANIFEST",
       "why_manifest_bound_state_transition_is_not_yet_possible": "The intr-destination diagnostic self-closure takes its communication_id, packet_id and hb_epoch from typed dispatch inputs rather than from a committed manifest. No self-closure manifest class exists under .stegverse/, and the InTr one-way hop lane (branch intr/one-way-hop, StegVerse-Labs/.github#2897) chains phases through the same dispatch surface, so moving the trigger is a shared design choice, not a local fix.",
-      "required_evidence_or_repair": "An owner decision on a committed self-closure manifest class (for example .stegverse/self-closure-requests/*.json carrying communication_id, packet_id, hb_epoch and owning_existing_goal), agreed with the InTr hop lane; then drive job transition from it and remove the dispatch inputs.",
+      "required_evidence_or_repair": "A decision, through the InTr hop lane's joint discovery, on a committed self-closure manifest class (for example .stegverse/self-closure-requests/*.json carrying communication_id, packet_id, hb_epoch and owning_existing_goal), agreed with the InTr hop lane; then drive job transition from it and remove the dispatch inputs.",
       "retry_entrypoint": "SV-011/.github:.github/workflows/organization-ledger-transition.yml job transition",
       "next_attempt": "repair once the manifest class is decided, and remove this exemption in the same change",
       "expires_or_review_on": "2026-11-17",
@@ -67,10 +67,26 @@
       "registered_on": "2026-10-17",
       "audit_item": "N8",
       "authority_effect": "NONE_REGISTER_ONLY"
+    },
+    {
+      "surface": "SV-011/.github:main merge admission (ST-019 ST019-MERGE-ADMISSION-001: branch protection or repository ruleset on a private repository)",
+      "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+      "disposition": "FAIL_CLOSED",
+      "failure_code": "PLAN_UNSUPPORTED_PRIVATE_REPOSITORIES",
+      "failed_predicate": "MERGE_ADMISSION_RULESET_IS_AVAILABLE_ON_THIS_REPOSITORY",
+      "why_manifest_bound_state_transition_is_not_yet_possible": "SV-011 is on the free plan (GET /orgs/SV-011: plan.name free, 2 private repositories), and SV-011/.github is private. The protection and rulesets endpoints answer HTTP 403 (upgrade to GitHub Pro or make this repository public, read 2026-10-18), so the ST-019 merge-admission transition (StegVerse-org/.github#162; StegVerse-org/repo-standards#78 config/repository-protection-policy.json#merge_admission) has no surface here. A plan upgrade is a new dependency and is not taken.",
+      "required_evidence_or_repair": "A merge-admission path that needs no paid-plan feature on a private repository: either ST-019 declares an admission profile for free-plan private repositories (a manifest-directed merge transition with its own receipt), or the repository's visibility changes through its own manifest-directed transition. No plan upgrade.",
+      "retry_entrypoint": "StegVerse-org/.github#162 merge admission (ST-019 ST019-MERGE-ADMISSION-001)",
+      "next_attempt": "re-read the protection and rulesets endpoints when ST-019 declares a free-plan private-repository profile; remove this exemption in the same change that admits PR #9 through it",
+      "expires_or_review_on": "2026-11-18",
+      "registered_on": "2026-10-18",
+      "audit_item": "M1",
+      "authority_effect": "NONE_REGISTER_ONLY",
+      "decided_by": "#167 comment 6245553028 (ST-019 FAIL_CLOSED PLAN_UNSUPPORTED_PRIVATE_REPOSITORIES; no plan upgrade)"
     }
   ],
   "authority_effect": "NONE_REGISTER_ONLY",
-  "defaults_pending_owner_confirmation": [
+  "defaults_in_force": [
     {
       "item": "B1",
       "audit_item": "#12 item 2",
@@ -84,11 +100,11 @@
     {
       "item": "B2",
       "audit_item": "first current_state",
-      "change": "first current_state declared as a request held outside the intake (T-181 fallback; TT has no t-011)",
+      "change": "first current_state declared as a request held outside the intake (T-181 fallback; TT has no t-011); staged in .stegverse/transition-requests/ (#167 comment 6245553028 item 3): appended by job request-transition when PR #9 is admitted",
       "surfaces": [
-        ".stegverse/declarations/SV011-ORG-STATE-0001.request.json"
+        ".stegverse/transition-requests/SV011-ORG-STATE-0001.request.json"
       ],
-      "revert": "delete the declaration file; it has appended nothing"
+      "revert": "move .stegverse/transition-requests/SV011-ORG-STATE-0001.request.json back to .stegverse/declarations/ (it has appended nothing)"
     },
     {
       "item": "B3",
@@ -121,7 +137,7 @@
     {
       "item": "H45",
       "audit_item": "P1 N5 SOURCE_RECEIPT_RETAINED_AND_VERIFIES",
-      "change": "new organization receipts name source_transition_sha256 and retain the repository receipt under source-receipts/ (forward only); the receipt at tip 2cc58cec is declared the legacy pre-retention segment, reported as legacy with a six-field FAIL_CLOSED finding, never re-minted; G4: the segment carries waived_predicate, six_fields and declaration_sha256 (C6 rule), is validated and bound to ledger_tip_commit on the ref, and the workflow holds the readback FAIL_CLOSED (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED); C6 convergence: (a) directory copies refused LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE, live copies read through git (clone or the 2cc58cec bundle); (b) the segment always applies, a chain without the declared receipts is refused LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN, segment-less contracts via --org-contract; (c) exit 1 on any non-ALLOW with a top-level FAIL_CLOSED and the six fields, a successful read stays disposition-free (B3); #12 item 1 against C6 is open for Rigel; C6 parity: (1) never-waivable set is C6's INTEGRITY_PREDICATES exactly, refused LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE; (2) organization-chain predicates ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY and ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE (and _HEAD_PRESENT, _CHAIN_IS_ACYCLIC); (3) an empty ledger is refused ORGANIZATION_LEDGER_HEAD_ABSENT on ORGANIZATION_LEDGER_HEAD_PRESENT; (4) success as ALLOW under readback/v1 not applied, pending Rigel on #12 item 1 (P1 recommends rescinding it for the readback result only)",
+      "change": "new organization receipts name source_transition_sha256 and retain the repository receipt under source-receipts/ (forward only); the receipt at tip 2cc58cec is declared the legacy pre-retention segment, reported as legacy with a six-field FAIL_CLOSED finding, never re-minted; G4: the segment carries waived_predicate, six_fields and declaration_sha256 (C6 rule), is validated and bound to ledger_tip_commit on the ref, and the workflow holds the readback FAIL_CLOSED (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED); C6 convergence: (a) directory copies refused LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE, live copies read through git (clone or the 2cc58cec bundle); (b) the segment always applies, a chain without the declared receipts is refused LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN, segment-less contracts via --org-contract; (c) exit 1 on any non-ALLOW with a top-level FAIL_CLOSED and the six fields, a successful read stays disposition-free (B3); #12 item 1 against C6 is a joint-discovery item (INDEX); C6 parity: (1) never-waivable set is C6's INTEGRITY_PREDICATES exactly, refused LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE; (2) organization-chain predicates ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY and ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE (and _HEAD_PRESENT, _CHAIN_IS_ACYCLIC); (3) an empty ledger is refused ORGANIZATION_LEDGER_HEAD_ABSENT on ORGANIZATION_LEDGER_HEAD_PRESENT; (4) success as ALLOW under readback/v1 not applied, a joint-discovery item with #12 item 1 (P1 recommends rescinding it for the readback result only)",
       "surfaces": [
         "resident-runtime/aggregate_repo_transition.py::append",
         "resident-runtime/organization_ledger_readback.py::source_receipt_retention",
@@ -133,12 +149,23 @@
     {
       "item": "4b-a",
       "audit_item": "item 4b ECOSYSTEM_CAPABILITY_ABSENT (a) READBACK_ONLY_ENTRYPOINT_ON_THE_PUBLISHED_REF",
-      "change": "job readback-published-ref (pull_request and push, contents: read) fetches refs/stegverse/organization-ledger into a fresh bare repository and runs the readback CLI on it; it never pushes and runs no ingress, intake or append; its conclusion says whether a conforming observation was recorded (disposition-free, or FAIL_CLOSED with the six fields and no undeclared failures), not the ledger disposition, which is printed and written to the step summary; the transition job's Hold step is unchanged",
+      "change": "job readback-published-ref (pull_request and push, contents: read) fetches refs/stegverse/organization-ledger into a fresh bare repository and runs the readback CLI on it; it never pushes and runs no ingress, intake or append. Conforming, decided from invariants (#167 comment 6245553028): it observes and is not a post-closure observer gate (ORRD Conformance item 5); its conclusion reflects only its own integrity and the observed ledger result is data (StegVerse-Labs/.github organization-governance-decision.yml header; ORRD L45). The transition job's Hold step is unchanged",
       "surfaces": [
         ".github/workflows/organization-ledger-transition.yml job readback-published-ref"
       ],
-      "revert": "delete job readback-published-ref, or add the Hold step to it so it fails on any disposition"
+      "revert": "delete job readback-published-ref"
+    },
+    {
+      "item": "R1",
+      "audit_item": "refused transition requests leave no receipt (ORRD Conformance item 1)",
+      "change": "a refused request that is a JSON object, with both ledger roots bound, appends a FAIL_CLOSED refusal pair of class ORGANIZATION_TRANSITION_REQUEST_REFUSAL (predecessor = successor = sha256 of the submitted request; six fields; head current_state carried unchanged); idempotent on re-submission; the readback correlates a recorded refusal on request_sha256; the request-transition job publishes recorded refusals and fails only on a refusal it could not record. Decided from invariants: ORRD Conformance item 1 (every action is an attempted transition with a disposition), this repository's ingress (intr_destination_ingress.py refusal_recorded) and C6 (StegVerse-Labs/.github#3225) record refusals",
+      "surfaces": [
+        "resident-runtime/organization_ledger_transition.py::record_refusal",
+        "resident-runtime/organization_ledger_readback.py::_refusal_result_in_chains",
+        ".github/workflows/organization-ledger-transition.yml job request-transition"
+      ],
+      "revert": "drop record_refusal from main in organization_ledger_transition.py and restore the tee loop in job request-transition"
     }
   ],
-  "defaults_status": "DEFAULT_PENDING_OWNER_CONFIRMATION"
+  "defaults_status": "DEFAULT_IN_FORCE_FAIL_CLOSED"
 }

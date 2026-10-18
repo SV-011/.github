@@ -98,7 +98,7 @@ BASIS_INPUT_FIELDS = (
 )
 MANIFEST_SCOPE_IDS = ("transition_element", "role_escalation")
 IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-# DEFAULT pending owner confirmation (B3, audit item N7). This readback is
+# DEFAULT in force (fail-closed) (B3, audit item N7). This readback is
 # observation only and carries no disposition, so it does not use
 # stegverse.organization-ledger-readback/v1: that id names StegVerse-org's
 # canonical readback (top-level disposition ALLOW), which the SDK reader
@@ -366,7 +366,7 @@ def _repository_location(location: str, namespace: str) -> str:
     return str(Path(locator) / namespace)
 
 
-# DEFAULT pending owner confirmation (C6 parity 2 and 3): the organization chain
+# DEFAULT in force (fail-closed) (C6 parity 2 and 3): the organization chain
 # uses C6's predicate names, and a missing HEAD is the refusal
 # ORGANIZATION_LEDGER_HEAD_ABSENT on ORGANIZATION_LEDGER_HEAD_PRESENT, as C6
 # refuses it. The repository chain keeps its names.
@@ -428,7 +428,7 @@ def _verify_chain(store: Any, schema: str, required: list[str],
 
 
 SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
-# DEFAULT pending owner confirmation (H45, G4, C6 convergence). The legacy-segment
+# DEFAULT in force (fail-closed) (H45, G4, C6 convergence). The legacy-segment
 # declaration follows the shared readback component C6 rule (P1 Ecosystem AI
 # lane, C6 at ebf4aaf): the same required members, the same CANONICAL_JSON
 # digest, the same failure codes and the same order of checks. C6 is not
@@ -439,7 +439,7 @@ SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
 # DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED; it is never ALLOW.
 LEGACY_SEGMENT_MEMBERS = ("receipts", "waived_predicate", "six_fields", "ledger_tip_commit",
                           "re_minted", "reported_as_source_retained", "declaration_sha256")
-# DEFAULT pending owner confirmation (C6 parity 1): C6's never-waivable set
+# DEFAULT in force (fail-closed) (C6 parity 1): C6's never-waivable set
 # (C6 ebf4aaf INTEGRITY_PREDICATES), exactly. A waived_predicate naming any of
 # them is refused LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE.
 LEGACY_INTEGRITY_PREDICATES = frozenset({
@@ -526,7 +526,7 @@ def validate_legacy_segment(segment: Any) -> dict[str, Any]:
 def _tip_head(location: str, tip: str) -> Any:
     """The organization HEAD receipt digest at the declared ledger commit, which must be on the ref read.
 
-    DEFAULT pending owner confirmation (C6 convergence a): a legacy segment is
+    DEFAULT in force (fail-closed) (C6 convergence a): a legacy segment is
     bound to a git ledger commit, so it is read only through a git+ locator (a
     clone of the published ref, or tests/fixtures/organization-ledger-2cc58cec.bundle
     fetched into one). A directory copy has no commits and is refused.
@@ -562,7 +562,7 @@ def _retains_its_source(store: Any, receipt: Mapping[str, Any], repo_by_digest: 
 def source_receipt_retention(store: Any, org_chain: list[dict[str, Any]],
                              repo_chain: list[dict[str, Any]], org: Mapping[str, Any],
                              location: str | None = None) -> dict[str, Any]:
-    """Source-receipt retention per organization receipt (DEFAULT pending owner confirmation, H45).
+    """Source-receipt retention per organization receipt (DEFAULT in force (fail-closed), H45).
 
     Every organization receipt names its source in ``source_transition_sha256``
     and the ledger holds that source under ``source-receipts/``, verifying
@@ -681,10 +681,48 @@ def _communication_id(receipt: Mapping[str, Any]) -> Any:
     return None
 
 
+def _refusal_result_in_chains(transition_result: Mapping[str, Any],
+                              repo_chain: list[dict[str, Any]],
+                              org_chain: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check that a recorded refusal is on both chains, correlated on the request digest."""
+    request_sha = transition_result.get("request_sha256")
+    repo_sha = transition_result.get("refusal_repository_receipt_sha256")
+    org_sha = transition_result.get("refusal_organization_receipt_sha256")
+    if not isinstance(request_sha, str) or not request_sha.startswith("sha256:"):
+        raise ReadbackRefused("REFUSAL_RESULT_CARRIES_REQUEST_SHA256", repr(request_sha))
+    repository_receipt = next((item for item in repo_chain if item.get("receipt_sha256") == repo_sha), None)
+    organization_receipt = next((item for item in org_chain if item.get("receipt_sha256") == org_sha), None)
+    if repository_receipt is None:
+        raise ReadbackRefused("REFUSAL_REPOSITORY_RECEIPT_IS_IN_THE_REPOSITORY_LEDGER", str(repo_sha))
+    if organization_receipt is None:
+        raise ReadbackRefused("REFUSAL_ORGANIZATION_RECEIPT_IS_IN_THE_ORGANIZATION_LEDGER", str(org_sha))
+    if organization_receipt.get("repo_receipt_sha256") != repo_sha:
+        raise ReadbackRefused("ORGANIZATION_RECEIPT_PRESERVES_REPOSITORY_RECEIPT", str(org_sha))
+    for receipt, predicate in ((repository_receipt, "REPOSITORY_RECEIPT_RECORDS_THE_REFUSAL"),
+                               (organization_receipt, "ORGANIZATION_RECEIPT_RECORDS_THE_REFUSAL")):
+        evidence = receipt.get("evidence")
+        if (not isinstance(evidence, dict) or evidence.get("request_sha256") != request_sha
+                or evidence.get("disposition") != "FAIL_CLOSED"
+                or receipt.get("predecessor_state_sha256") != request_sha
+                or receipt.get("successor_state_sha256") != request_sha):
+            raise ReadbackRefused(predicate, request_sha)
+    return {
+        "request_id": transition_result.get("request_id"),
+        "request_sha256": request_sha,
+        "request_refused": True,
+        "refusal_repository_receipt_sha256": repo_sha,
+        "refusal_organization_receipt_sha256": org_sha,
+        "refusal_receipts_in_chain": True,
+        "request_receipt_is_head": org_chain[-1].get("receipt_sha256") == org_sha,
+    }
+
+
 def _transition_result_in_chains(transition_result: Mapping[str, Any],
                                  repo_chain: list[dict[str, Any]],
                                  org_chain: list[dict[str, Any]]) -> dict[str, Any]:
-    """Check that one applied transition request is on both chains."""
+    """Check that one applied, or recorded-refused, transition request is on both chains."""
+    if transition_result.get("refusal_recorded") is True:
+        return _refusal_result_in_chains(transition_result, repo_chain, org_chain)
     request_id = transition_result.get("request_id")
     repo_sha = transition_result.get("repository_receipt_sha256")
     org_sha = transition_result.get("organization_receipt_sha256")
@@ -722,7 +760,7 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     TT current-state basis. A location with no HEAD and no result to check is
     an empty ledger, refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 3).
 
-    DEFAULT pending owner confirmation (C6 convergence c): a successful read is
+    DEFAULT in force (fail-closed) (C6 convergence c): a successful read is
     an observation with no top-level ``disposition``
     (stegverse.organization-ledger-observation/v1, B3). A read that verifies
     every chain but holds a declared legacy segment is non-ALLOW, so the

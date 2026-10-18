@@ -138,7 +138,7 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "repository": C["repository"],
         "org_transition_class": org_transition_class,
         "repo_receipt_sha256": source_sha,
-        # DEFAULT pending owner confirmation (H45): the consumed source receipt
+        # DEFAULT in force (fail-closed) (H45): the consumed source receipt
         # is named and retained under source-receipts/, as on StegVerse-org's
         # ledger. Receipts already on the ref are not rewritten.
         "source_transition_sha256": source_sha,

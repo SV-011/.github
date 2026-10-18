@@ -7,8 +7,8 @@ Storage is the layout already on that ref. The repository receipt goes to `repos
 The request schema is `stegverse.organization-transition-request/v1`. Required fields:
 
 - `request_id`, `owning_existing_goal`
-- `constraint_set` with `node_standing` (`mode` `ESTABLISH_GENESIS` or `VERIFY_EXISTING`, `node_ref`, and the `predecessor` key, `null` for genesis) and an optional `declared` block (`authority`, `time`: `satisfies` or `does_not_satisfy`, stored as declared only). `VERIFY_EXISTING` is refused with `PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT`. DEFAULT pending owner confirmation (B1).
-- `manifested_route` equal to `transition_request_intake.manifested_route_binding` in `.stegverse/transition-ledger/org-contract.json`, else `ROUTE_NOT_BOUND_IN_THIS_ORGANIZATION`. DEFAULT pending owner confirmation (B5).
+- `constraint_set` with `node_standing` (`mode` `ESTABLISH_GENESIS` or `VERIFY_EXISTING`, `node_ref`, and the `predecessor` key, `null` for genesis) and an optional `declared` block (`authority`, `time`: `satisfies` or `does_not_satisfy`, stored as declared only). `VERIFY_EXISTING` is refused with `PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT`. DEFAULT in force (fail-closed) (B1).
+- `manifested_route` equal to `transition_request_intake.manifested_route_binding` in `.stegverse/transition-ledger/org-contract.json`, else `ROUTE_NOT_BOUND_IN_THIS_ORGANIZATION`. DEFAULT in force (fail-closed) (B5).
 - `transition_id`, `transition_class`, `org_transition_class`
 - `predecessor_state_sha256`, `successor_state_sha256` (`sha256:` plus 64 hex digits)
 - `authority_constraint` (the authority constraint variable, recorded as given)
@@ -37,12 +37,12 @@ A refused request is `FAIL_CLOSED` with `failure_code: ORGANIZATION_TRANSITION_R
 
 ## Readback
 
-`resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. A successful read has no top-level `disposition` and exits 0. A refusal, or a read holding the declared legacy segment, carries a top-level `disposition: FAIL_CLOSED` with the six fields and exits 1. An empty ledger (no HEAD) is refused `ORGANIZATION_LEDGER_HEAD_ABSENT` on `ORGANIZATION_LEDGER_HEAD_PRESENT` (C6 parity 3). These are DEFAULTs pending owner confirmation. Whether a successful read becomes `ALLOW` under readback/v1 (C6 parity 4) is pending Rigel's decision on #12 item 1. A copy of the ledger is read through a `git+` locator (a clone, or `tests/fixtures/organization-ledger-2cc58cec.bundle`), not a directory copy. A ledger that does not hold the declared segment is read with `--org-contract` naming a contract that declares none. The report covers two things separately:
+`resident-runtime/organization_ledger_readback.py` observes the ref and records no transition. A successful read has no top-level `disposition` and exits 0. A refusal, or a read holding the declared legacy segment, carries a top-level `disposition: FAIL_CLOSED` with the six fields and exits 1. An empty ledger (no HEAD) is refused `ORGANIZATION_LEDGER_HEAD_ABSENT` on `ORGANIZATION_LEDGER_HEAD_PRESENT` (C6 parity 3). These are DEFAULTs in force (fail-closed). Whether a successful read becomes `ALLOW` under readback/v1 (C6 parity 4, #12 item 1) is a joint discovery (INDEX; StegVerse-org/.github#167 comment 6245553028) item; its output is a `consumes`-list amendment or a declared DENY rule for non-transition schemas. A copy of the ledger is read through a `git+` locator (a clone, or `tests/fixtures/organization-ledger-2cc58cec.bundle`), not a directory copy. A ledger that does not hold the declared segment is read with `--org-contract` naming a contract that declares none. The report covers two things separately:
 
 - `verification`: whether the organization chain verifies, whether the repository chain verifies, and whether every organization receipt names a repository receipt that is present. A closure result handed to it must match the `evidence.disposition` already inside the receipts it names (`closure_result_matches_receipt_evidence`).
 - the current-state basis: `basis_established`, `current_state_reason`, and `current_state`. A basis that is not established also carries the six fields in `current_state_finding`; a refused readback carries them at the top level.
 
-`source_receipt_retention` reports, per organization receipt, whether its source receipt is retained under `source-receipts/` (DEFAULT pending owner confirmation, H45). The receipt at tip `2cc58cec` predates retention and is the declared legacy segment, so a read of the live ref is `FAIL_CLOSED` `DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED` with the six fields (never ALLOW); it is not rewritten.
+`source_receipt_retention` reports, per organization receipt, whether its source receipt is retained under `source-receipts/` (DEFAULT in force (fail-closed), H45). The receipt at tip `2cc58cec` predates retention and is the declared legacy segment, so a read of the live ref is `FAIL_CLOSED` `DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED` with the six fields (never ALLOW); it is not rewritten.
 
 A disposition appears only inside the original receipts, as evidence that a transition occurred. It does not satisfy the authority constraint or the time constraint.
 
@@ -52,4 +52,4 @@ The head receipt on the live ref (`2cc58cec`, organization receipt `sha256:3db90
 
 ## Open
 
-`standing` is replaced by `constraint_set` as a DEFAULT pending owner confirmation (SV-011/.github#12, item 2; option B). The readback schema id is `stegverse.organization-ledger-observation/v1` (B3). The first `current_state` is held, unsubmitted, in `.stegverse/declarations/` (B2). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
+`standing` is replaced by `constraint_set` as a DEFAULT in force (fail-closed) (SV-011/.github#12, item 2; option B). The readback schema id is `stegverse.organization-ledger-observation/v1` (B3). The first `current_state` is held, unsubmitted, in `.stegverse/declarations/` (B2). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.

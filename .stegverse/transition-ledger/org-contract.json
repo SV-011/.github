@@ -50,7 +50,7 @@
     "current_state"
   ],
   "source_receipt_retention": {
-    "status": "DEFAULT_PENDING_OWNER_CONFIRMATION_H45",
+    "status": "DEFAULT_IN_FORCE_FAIL_CLOSED_H45",
     "source": "StegVerse-org/.github@10d14104 resident-runtime/aggregate_repo_transition.py (retained source receipt) and resident-runtime/organization_ledger_readback.py (SOURCE_RECEIPT_RETAINED_AND_VERIFIES)",
     "prefix": "source-receipts/",
     "receipt_field": "source_transition_sha256",
@@ -74,7 +74,7 @@
       },
       "declaration_sha256": "sha256:36c43b78e2c820d5448d7edb7f4bf7222d22faf9a91925ad18e3e50a54267375"
     },
-    "legacy_segment_rule": "shared readback component C6 legacy-segment rule (P1 Ecosystem AI lane, local commit 6d683cb8c21f0dad21ab2d63d3bedd889fa8eae1; converged with C6 at ebf4aaf: git-bound reads only, the segment always applies, exit 1 on any non-ALLOW); DEFAULT pending owner confirmation",
+    "legacy_segment_rule": "shared readback component C6 legacy-segment rule (P1 Ecosystem AI lane, local commit 6d683cb8c21f0dad21ab2d63d3bedd889fa8eae1; converged with C6 at ebf4aaf: git-bound reads only, the segment always applies, exit 1 on any non-ALLOW); DEFAULT in force (fail-closed)",
     "declaration_digest_rule": "sha256 over json.dumps(segment without declaration_sha256, sort_keys=True, separators=(',', ':'), ensure_ascii=False) encoded UTF-8"
   },
   "transition_request_intake": {
@@ -86,7 +86,7 @@
     "applies": "resident-runtime/organization_ledger_transition.py",
     "sdk_manifest": "REFUSED_SDK_MANIFEST_BUILDER_NOT_PRESENT",
     "constraint_set": "constraint_set.node_standing {mode ESTABLISH_GENESIS|VERIFY_EXISTING, node_ref, predecessor} plus optional constraint_set.declared {authority, time: satisfies|does_not_satisfy}; VERIFY_EXISTING refused PREDECESSOR_BINDING_PRIMITIVE_NOT_PRESENT",
-    "constraint_set_status": "DEFAULT_PENDING_OWNER_CONFIRMATION_B1",
+    "constraint_set_status": "DEFAULT_IN_FORCE_FAIL_CLOSED_B1",
     "manifested_route_binding": {
       "capability_profile_id": "organization-ledger-transition-request",
       "route_id": "stegverse.route.sv011.organization-ledger-request.v1",
@@ -94,7 +94,7 @@
       "destination_operation": "resident-runtime/organization_ledger_transition.py::apply_request",
       "destination_ref": "refs/stegverse/organization-ledger"
     },
-    "manifested_route_binding_status": "DEFAULT_PENDING_OWNER_CONFIRMATION_B5"
+    "manifested_route_binding_status": "DEFAULT_IN_FORCE_FAIL_CLOSED_B5"
   },
   "current_state_basis": {
     "source_repository": "Admissible-Existence/TT",
@@ -112,5 +112,86 @@
     ],
     "basis_digest": "COMPUTED_BY_READBACK",
     "fixture_ref": "PATH_PATTERN_CHECKED_HERE_FIXTURE_RESOLVED_BY_TT"
+  },
+  "lane_decision_rules": {
+    "source": "SV-011/.github#68 lane contract; StegVerse-org/.github#167 comment 6245553028 (classes A/B/C/D); no item waits on a person (Labs data/canonical-task-registry.json gen 319 human_actions: [])",
+    "classes": {
+      "A": "an existing manifest transition performs it; its receipt is the observation",
+      "B": "a capability to build (manifest entry, transition, receipt)",
+      "C": "joint discovery; its output is an invariant or a reusable component",
+      "D": "decided from declared invariants"
+    },
+    "rules": [
+      {
+        "rule_id": "SV011-LANE-4BA-001",
+        "item": "4b-a readback-published-ref job",
+        "class": "D",
+        "decided_by": "StegVerse-org/.github@0f9481af docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md (blob cd56b2d0) ORRD rule 5 (an observer that pushes, takes intake or appends nothing is not a post-closure gate)",
+        "decision": "CONFORMING"
+      },
+      {
+        "rule_id": "SV011-LANE-JOBCONCLUSION-001",
+        "item": "readback job conclusion vs ledger result",
+        "class": "D",
+        "decided_by": "StegVerse-Labs/.github@30d0edaf .github/workflows/organization-governance-decision.yml header; StegVerse-org/.github@0f9481af docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md (blob cd56b2d0) L45 (a non-ALLOW value is evidence state, not a blocker)",
+        "decision": "the job fails only on its own integrity failure; an observed FAIL_CLOSED is recorded as data"
+      },
+      {
+        "rule_id": "SV011-LANE-B2-001",
+        "item": "B2 first current_state append",
+        "class": "A",
+        "decided_by": ".github/workflows/organization-ledger-transition.yml job request-transition (manifest-directed append on push to main)",
+        "decision": "staged in .stegverse/transition-requests/SV011-ORG-STATE-0001.request.json; appended when PR #9 is admitted; nothing dispatched"
+      },
+      {
+        "rule_id": "SV011-LANE-M1-001",
+        "item": "merge admission of PR #9",
+        "class": "B",
+        "decided_by": "StegVerse-org/repo-standards#78@9b662862 config/repository-protection-policy.json#merge_admission (ST019-MERGE-ADMISSION-001); owning capability StegVerse-org/.github#162",
+        "decision": "FAIL_CLOSED PLAN_UNSUPPORTED_PRIVATE_REPOSITORIES recorded in data/organization-role-exemption-register.json; no plan upgrade (a new dependency)"
+      },
+      {
+        "rule_id": "SV011-LANE-R1-001",
+        "item": "refused transition requests",
+        "class": "B",
+        "decided_by": "StegVerse-org/.github@0f9481af docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md (blob cd56b2d0) Conformance item 1 (every action is an attempted transition; silent non-conformance is not conforming)",
+        "decision": "built: a refused JSON-object request with both ledger roots bound appends a FAIL_CLOSED refusal pair (class ORGANIZATION_TRANSITION_REQUEST_REFUSAL) carrying the predecessor current_state"
+      },
+      {
+        "rule_id": "SV011-LANE-B-DEFAULTS-001",
+        "item": "defaults B1, B3, B5, B9",
+        "class": "D",
+        "decided_by": "StegVerse-Labs/.github@bfcf0318 data/task-registry-global-invariants.json (208177e0) and docs/WORKER_BLOCKER_FALLBACK_INVARIANT.md (553a079e): fail-closed defaults stand where nothing decides otherwise",
+        "decision": "IN_FORCE_FAIL_CLOSED; each carries its revert path in data/organization-role-exemption-register.json"
+      },
+      {
+        "rule_id": "SV011-LANE-H45G4-001",
+        "item": "H45 source-receipt retention and G4 legacy segment",
+        "class": "C",
+        "decided_by": "none yet; default in force: source_receipt_retention and DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED (fail-closed)",
+        "decision": "DEFAULT_IN_FORCE_FAIL_CLOSED; the deciding rule id is appended here when joint discovery returns it"
+      },
+      {
+        "rule_id": "SV011-LANE-HOLDII-001",
+        "item": "Hold step option (ii): pass on a declared legacy segment when the run's receipt is in the fully verified suffix",
+        "class": "C",
+        "decided_by": "none yet; default in force: option (i), Hold on any non-ALLOW",
+        "decision": "DEFAULT_IN_FORCE_FAIL_CLOSED; the deciding rule id is appended here when joint discovery returns it"
+      },
+      {
+        "rule_id": "SV011-LANE-OBS-001",
+        "item": "#12 item 1 / parity (4): the SDK verifier (StegVerse-SDK 07a6a90) rejects observation/v1",
+        "class": "C",
+        "decided_by": "StegVerse-org/.github@0f9481af docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md (blob cd56b2d0) L31 (the contract consumes list is the admission gate) does not name observation/v1 either way",
+        "decision": "B3 default stands (observation/v1, no top-level disposition on a successful read); readback/v1 with ALLOW is a proposal only"
+      },
+      {
+        "rule_id": "SV011-LANE-C6-001",
+        "item": "Labs C6 legacy-segment rule",
+        "class": "C",
+        "decided_by": "owned by StegVerse-Labs/.github .stegverse/transition-ledger/org-contract.json; not built here",
+        "decision": "this readback stays aligned with C6 at ebf4aaf"
+      }
+    ]
   }
 }

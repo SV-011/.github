@@ -21,7 +21,7 @@ Existing receipts are not rewritten.
 Authority and time stay constraint variables. A disposition on the resulting
 receipt is evidence that the append happened.
 
-Constraint set and route (DEFAULT pending owner confirmation)
+Constraint set and route (DEFAULT in force (fail-closed))
 --------------------------------------------------------------
 ``constraint_set.node_standing`` replaces the top-level ``standing`` (B1,
 option B); ``manifested_route`` names the route bound in
@@ -34,8 +34,24 @@ An applied request records ``disposition: ALLOW`` in the evidence of both
 receipts and in the result, as evidence that the append occurred. A request
 that declares its own ``evidence.disposition`` is refused. A refused request is
 ``FAIL_CLOSED`` with the six fields of the Organization Role conformance
-standard (``resident-runtime/non_allow.py``). It is refused before the append,
-so it leaves no receipt on the ledger; ``refusal_recorded`` says so.
+standard (``resident-runtime/non_allow.py``).
+
+Refused requests are recorded (decided from invariants, 2026-10-18): every
+action is a manifest-bound attempted state transition with a disposition
+(StegVerse-org/.github docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md,
+Conformance standard item 1), and this repository's ingress already records
+its refusals (``intr_destination_ingress.py``, ``refusal_recorded``), as the
+shared component C6 does (StegVerse-Labs/.github#3225). A refused request that
+is a JSON object, with both ledger roots bound, appends a refusal pair: a
+repository receipt and an organization receipt of class
+``ORGANIZATION_TRANSITION_REQUEST_REFUSAL`` whose predecessor and successor are
+both the digest of the submitted request (the attempted transition left the
+state unchanged), carrying ``disposition: FAIL_CLOSED`` and the six fields. The
+organization head's ``current_state`` is carried onto the refusal receipt
+unchanged, since the state did not change. Re-submitting the same refused
+request returns the receipts already recorded. A document that is not a JSON
+object, or unbound ledger roots, leave no receipt; ``refusal_recorded_reason``
+says which. Revert: drop ``record_refusal`` from ``main``.
 """
 from __future__ import annotations
 
@@ -92,8 +108,8 @@ def _digest(value: Any, name: str) -> str:
     return value
 
 
-# DEFAULT pending owner confirmation (B1, constraint_set Option B; see
-# docs/ORGANIZATION_ROLE_CONFORMANCE.md "Defaults pending owner confirmation").
+# DEFAULT in force (fail-closed) (B1, constraint_set Option B; see
+# docs/ORGANIZATION_ROLE_CONFORMANCE.md "Defaults in force (fail-closed)").
 # The node standing vocabulary follows StegVerse-org/.github@c483d441
 # docs/CANONICAL_NODE_INGRESS_CONTRACT_001.json standing_modes: the predecessor
 # key is required, null only with ESTABLISH_GENESIS. VERIFY_EXISTING needs the
@@ -158,7 +174,7 @@ def bound_route() -> dict[str, Any]:
 
 
 def validate_manifested_route(value: Any) -> dict[str, Any]:
-    """DEFAULT pending owner confirmation (B5): the request names the bound route."""
+    """DEFAULT in force (fail-closed) (B5): the request names the bound route."""
     if not isinstance(value, dict):
         raise TransitionRequestRefused("REQUEST_NAMES_A_MANIFESTED_CAPABILITY_AND_ROUTE", "manifested_route")
     route = {name: _text(value.get(name), "manifested_route." + name) for name in ROUTE_FIELDS}
@@ -186,7 +202,7 @@ def validate_request(document: Mapping[str, Any]) -> dict[str, Any]:
     if "standing" in document:
         raise TransitionRequestRefused(
             "TRANSITION_REQUEST_STANDING_REPLACED_BY_CONSTRAINT_SET",
-            "top-level standing moved to constraint_set.node_standing (DEFAULT pending owner confirmation, B1)")
+            "top-level standing moved to constraint_set.node_standing (DEFAULT in force (fail-closed), B1)")
     outside = sorted(name for name in document if name not in REQUEST_FIELDS)
     if outside:
         raise TransitionRequestRefused("TRANSITION_REQUEST_FIELD_OUTSIDE_THE_CONTRACT", ",".join(outside))
@@ -326,6 +342,51 @@ def _refusal(exc: Exception, document: Any = None) -> dict[str, Any]:
     }
 
 
+REFUSAL_TRANSITION_CLASS = "ORGANIZATION_TRANSITION_REQUEST_REFUSAL"
+
+
+def record_refusal(document: Any, refusal: dict[str, Any]) -> dict[str, Any]:
+    """Append the refused attempt as a FAIL_CLOSED receipt pair; state unchanged."""
+    if not isinstance(document, Mapping):
+        return dict(refusal, refusal_recorded_reason="REQUEST_IS_NOT_A_JSON_OBJECT_NO_RECEIPT_WRITTEN")
+    if not (os.environ.get("STEGVERSE_ORG_LEDGER_ROOT") and os.environ.get("STEGVERSE_REPO_LEDGER_ROOT")):
+        return dict(refusal, refusal_recorded_reason="LEDGER_ROOTS_NOT_BOUND_NO_RECEIPT_WRITTEN")
+    request_sha = organization_ledger.sha(dict(document))
+    request_id = document.get("request_id") if isinstance(document.get("request_id"), str) else None
+    transition_id = "REFUSAL:" + request_sha
+    six = {name: refusal[name] for name in non_allow.SIX_FIELDS}
+    evidence = {"disposition": REFUSED, "request_id": request_id, "request_sha256": request_sha, **six}
+    try:
+        repository_receipt = repository_ledger.append(
+            transition_id, REFUSAL_TRANSITION_CLASS, request_sha, request_sha, evidence,
+            "NONE_REFUSAL_ONLY", idempotent_on=tuple(sorted(evidence)))
+        store = organization_ledger.ledger_store.open_store(organization_ledger.ledger_root())
+        head = store.get(organization_ledger.ledger_store.HEAD_KEY)
+        head_receipt = (store.get(organization_ledger.ledger_store.receipt_key(head["receipt_sha256"]))
+                        if isinstance(head, dict) and isinstance(head.get("receipt_sha256"), str) else None)
+        carried = head_receipt.get("current_state") if isinstance(head_receipt, dict) else None
+        organization_receipt = organization_ledger.append(
+            repository_receipt, REFUSAL_TRANSITION_CLASS, request_sha, request_sha,
+            {"request_id": request_id, "request_sha256": request_sha, "transition_id": transition_id,
+             "disposition": REFUSED, "failure_code": six["failure_code"],
+             "failed_predicate": six["failed_predicate"]},
+            "NONE_REFUSAL_ONLY", hb_epoch=repository_receipt["hb_reference"]["epoch"],
+            idempotent=True, current_state=carried)
+    except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+        return dict(refusal, refusal_recorded_reason="REFUSAL_APPEND_FAILED: " + str(exc))
+    return dict(
+        refusal,
+        refusal_recorded=True,
+        refusal_recorded_reason="ATTEMPTED_TRANSITION_RECORDED_STATE_UNCHANGED",
+        request_sha256=request_sha,
+        refusal_repository_receipt_sha256=repository_receipt["receipt_sha256"],
+        refusal_organization_receipt_sha256=organization_receipt["receipt_sha256"],
+        current_state_carried=carried is not None,
+        disposition_is_transition_evidence=True,
+        next_attempt=("correct the committed transition request and push it again; the refusal is recorded at "
+                      + organization_receipt["receipt_sha256"] + " and the requested consequence was not committed"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--request", type=Path, default=None)
@@ -342,7 +403,10 @@ def main(argv: list[str] | None = None) -> int:
         document = json.loads(args.request.read_text(encoding="utf-8"))
         result = apply_request(document)
     except (TransitionRequestRefused, ValueError, OSError, RuntimeError) as exc:
-        print(json.dumps(_refusal(exc, document), sort_keys=True))
+        refusal = _refusal(exc, document)
+        if args.request is not None and args.validate_tree is None:
+            refusal = record_refusal(document, refusal)
+        print(json.dumps(refusal, sort_keys=True))
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

@@ -1,7 +1,7 @@
-"""Defaults pending owner confirmation on the transition-request intake (B1-B9).
+"""Defaults in force (fail-closed) on the transition-request intake (B1-B9).
 
 Each default is listed in data/organization-role-exemption-register.json
-defaults_pending_owner_confirmation with its revert path. The ledger here is
+defaults_in_force with its revert path. The ledger here is
 temporary; the published fixture bytes are read, never rewritten.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ request, tt_basis_digest = _cases.request, _cases.tt_basis_digest
 segmentless_contract, live_ledger = _cases.segmentless_contract, _cases.live_ledger
 transition = _module("organization_ledger_transition_defaults", "resident-runtime/organization_ledger_transition.py")
 readback = _module("organization_ledger_readback_defaults", "resident-runtime/organization_ledger_readback.py")
-DECLARATION = ROOT / ".stegverse/declarations/SV011-ORG-STATE-0001.request.json"
+DECLARATION = ROOT / ".stegverse/transition-requests/SV011-ORG-STATE-0001.request.json"
 EXPECTATION = ROOT / ".stegverse/build-expectations/sv011-first-cycle.json"
 REGISTER = ROOT / "data/organization-role-exemption-register.json"
 SIX = ("failure_code", "failed_predicate", "required_evidence_or_repair",
@@ -107,7 +107,7 @@ class ManifestedRouteB5(unittest.TestCase):
         contract = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
         intake = contract["transition_request_intake"]
         self.assertEqual(intake["manifested_route_binding"], transition.bound_route())
-        self.assertEqual(intake["manifested_route_binding_status"], "DEFAULT_PENDING_OWNER_CONFIRMATION_B5")
+        self.assertEqual(intake["manifested_route_binding_status"], "DEFAULT_IN_FORCE_FAIL_CLOSED_B5")
         self.assertEqual(intake["manifested_route_binding"]["destination_ref"], contract["organization_ledger_ref"])
 
 
@@ -123,8 +123,12 @@ class FirstCurrentStateB2(_EnvCase):
     def declaration(self):
         return json.loads(DECLARATION.read_text(encoding="utf-8"))
 
-    def test_declaration_sits_outside_the_intake_and_validates(self):
-        self.assertFalse(list((ROOT / ".stegverse/transition-requests").glob("*.json")))
+    def test_declaration_is_staged_in_the_intake_and_validates(self):
+        """Staged (#167 comment 6245553028, item 3): the request-transition job appends it on admission of PR #9."""
+        self.assertEqual([path.name for path in (ROOT / ".stegverse/transition-requests").glob("*.json")],
+                         ["SV011-ORG-STATE-0001.request.json"])
+        self.assertEqual(len(transition.validate_tree(ROOT / ".stegverse/transition-requests")), 1)
+        self.assertFalse(list((ROOT / ".stegverse/declarations").glob("*.json")))
         document = self.declaration()
         validated = transition.validate_request(document)
         state = validated["current_state"]
@@ -136,7 +140,7 @@ class FirstCurrentStateB2(_EnvCase):
         self.assertEqual(state["satisfied_scope_ids"], [])
         self.assertEqual(document["predecessor_state_sha256"], LIVE_ORG_HEAD)
         self.assertEqual(document["successor_state_sha256"], "sha256:" + tt_basis_digest(state))
-        self.assertIn("DEFAULT pending owner confirmation", document["purpose"])
+        self.assertIn("DEFAULT in force (fail-closed)", document["purpose"])
 
     def test_freshness_window_is_seven_days(self):
         from datetime import datetime, timedelta
@@ -186,7 +190,7 @@ class FirstCurrentStateB2(_EnvCase):
 class BuildExpectationB9(unittest.TestCase):
     def test_artifact_is_declaration_only_with_six_field_open_legs(self):
         doc = json.loads(EXPECTATION.read_text(encoding="utf-8"))
-        self.assertEqual(doc["status"], "DEFAULT_PENDING_OWNER_CONFIRMATION_B9")
+        self.assertEqual(doc["status"], "DEFAULT_IN_FORCE_FAIL_CLOSED_B9")
         self.assertEqual(doc["authority_effect"], "NONE_DECLARATION_ONLY")
         self.assertEqual(doc["applies_to_request_id"], json.loads(DECLARATION.read_text(encoding="utf-8"))["request_id"])
         self.assertEqual(doc["delta_definition"]["entry_tags"], ["VERIFIED_NULL", "OBSERVED_NO_CHANGE", "UNOBSERVED"])
@@ -200,16 +204,16 @@ class BuildExpectationB9(unittest.TestCase):
 class DefaultsAreListed(unittest.TestCase):
     def test_each_applied_default_is_listed_with_a_revert_path(self):
         register = json.loads(REGISTER.read_text(encoding="utf-8"))
-        self.assertEqual(register["defaults_status"], "DEFAULT_PENDING_OWNER_CONFIRMATION")
-        listed = {entry["item"]: entry for entry in register["defaults_pending_owner_confirmation"]}
-        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9", "H45", "4b-a"})
+        self.assertEqual(register["defaults_status"], "DEFAULT_IN_FORCE_FAIL_CLOSED")
+        listed = {entry["item"]: entry for entry in register["defaults_in_force"]}
+        self.assertEqual(set(listed), {"B1", "B2", "B3", "B5", "B9", "H45", "4b-a", "R1"})
         for entry in listed.values():
             self.assertTrue(entry["revert"])
             for surface in entry["surfaces"]:
                 self.assertTrue((ROOT / surface.split("::")[0].split(" ")[0]).exists(), surface)
         self.assertNotIn("N11", {entry["audit_item"] for entry in register["exemptions"]})
         doc = (ROOT / "docs/ORGANIZATION_ROLE_CONFORMANCE.md").read_text(encoding="utf-8")
-        self.assertIn("DEFAULT pending owner confirmation", doc)
+        self.assertIn("DEFAULT in force (fail-closed)", doc)
 
     def test_new_files_use_constraint_wording(self):
         needles = ("g" + "rant", "authori" + "z", "per" + "mit", "allow" + "ed", "dele" + "gat", " m" + "ay ")
@@ -311,7 +315,7 @@ class SourceReceiptRetentionH45(_EnvCase):
     def test_contract_names_the_segment_and_the_canonical_layout(self):
         org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
         rule = org["source_receipt_retention"]
-        self.assertEqual(rule["status"], "DEFAULT_PENDING_OWNER_CONFIRMATION_H45")
+        self.assertEqual(rule["status"], "DEFAULT_IN_FORCE_FAIL_CLOSED_H45")
         self.assertEqual(rule["prefix"], "source-receipts/")
         self.assertEqual(rule["receipt_field"], "source_transition_sha256")
         self.assertEqual(rule["legacy_pre_retention_segment"]["receipts"], [LIVE_ORG_HEAD])
@@ -611,7 +615,7 @@ class PublishedRefReadbackJob4bA(_EnvCase):
 
 
 class C6ParityGaps(_EnvCase):
-    """DEFAULT pending owner confirmation: the gaps P1's parity check of 8dcf892 against C6 ebf4aaf found."""
+    """DEFAULT in force (fail-closed): the gaps P1's parity check of 8dcf892 against C6 ebf4aaf found."""
 
     def segment(self):
         org = json.loads((ROOT / ".stegverse/transition-ledger/org-contract.json").read_text(encoding="utf-8"))
@@ -681,8 +685,8 @@ class C6ParityGaps(_EnvCase):
                 self.assertTrue(refused[name], name)
         self.assertFalse(hasattr(readback, "empty_ledger_report"))
 
-    def test_4_a_successful_read_stays_b3_pending_rigel(self):
-        """(4) is not applied: a successful read stays disposition-free; ALLOW under readback/v1 is Rigel's call."""
+    def test_4_a_successful_read_stays_b3_until_joint_discovery(self):
+        """(4) is not applied: a successful read stays disposition-free; ALLOW under readback/v1 is a joint-discovery item."""
         ledger = LedgerRepo(self.base)
         self.bind(ledger)
         result = transition.apply_request(request())

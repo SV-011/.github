@@ -1,12 +1,12 @@
 {
   "schema": "stegverse.build-expectation/v1",
   "expectation_id": "SV011-FIRST-CYCLE-EXPECTATION-001",
-  "status": "DEFAULT_PENDING_OWNER_CONFIRMATION_B9",
+  "status": "DEFAULT_IN_FORCE_FAIL_CLOSED_B9",
   "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
   "organization": "SV-011",
   "repository": "SV-011/.github",
   "authority_effect": "NONE_DECLARATION_ONLY",
-  "applies_to_request": ".stegverse/declarations/SV011-ORG-STATE-0001.request.json",
+  "applies_to_request": ".stegverse/transition-requests/SV011-ORG-STATE-0001.request.json",
   "applies_to_request_id": "SV011-ORG-STATE-0001-REQUEST-001",
   "baseline": {
     "ledger_ref": "refs/stegverse/organization-ledger",

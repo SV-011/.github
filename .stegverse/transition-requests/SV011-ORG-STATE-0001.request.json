@@ -2,7 +2,7 @@
   "schema": "stegverse.organization-transition-request/v1",
   "request_id": "SV011-ORG-STATE-0001-REQUEST-001",
   "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
-  "purpose": "DEFAULT pending owner confirmation (B2). First current_state declaration for SV-011/.github. Held outside .stegverse/transition-requests/, so it appends nothing; committing it under that directory on main is the manifest that appends.",
+  "purpose": "DEFAULT in force (fail-closed) (B2). First current_state declaration for SV-011/.github. Held outside .stegverse/transition-requests/, so it appends nothing; committing it under that directory on main is the manifest that appends.",
   "constraint_set": {
     "node_standing": {
       "mode": "ESTABLISH_GENESIS",

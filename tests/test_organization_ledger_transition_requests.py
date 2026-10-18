@@ -143,7 +143,7 @@ class LedgerRepo:
 def segmentless_contract(base: Path) -> Path:
     """This checkout's org-contract.json without a legacy segment, for ledgers read from genesis.
 
-    DEFAULT pending owner confirmation (C6 convergence b): a declared segment
+    DEFAULT in force (fail-closed) (C6 convergence b): a declared segment
     applies to every ledger it is read against, so a ledger that does not hold
     the declared receipts is read with a contract that declares none.
     """
@@ -159,6 +159,37 @@ def live_ledger(base: Path) -> "LedgerRepo":
     root = base / "live-bundle"
     root.mkdir(exist_ok=True)
     return LedgerRepo(root, LIVE)
+
+
+
+def organization_chain(ledger: "LedgerRepo") -> list[dict]:
+    """The organization receipts on the temporary ref, genesis first."""
+    head = json.loads(ledger.show("HEAD.json"))
+    chain, cursor = [], head["receipt_sha256"]
+    while cursor is not None:
+        receipt = json.loads(ledger.show("receipts/" + cursor.split(":")[1] + ".json"))
+        chain.append(receipt)
+        cursor = receipt.get("previous_receipt_sha256")
+    return list(reversed(chain))
+
+
+def assert_only_refusals_recorded(case: unittest.TestCase, ledger: "LedgerRepo", refused: list[dict]) -> None:
+    """A refused request appends a FAIL_CLOSED refusal pair with the state unchanged, and nothing else."""
+    chain = organization_chain(ledger)
+    case.assertEqual([receipt["receipt_sha256"] for receipt in chain],
+                     [result["refusal_organization_receipt_sha256"] for result in refused])
+    for receipt, result in zip(chain, refused):
+        case.assertIs(result["refusal_recorded"], True)
+        case.assertIs(result["consequence_committed"], False)
+        case.assertEqual(receipt["org_transition_class"], "ORGANIZATION_TRANSITION_REQUEST_REFUSAL")
+        case.assertEqual(receipt["predecessor_state_sha256"], result["request_sha256"])
+        case.assertEqual(receipt["successor_state_sha256"], result["request_sha256"])
+        case.assertEqual(receipt["evidence"]["disposition"], "FAIL_CLOSED")
+        case.assertEqual(receipt["evidence"]["failed_predicate"], result["failed_predicate"])
+        retained = json.loads(ledger.show("source-receipts/" + receipt["source_transition_sha256"].split(":")[1] + ".json"))
+        for name in ("failure_code", "failed_predicate", "required_evidence_or_repair",
+                     "retry_entrypoint", "owning_existing_goal"):
+            case.assertTrue(retained["evidence"][name], name)
 
 
 class _EnvCase(unittest.TestCase):
@@ -287,7 +318,7 @@ class LiveReceiptReadbackTests(_EnvCase):
         self.assertIs(result["basis_established"], True)
 
     def test_an_empty_location_is_refused_head_absent(self):
-        """DEFAULT pending owner confirmation (C6 parity 3): an empty ledger is a refusal, as in C6."""
+        """DEFAULT in force (fail-closed) (C6 parity 3): an empty ledger is a refusal, as in C6."""
         empty = self.base / "empty"
         empty.mkdir()
         with self.assertRaises(readback.ReadbackRefused) as caught:
@@ -363,15 +394,20 @@ class RequestIntakeTests(_EnvCase):
         self.assertEqual(result["current_state_reason"], "BASIS_ABSENT")
         self.assertEqual(result["current_state_detail"], "HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE")
 
-    def test_an_sdk_manifest_is_refused_and_nothing_is_appended(self):
+    def test_an_sdk_manifest_is_refused_and_only_the_refusal_is_recorded(self):
         ledger = LedgerRepo(self.base)
+        results = []
         for key in ("manifest", "build_manifest"):
             code, refused = self.apply_cli(ledger, request(**{key: {}}))
             self.assertEqual(code, 1)
             self.assertEqual(refused["failed_predicate"], "SDK_MANIFEST_BUILDER_NOT_PRESENT")
             self.assertIs(refused["consequence_committed"], False)
-        self.assertNotEqual(subprocess.run(["git", "-C", str(ledger.path), "rev-parse", "--verify", "--quiet", REF],
-                                           capture_output=True).returncode, 0)
+            results.append(refused)
+        assert_only_refusals_recorded(self, ledger, results)
+        again_code, again = self.apply_cli(ledger, request(manifest={}))
+        self.assertEqual(again_code, 1)
+        self.assertEqual(again["refusal_organization_receipt_sha256"], results[0]["refusal_organization_receipt_sha256"])
+        assert_only_refusals_recorded(self, ledger, results)
 
     def test_a_current_state_that_is_not_a_basis_is_refused_before_any_append(self):
         ledger = LedgerRepo(self.base)
@@ -379,8 +415,12 @@ class RequestIntakeTests(_EnvCase):
         self.assertEqual(code, 1)
         self.assertEqual(refused["failed_predicate"], "TRANSITION_REQUEST_CURRENT_STATE_IS_A_BASIS")
         self.assertTrue(refused["required_evidence_or_repair"].startswith("BASIS_STALE"))
-        self.assertNotEqual(subprocess.run(["git", "-C", str(ledger.path), "rev-parse", "--verify", "--quiet", REF],
-                                           capture_output=True).returncode, 0)
+        assert_only_refusals_recorded(self, ledger, [refused])
+        code, report = self.readback_cli(ledger.org, transition_result=refused,
+                                         org_contract=segmentless_contract(self.base))
+        self.assertEqual(code, 0, report)
+        self.assertIs(report["request_refused"], True)
+        self.assertIs(report["refusal_receipts_in_chain"], True)
 
     def test_the_committed_request_tree_validates(self):
         self.assertIsInstance(transition.validate_tree(ROOT / ".stegverse/transition-requests"), list)
@@ -507,10 +547,10 @@ def _workflow_step_script(step_name: str) -> str:
 class ObservationOnlyReadbackTests(_EnvCase):
     """#12 fix 1: a readback records no transition; a successful read carries no disposition.
 
-    DEFAULT pending owner confirmation (C6 convergence c): a refusal or a
+    DEFAULT in force (fail-closed) (C6 convergence c): a refusal or a
     non-ALLOW read carries a top-level FAIL_CLOSED with the six fields and
-    exits 1; a successful read stays disposition-free (B3). Open for Rigel:
-    #12 item 1 against C6 convergence.
+    exits 1; a successful read stays disposition-free (B3). #12 item 1
+    against C6 convergence is a joint-discovery item (INDEX).
     """
 
     def _closure(self, disposition="ALLOW"):
@@ -671,11 +711,17 @@ class PublicationAndIntakeVerificationTests(_EnvCase):
     def test_a_changed_request_with_the_same_transition_id_fails_closed(self):
         ledger = LedgerRepo(self.base)
         self.apply_cli(ledger, request("COLLIDE", state=current_state()))
-        tip = ledger.tip()
+        first_head = organization_chain(ledger)[-1]
         code, refused = self.apply_cli(ledger, request("COLLIDE", state=current_state(state_id="other")))
         self.assertEqual(code, 1, refused)
         self.assertIs(refused["consequence_committed"], False)
-        self.assertEqual(ledger.tip(), tip)
+        chain = organization_chain(ledger)
+        self.assertEqual(chain[-2], first_head)
+        self.assertEqual(chain[-1]["receipt_sha256"], refused["refusal_organization_receipt_sha256"])
+        self.assertEqual(chain[-1]["org_transition_class"], "ORGANIZATION_TRANSITION_REQUEST_REFUSAL")
+        # The state did not change, so the head's current_state is carried unchanged.
+        self.assertEqual(chain[-1]["current_state"], first_head["current_state"])
+        self.assertIs(refused["current_state_carried"], True)
 
     def _select(self, repo: Path, before: str, sha: str) -> tuple[str, str]:
         script = _workflow_step_script("Select the transition requests this push added or changed")
@@ -715,7 +761,30 @@ class PublicationAndIntakeVerificationTests(_EnvCase):
         later_steps = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
         self.assertGreaterEqual(later_steps.count("if: steps.select.outputs.present == 'true'"), 4)
 
-    def test_fixture_ref_and_basis_faults_fail_closed_at_intake_with_nothing_appended(self):
+    def test_the_request_job_publishes_recorded_refusals_and_fails_only_on_an_unrecorded_one(self):
+        workflow = (ROOT / ".github/workflows/organization-ledger-transition.yml").read_text(encoding="utf-8")
+        script = _workflow_step_script("Append each committed request to the repository and organization ledgers")
+        self.assertNotIn("| tee", script)
+        self.assertIn('> "$RUNNER_TEMP/results/$name.transition.json" || status=1', script)
+        self.assertIn('get("refusal_recorded") is True', script)
+        self.assertIn('echo "$unrecorded" > "$RUNNER_TEMP/results/refusals.unrecorded"', script)
+        self.assertNotIn("exit 1", script.split("mkdir -p")[1])
+        check = _workflow_step_script("Fail on a refusal this run could not record")
+        results = self.base / "results"
+        results.mkdir()
+        for flag, expected in (("0", 0), ("1", 1), (None, 1)):
+            marker = results / "refusals.unrecorded"
+            if flag is None:
+                marker.unlink(missing_ok=True)
+            else:
+                marker.write_text(flag + "\n", encoding="utf-8")
+            completed = subprocess.run(["bash", "-c", check], capture_output=True, text=True,
+                                       env={**os.environ, "RUNNER_TEMP": str(self.base)})
+            self.assertEqual(completed.returncode, expected, flag)
+        self.assertLess(workflow.index("- name: Publish the ledger ref (fast-forward only)"),
+                        workflow.index("- name: Fail on a refusal this run could not record"))
+
+    def test_fixture_ref_and_basis_faults_fail_closed_at_intake_and_only_refusals_are_recorded(self):
         ledger = LedgerRepo(self.base)
         faults = [
             current_state(declared_transition_element={"transition_id": "T-011",
@@ -727,6 +796,7 @@ class PublicationAndIntakeVerificationTests(_EnvCase):
             current_state(fresh_until="2026-10-16T00:00:00Z"),
             {key: value for key, value in current_state().items() if key != "declared_role_escalation"},
         ]
+        results = []
         for index, state in enumerate(faults):
             code, refused = self.apply_cli(ledger, request("FAULT-%d" % index, state=state))
             self.assertEqual(code, 1, refused)
@@ -734,8 +804,8 @@ class PublicationAndIntakeVerificationTests(_EnvCase):
             self.assertTrue(refused["required_evidence_or_repair"].split(":")[0] in (
                 "BASIS_ABSENT", "BASIS_UNKNOWN", "BASIS_STALE", "BASIS_CONTRADICTORY"), refused)
             self.assertIs(refused["consequence_committed"], False)
-        self.assertNotEqual(subprocess.run(["git", "-C", str(ledger.path), "rev-parse", "--verify", "--quiet", REF],
-                                           capture_output=True).returncode, 0)
+            results.append(refused)
+        assert_only_refusals_recorded(self, ledger, results)
 
 
 if __name__ == "__main__":

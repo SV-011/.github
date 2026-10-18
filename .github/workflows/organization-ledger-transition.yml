@@ -239,7 +239,7 @@ jobs:
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
-          # DEFAULT pending owner confirmation (C6 convergence c): the readback
+          # DEFAULT in force (fail-closed) (C6 convergence c): the readback
           # exits 1 on any non-ALLOW; its status is kept so the summary is
           # written, and the Hold step below reads the disposition.
           status=0
@@ -256,13 +256,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # DEFAULT pending owner confirmation (H45/G4, C6 convergence c): the
+      # DEFAULT in force (fail-closed) (H45/G4, C6 convergence c): the
       # readback carries a top-level disposition only when it is non-ALLOW
       # (a refusal, or DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED for a
       # declared legacy segment), and this step fails on it, so it fails even
       # when this run's receipt is fully verified. Letting it pass on a
-      # declared legacy segment is Rigel's decision; no pass path is
-      # implemented here.
+      # declared legacy segment is a joint-discovery item (Hold option (ii),
+      # INDEX); no pass path is implemented here.
       - name: Hold the readback FAIL_CLOSED on a declared legacy segment
         run: |
           python3 - "$RUNNER_TEMP/results/readback.json" <<'PY'
@@ -293,16 +293,17 @@ jobs:
           path: ${{ runner.temp }}/results
           if-no-files-found: ignore
 
-  # Item 4b / ECOSYSTEM_CAPABILITY_ABSENT (a), DEFAULT pending owner
-  # confirmation: a read of the published ref with no append, so a live read
-  # cites a run id. contents: read only; it fetches the ref into a fresh bare
-  # repository, never pushes, and never runs the ingress, the transition
-  # intake, or aggregate_repo_transition. The job conclusion says whether a
-  # conforming observation was recorded (a disposition-free observation, or a
-  # FAIL_CLOSED report with its six fields and no undeclared failures). It is
-  # not the ledger's disposition: that is printed in the log and the step
-  # summary. The transition job's Hold step is unchanged (no pass path).
-  # Revert: delete this job, or add the Hold step so it fails on any disposition.
+  # Item 4b / ECOSYSTEM_CAPABILITY_ABSENT (a): a read of the published ref with
+  # no append, so a live read cites a run id. Conforming, decided from
+  # invariants (#167 comment 6245553028): it observes and is not a post-closure
+  # observer gate (ORRD Conformance item 5). contents: read only; it fetches the
+  # ref into a fresh bare repository, never pushes, and never runs the ingress,
+  # the transition intake, or aggregate_repo_transition. The job fails only on
+  # its own integrity (an observation it could not record, or a non-conforming
+  # report); the observed ledger result is data, printed in the log and the
+  # step summary (StegVerse-Labs/.github organization-governance-decision.yml
+  # header; ORRD L45). The transition job's Hold step is unchanged.
+  # Revert: delete this job.
   readback-published-ref:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -447,12 +448,27 @@ jobs:
             *) echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LOCATOR_DOES_NOT_NAME_THE_REF","failed_predicate":"ORGANIZATION_LOCATOR_NAMES_THE_DESIGNATED_REF","required_evidence_or_repair":"org-contract.json organization_ledger_ref equal to refs/stegverse/organization-ledger","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"correct the ledger contract and push the request again; nothing was appended","production_receipt_claimed":false}'; exit 1 ;;
           esac
           mkdir -p "$RUNNER_TEMP/results"
+          # A refused request is recorded as a FAIL_CLOSED refusal pair (ORRD
+          # Conformance item 1) and published with the ref: a recorded refusal is
+          # an answered decision, so it is data here. Only a refusal this run
+          # could not record fails the step.
+          unrecorded=0
           while IFS= read -r request; do
             [ -n "$request" ] || continue
             name=$(basename "$request" .json)
+            status=0
             python3 resident-runtime/organization_ledger_transition.py --request "$request" \
-              | tee "$RUNNER_TEMP/results/$name.transition.json"
+              > "$RUNNER_TEMP/results/$name.transition.json" || status=1
+            cat "$RUNNER_TEMP/results/$name.transition.json"
+            echo "$status" > "$RUNNER_TEMP/results/$name.transition.status"
+            if [ "$status" != "0" ] && ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("refusal_recorded") is True else 1)' "$RUNNER_TEMP/results/$name.transition.json"; then
+              unrecorded=1
+            fi
           done < "$RUNNER_TEMP/requests.txt"
+          echo "$unrecorded" > "$RUNNER_TEMP/results/refusals.unrecorded"
+          if [ "$unrecorded" != "0" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"TRANSITION_REQUEST_REFUSAL_NOT_RECORDED","failed_predicate":"EVERY_REFUSED_REQUEST_IS_RECORDED_ON_THE_LEDGER","required_evidence_or_repair":"a committed request that is a JSON object and bound ledger roots, so the refusal is appended (see refusal_recorded_reason in the result above)","retry_entrypoint":".github/workflows/organization-ledger-transition.yml job request-transition","owning_existing_goal":"SV011-TT-CAPABILITY-MAP-OBSERVATION-001","next_attempt":"correct the request and push it again; recorded refusals above stand","production_receipt_claimed":false}'
+          fi
 
       - name: Publish the ledger ref (fast-forward only)
         if: steps.select.outputs.present == 'true'
@@ -479,7 +495,7 @@ jobs:
             exit 1
           fi
           git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
-          # DEFAULT pending owner confirmation (C6 convergence c): the readback
+          # DEFAULT in force (fail-closed) (C6 convergence c): the readback
           # exits 1 on any non-ALLOW; its status is kept so every request is
           # read back, and the Hold step below reads the disposition.
           for result in "$RUNNER_TEMP"/results/*.transition.json; do
@@ -499,13 +515,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           done
 
-      # DEFAULT pending owner confirmation (H45/G4, C6 convergence c): the
+      # DEFAULT in force (fail-closed) (H45/G4, C6 convergence c): the
       # readback carries a top-level disposition only when it is non-ALLOW
       # (a refusal, or DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED for a
       # declared legacy segment), and this step fails on it, so it fails even
       # when this run's receipt is fully verified. Letting it pass on a
-      # declared legacy segment is Rigel's decision; no pass path is
-      # implemented here.
+      # declared legacy segment is a joint-discovery item (Hold option (ii),
+      # INDEX); no pass path is implemented here.
       - name: Hold the readback FAIL_CLOSED on a declared legacy segment
         if: steps.select.outputs.present == 'true'
         run: |
@@ -528,6 +544,13 @@ jobs:
                   print(json.dumps({"disposition": "FAIL_CLOSED", "failure_code": "ORGANIZATION_LEDGER_READBACK_UNREADABLE", "failed_predicate": "READBACK_REPORT_IS_READABLE_AND_EXITS_ZERO_WITHOUT_A_DISPOSITION", "required_evidence_or_repair": "a readback report at " + path + " (status " + status + ") that is an observation with no disposition, or a FAIL_CLOSED report with its six fields", "retry_entrypoint": "resident-runtime/organization_ledger_readback.py::main", "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001", "next_attempt": "re-run the job; the readback writes nothing", "readback": path, "production_receipt_claimed": False}, sort_keys=True))
           sys.exit(1 if held else 0)
           PY
+
+      # Only this run's own integrity fails the job here: a refusal it could not
+      # record. A recorded refusal is an answered decision and stays data.
+      - name: Fail on a refusal this run could not record
+        if: steps.select.outputs.present == 'true'
+        run: |
+          test "$(cat "$RUNNER_TEMP/results/refusals.unrecorded" 2>/dev/null || echo 1)" = "0"
 
       - name: Retain the run's evidence
         if: always() && steps.select.outputs.present == 'true'
