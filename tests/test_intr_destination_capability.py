@@ -445,7 +445,12 @@ class AddressedAndClosedTests(RedirectedLedgers):
                          emitted["destination_service"])
         pending = egress.close(PEER, emitted["packet_id"], "closable-diagnostic",
                                mesh_root=self.mesh, hb_epoch=33)
-        self.assertEqual(pending["disposition"], "PENDING")
+        self.assertEqual(pending["disposition"], "FAIL_CLOSED")
+        self.assertEqual(pending["failure_code"], "FAR_SIDE_ANSWER_NOT_MATERIALIZED")
+        self.assertEqual(pending["receiver_unavailable_disposition"],
+                         "DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION")
+        self.assertIs(pending["always_on_receiver_required"], False)
+        self.assertIs(pending["disposition_is_transition_evidence"], False)
         self.assertIs(pending["closed"], False)
         self.assertIs(pending["closure_recorded"], False)
         self.assertIs(pending["absence_is_not_a_transition"], True)

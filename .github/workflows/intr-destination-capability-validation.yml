@@ -12,6 +12,12 @@ on:
       - 'org-runtime/runtime_boundary.py'
       - 'resident-runtime/intr_destination_ingress.py'
       - 'resident-runtime/organization_egress_boundary.py'
+      - 'resident-runtime/non_allow.py'
+      - 'tests/test_organization_role_conformance.py'
+      - 'tests/test_organization_ledger_defaults.py'
+      - 'tests/fixtures/organization-ledger-2cc58cec.bundle'
+      - '.stegverse/declarations/**'
+      - '.stegverse/build-expectations/**'
       - 'resident-runtime/aggregate_repo_transition.py'
       - 'resident-runtime/ledger_store.py'
       - '.stegverse/transition-ledger/**'
@@ -31,6 +37,12 @@ on:
       - 'org-runtime/runtime_boundary.py'
       - 'resident-runtime/intr_destination_ingress.py'
       - 'resident-runtime/organization_egress_boundary.py'
+      - 'resident-runtime/non_allow.py'
+      - 'tests/test_organization_role_conformance.py'
+      - 'tests/test_organization_ledger_defaults.py'
+      - 'tests/fixtures/organization-ledger-2cc58cec.bundle'
+      - '.stegverse/declarations/**'
+      - '.stegverse/build-expectations/**'
       - 'resident-runtime/aggregate_repo_transition.py'
       - 'resident-runtime/ledger_store.py'
       - '.stegverse/transition-ledger/**'
@@ -75,4 +87,4 @@ jobs:
         env:
           STEGVERSE_REPO_LEDGER_ROOT: ${{ runner.temp }}/repo-ledger
           STEGVERSE_ORG_LEDGER_ROOT: ${{ runner.temp }}/org-ledger
-        run: python3 -m unittest tests.test_intr_destination_capability tests.test_organization_ledger_publication -v
+        run: python3 -m unittest tests.test_intr_destination_capability tests.test_organization_ledger_publication tests.test_organization_role_conformance tests.test_organization_ledger_defaults -v

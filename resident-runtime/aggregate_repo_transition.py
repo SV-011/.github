@@ -7,6 +7,12 @@ receipt preserves the repository receipt digest. It does not select admission,
 routing, or execution. Authority and time stay constraint variables. The
 disposition on the evidence is transition evidence.
 
+A transition request that declares a ``current_state`` uses the shape of the TT
+current-state basis. ``normalize_current_state`` refuses one that the readback
+would not accept and copies the six declared fields onto the organization
+receipt. ``basis_digest`` is not stored; the readback computes it. Nothing is
+filled in for a field the request did not declare.
+
 A receipt written here does not claim to be an authentic production receipt.
 Callers that redirect the root, including tests, are writing a supplied store.
 """
@@ -41,6 +47,44 @@ def sha(value: Any) -> str:
     return "sha256:" + hashlib.sha256(bytes(raw)).hexdigest()
 
 
+CURRENT_STATE_FIELDS = (
+    "state_id",
+    "as_of",
+    "fresh_until",
+    "declared_transition_element",
+    "declared_role_escalation",
+    "satisfied_scope_ids",
+)
+_basis_module = None
+
+
+def _basis():
+    """The readback module, which owns the current-state basis rule."""
+    global _basis_module
+    if _basis_module is None:
+        spec = importlib.util.spec_from_file_location(
+            "organization_ledger_readback_basis",
+            ROOT / "resident-runtime/organization_ledger_readback.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _basis_module = module
+    return _basis_module
+
+
+def normalize_current_state(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The declared current_state as the six fields, or a refusal naming the basis code."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("BASIS_UNKNOWN:current_state")
+    projected = _basis().project_current_state({"current_state": dict(value)})
+    if not projected["basis_established"]:
+        raise ValueError(projected["current_state_reason"] + ":"
+                         + ",".join(projected["current_state_fields"]))
+    state = projected["current_state"]
+    return {name: state[name] for name in CURRENT_STATE_FIELDS}
+
+
 def ledger_root():
     """The caller-supplied organization ledger locator. A missing root fails closed."""
     configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
@@ -70,9 +114,11 @@ def _recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
            predecessor_state: str, successor_state: str, boundary_evidence: Mapping[str, Any],
            authority_constraint: str, hb_epoch: int | None = None,
-           store: ledger_store.Store | None = None, idempotent: bool = False) -> dict[str, Any]:
+           store: ledger_store.Store | None = None, idempotent: bool = False,
+           current_state: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(source_receipt, Mapping) or not isinstance(source_receipt.get("receipt_sha256"), str):
         raise ValueError("source_receipt_required")
+    declared_state = normalize_current_state(current_state)
     target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
@@ -82,7 +128,8 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
     if idempotent:
         prior = _recorded(target, head, source_sha)
         if prior is not None:
-            if prior.get("org_transition_class") != org_transition_class:
+            if (prior.get("org_transition_class") != org_transition_class
+                    or prior.get("current_state") != declared_state):
                 raise ValueError("ledger_receipt_collision")
             return prior
     body = {
@@ -91,6 +138,10 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "repository": C["repository"],
         "org_transition_class": org_transition_class,
         "repo_receipt_sha256": source_sha,
+        # DEFAULT in force (fail-closed) (H45): the consumed source receipt
+        # is named and retained under source-receipts/, as on StegVerse-org's
+        # ledger. Receipts already on the ref are not rewritten.
+        "source_transition_sha256": source_sha,
         "predecessor_state_sha256": predecessor_state,
         "successor_state_sha256": successor_state,
         "evidence": dict(boundary_evidence),
@@ -101,6 +152,8 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "hb_reference": kernel.hb_reference(epoch=hb_epoch) if hb_epoch is not None else kernel.hb_reference(),
         "previous_receipt_sha256": previous,
     }
+    if declared_state is not None:
+        body["current_state"] = declared_state
     digest = sha(body)
     receipt = {**body, "receipt_sha256": digest}
     new_head = {
@@ -108,8 +161,9 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "organization": C["organization"],
         "receipt_sha256": digest,
     }
+    retained = {ledger_store.source_key(source_sha): dict(source_receipt)}
     if target.append_transaction(
             ledger_store.receipt_key(digest), receipt,
-            head if isinstance(head, dict) else None, new_head):
+            head if isinstance(head, dict) else None, new_head, immutable=retained):
         return receipt
     raise RuntimeError("ledger_append_lost_comparison")

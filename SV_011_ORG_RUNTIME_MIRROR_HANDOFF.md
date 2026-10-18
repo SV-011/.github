@@ -2,8 +2,8 @@
 
 Repository: `SV-011/.github`  
 Organization: `SV-011`  
-State: SOURCE_AND_WORKERCOORDINATOR_BRIDGE_INSTALLED / RESIDENT_RUNTIME_EXECUTION_PENDING  
-Updated: 2026-09-02  
+State: SOURCE_AND_WORKERCOORDINATOR_BRIDGE_INSTALLED / PHASE5_LEDGER_TRANSITIONS_NOT_OBSERVED  
+Updated: 2026-10-17  
 Authority effect: NONE  
 Activation effect: false
 
@@ -28,9 +28,9 @@ HB / HB-derived carrier
   -> carrier
 ```
 
-Carrier presence grants no admission, execution, credential, routing, transition, receiving, publication, or release authority.
+Carrier presence does not satisfy any admission, execution, credential, routing, transition, receiving, publication, or release constraint.
 
-GitHub Actions may validate source/evidence but are not sovereign runtime authority.
+GitHub-hosted workflow runs, started on request, carry manifest-driven state transitions. Runtime is observed only as an organization receipt appended to `refs/stegverse/organization-ledger` and read back. A run that only validates source appends no receipt and observes no runtime.
 
 ## Canonical upstream lineage
 
@@ -45,17 +45,17 @@ Source organization boundary:
 ## SV-011 Phase-5 dependency
 
 `SV-011/entity` Phase-5 source lane is merged and hosted-validated. It has:
-- an authorized boundary-local diagnostic path;
+- a boundary-local diagnostic path inside the declared communication set;
 - a reachable out-of-set denial;
 - explicit receipts for both source-test outcomes.
 
-Phase-5 remains open until the organization resident runtime produces authentic crossing and denial evidence outside GitHub-hosted workflow authority.
+Phase 5 closes on manifest-driven state transitions observed through organization-ledger receipts: one ALLOW-disposition crossing and one DENY-disposition crossing, each appended to `refs/stegverse/organization-ledger` by a GitHub-hosted workflow run started on request, and read back from a fresh fetch. The condition names no resident host or executor.
 
-## Initial authority state
+## Initial constraint state
 
 ```text
-execution_authorized: false
-publication_authorized: false
+execution_constraint_satisfied: false
+publication_constraint_satisfied: false
 proofs_accepted: false
 runtime_source_installed: true
 resident_runtime_observed: false
@@ -70,9 +70,9 @@ autonomous_status_claimed: false
 2. Install exact-byte canonical transport/processor/runtime imports.
 3. Add only SV-011 organization-local profile/registry/receipt behavior.
 4. Install a validation dispatcher; no workflow-per-feature.
-5. Prepare resident execution requests for one allowed and one denied crossing.
-6. GitHub-hosted validation may prove source behavior only.
-7. Do not close Phase 5 until authentic resident receipts are observed and reconstructed.
+5. Commit manifest-bound transition requests for one ALLOW-disposition and one DENY-disposition crossing.
+6. GitHub-hosted validation runs prove source behavior only; they append no organization-ledger receipt.
+7. Close Phase 5 when both crossings are observed as organization-ledger receipts, produced by GitHub-hosted workflow runs started on request, and reconstructed from a fresh fetch of the ledger ref.
 
 
 ## Organization-boundary source installation — 2026-09-02
@@ -104,16 +104,16 @@ phase5_real_denial_observed: false
 github_actions_is_runtime_authority: false
 ```
 
-The installed requests are ready for a sovereign resident executor:
+The installed probe request files are:
 - `resident-runtime/requests/phase5-allow.json`
 - `resident-runtime/requests/phase5-deny.json`
 
-The resident execution command surface is:
+The probe command surface (its argument names are the recorded ones) is:
 ```text
 python resident-runtime/run_phase5_probe.py --request <request.json> --evidence-dir <resident-evidence-dir> --runtime-observer <resident-runtime-id>
 ```
 
-GitHub-hosted validation of that runner is not authentic resident execution and does not close Phase 5.
+A validation run of that runner appends no organization-ledger receipt and does not close Phase 5.
 
 
 ## Canonical sovereign WorkerCoordinator bridge — 2026-09-02
@@ -139,7 +139,7 @@ Installed canonical resident surfaces:
 
 The WorkerCoordinator task accepts either (a) a clean already-local `SV-011/.github` checkout containing this repository's Phase-5 source installation commit `cf2777d9d21a97289f4ec7b0d9b0b21597047666` with the exact pinned blobs, or (b) the exact verified materialized tree produced by the dedicated source-materialization task.
 
-The bridge is now source/control complete. The remaining Phase-5 transition is machine-owned authentic resident execution. No GitHub-hosted run, merge, request presence, or carrier presence satisfies that transition.
+The bridge is source/control complete. The remaining Phase-5 transition is a manifest-driven state transition observed as an organization-ledger receipt. A merge, request presence, carrier presence, or a run that appends no ledger receipt does not satisfy it.
 
 Current runtime predicates remain:
 ```text
@@ -180,7 +180,7 @@ sv011_phase5_source_materialization
 -> sv011_phase5
 ```
 
-The materializer may only verify and atomically place the source bytes. It has no Phase-5 boundary-execution authority. The Phase-5 worker still has no source-acquisition authority.
+The materializer verifies and atomically places the source bytes and does nothing else. It does not satisfy the Phase-5 boundary-execution constraint. The Phase-5 worker does not satisfy the source-acquisition constraint.
 
 Current runtime predicates:
 ```text
@@ -286,7 +286,7 @@ reconstruction:
   not required for source-materialization completion
 ```
 
-The shared projector is merged in canonical source via StegVerse-Labs/.github PR #822, merge `6358375c81fedb579cb6fcac59946268ea485ebb`. It is bound into sovereign bootstrap/native-service/source-refresh materialization. No deployment-local projection output is claimed until an authentic resident runtime produces the required local evidence.
+The shared projector is merged in canonical source via StegVerse-Labs/.github PR #822, merge `6358375c81fedb579cb6fcac59946268ea485ebb`. It is bound into sovereign bootstrap/native-service/source-refresh materialization. No deployment-local projection output is claimed. Phase 5 evidence is the organization-ledger receipts described in the section below, not a local projection.
 
 
 ### Shared contract merge state
@@ -298,3 +298,49 @@ merge: 6358375c81fedb579cb6fcac59946268ea485ebb
 shared_projection_source_installed: true
 shared_projection_runtime_output_observed: false
 ```
+
+## Organization ledger and transition-request intake — 2026-10-17
+
+Draft PR #9 (`cursor/sv011-org-ledger-17f9`). Not merged.
+
+Earlier dated sections record `resident` surfaces, predicates, and paths by their installed names. Those names are identifiers. They add no resident host or executor to the Phase 5 condition above, and nothing in this organization waits on one.
+
+```text
+ledger_ref: refs/stegverse/organization-ledger
+live_tip: 2cc58cec
+head_organization_receipt: sha256:3db9008d… (intr-destination self-closure, dispatch run 38996777029)
+repository_receipt: repository-ledger/SV-011/.github/ sha256:f8134042…
+intake: .stegverse/transition-requests/*.json, push to main, job request-transition
+publication: fast-forward only, read back from a fresh fetch
+readback: observation only; a successful read has no top-level disposition (exit 0); a refusal or a declared legacy segment is top-level FAIL_CLOSED with six fields (exit 1) (DEFAULT, C6 convergence c; #12 item 1 a joint-discovery item); live copies read through git (clone or 2cc58cec bundle) only (C6 a); a segment always applies, segment-less contracts via --org-contract (C6 b); verification and current-state basis reported separately; C6 never-waivable set, organization-chain predicate names, empty ledger refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 1-3); success as ALLOW under readback/v1 a joint-discovery item with #12 item 1 (C6 parity 4, not applied)
+live_basis: BASIS_ABSENT (head receipt carries no current_state)
+tt_fixture_t_011_present_at_ba3cca71: false
+sdk_manifest_builder_present: false (build_manifest/manifest refused with SDK_MANIFEST_BUILDER_NOT_PRESENT)
+standing_to_constraint_set: DEFAULT in force (fail-closed), option B (SV-011/.github#12 item 2)
+readback_schema: stegverse.organization-ledger-observation/v1 (DEFAULT, B3)
+manifested_route: required, bound in org-contract.json (DEFAULT, B5)
+first_current_state: .stegverse/transition-requests/SV011-ORG-STATE-0001.request.json, staged; appended by job request-transition when PR #9 is admitted (DEFAULT, B2; T-181 fallback; #167 comment 6245553028 item 3)
+build_expectation: .stegverse/build-expectations/sv011-first-cycle.json (DEFAULT, B9)
+source_receipt_retention: forward only under source-receipts/; 3db9008d at 2cc58cec is the legacy pre-retention segment, never re-minted (DEFAULT, H45); declaration per shared readback C6 (waived_predicate, six_fields, declaration_sha256 sha256:36c43b78…); whole-ledger readback FAIL_CLOSED DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED, workflow step held FAIL_CLOSED (G4)
+```
+
+### Six-field conformance
+
+Every non-ALLOW outcome on the intake, readback, intr-destination ingress, egress, and the ledger workflow carries `failure_code`, `failed_predicate`, `required_evidence_or_repair`, `retry_entrypoint`, `owning_existing_goal` and `next_attempt` (`StegVerse-org/.github@c483d441` `docs/ORGANIZATION_ROLE_RUNTIME_REALITY_DEPLOYMENT.md`, item 5). An absent far-side answer is `FAIL_CLOSED` `FAR_SIDE_ANSWER_NOT_MATERIALIZED` with `receiver_unavailable_disposition: DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION`; it writes nothing and nothing waits on the receiver. Surfaces not yet conforming are held in `data/organization-role-exemption-register.json` (N1 dispatch-driven self-closure, N8 ledger transport credential; N11 is repaired by default B5). See `docs/ORGANIZATION_ROLE_CONFORMANCE.md`.
+
+```text
+non_allow_six_fields: resident-runtime/non_allow.py
+exemption_register: data/organization-role-exemption-register.json (2 entries N1 and N8, review 2026-11-17; defaults listed with revert paths)
+tests: tests/test_organization_role_conformance.py
+```
+
+### Registry reconciliation
+
+Read on 2026-10-17. No registry entry is added or changed by this repository, and no new goal task id is declared here.
+
+- `StegVerse-org/.github@c483d44:orchestration/task-registry.json` has `SV011-TT-CAPABILITY-MAP-OBSERVATION-001` (issue #68), status `in_progress`, destinations `SV-011/entity` and `StegVerse-org/StegVerse-SDK`, open obligations `EXPOSE_OR_IDENTIFY_CANONICAL_TT_NEXT_REQUIRED_CAPABILITY_DERIVATION_PRIMITIVE`, `AUTHENTICALLY_OBSERVE_DERIVED_CONSTRUCTION_EXERCISE_CYCLES`, and `SDK_SINGLE_ARTIFACT_OBSERVATION_PROJECTION`. The entry carries no COSV vector. Its outputs do not name `SV-011/.github` or the organization ledger.
+- `StegVerse-Labs/.github@3deb699:control/organization-task-registry.json` has `ORG-FED-SV-011-001`, state `READY`, COSV `50000000100000` (`EMITTED`, `authority_effect: NONE`), next action `OBSERVE_AUTHENTIC_BOUNDARY_DIAGNOSTIC_FRAME`. Its evidence refs are `SV-011/entity@f166227f` and `StegVerse-org/.github@17145f6`. Its task vector (`control/task-vectors/ORG-FED-SV-011-001.json`) records that SV-011 has no organization resident kernel, which predates the `org-kernel/` and organization ledger in this repository.
+- `COSV 50000000101000` above belongs to `SHWP-SV011-PHASE5-BOUNDARY-001` and `SHWP-SV011-PHASE5-SOURCE-MATERIALIZATION-001` in `StegVerse-Labs/.github:control/cosv-global-registry-coverage.json`.
+
+Neither canonical registry names the organization ledger or the transition-request intake. Recording them is left to those registries' owners.
+

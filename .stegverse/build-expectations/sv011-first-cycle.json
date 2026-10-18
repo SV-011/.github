@@ -1,0 +1,80 @@
+{
+  "schema": "stegverse.build-expectation/v1",
+  "expectation_id": "SV011-FIRST-CYCLE-EXPECTATION-001",
+  "status": "DEFAULT_IN_FORCE_FAIL_CLOSED_B9",
+  "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+  "organization": "SV-011",
+  "repository": "SV-011/.github",
+  "authority_effect": "NONE_DECLARATION_ONLY",
+  "applies_to_request": ".stegverse/transition-requests/SV011-ORG-STATE-0001.request.json",
+  "applies_to_request_id": "SV011-ORG-STATE-0001-REQUEST-001",
+  "baseline": {
+    "ledger_ref": "refs/stegverse/organization-ledger",
+    "tip_commit": "2cc58cec",
+    "head_organization_receipt_sha256": "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51",
+    "organization_receipts": 1,
+    "repository_receipts_SV-011/.github": 1,
+    "basis": "BASIS_ABSENT"
+  },
+  "expected": {
+    "organization_receipts_added": 1,
+    "repository_receipts_added": 1,
+    "head_previous_receipt_sha256": "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51",
+    "head_receipt_repo_receipt_present": true,
+    "head_current_state_state_id": "SV011-ORG-STATE-0001",
+    "head_current_state_transition_id": "T-181",
+    "head_current_state_fixture_ref": "fixtures/transition-elements/t-181.receipt-record.json",
+    "head_current_state_role_id": "sv011.context-to-evidence",
+    "head_current_state_basis_digest": "02db42d906e8ba8b0e05c4b18d63dc6d378095b1441d057beb6b063d25f8a04a",
+    "basis_established": true,
+    "current_state_reason": "HEAD_RECEIPT_CURRENT_STATE",
+    "paths_changed": [
+      "HEAD.json",
+      "receipts/<new organization receipt sha256 hex>.json",
+      "repository-ledger/SV-011/.github/HEAD.json",
+      "repository-ledger/SV-011/.github/receipts/<new repository receipt sha256 hex>.json",
+      "source-receipts/<new repository receipt sha256 hex>.json"
+    ],
+    "head_source_transition_sha256_equals_repo_receipt_sha256": true,
+    "source_receipt_retention_legacy_pre_retention": [
+      "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51"
+    ]
+  },
+  "delta_definition": {
+    "one_entry_per_expected_field": true,
+    "entry_tags": [
+      "VERIFIED_NULL",
+      "OBSERVED_NO_CHANGE",
+      "UNOBSERVED"
+    ],
+    "tag_meaning": {
+      "VERIFIED_NULL": "the readback observed the field and it equals the expectation; no difference",
+      "OBSERVED_NO_CHANGE": "the readback observed the field and it still equals the baseline, so the expected change did not occur",
+      "UNOBSERVED": "the readback did not report the field; this is never read as no change"
+    },
+    "empty_delta_is_a_result": false,
+    "observed_from": "resident-runtime/organization_ledger_readback.py report (stegverse.organization-ledger-observation/v1) from a fresh fetch",
+    "zero_change_request_refusal": "NOT_APPLIED_PENDING_StegVerse-Labs/.github#3204_B21"
+  },
+  "delta_computation": {
+    "disposition": "FAIL_CLOSED",
+    "failure_code": "DELTA_COMPUTATION_PRIMITIVE_NOT_PRESENT",
+    "failed_predicate": "DELTA_IS_COMPUTED_AGAINST_A_DECLARED_BUILD_EXPECTATION",
+    "required_evidence_or_repair": "an admitted reusable component that compares a readback report with this expectation (StegVerse-Labs/.github data/reusable-task-components/, stegverse.reusable-task-component/v1); no task-specific comparator is written here",
+    "retry_entrypoint": "StegVerse-Labs/.github data/reusable-task-components/; then SV-011/.github .stegverse/build-expectations/",
+    "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+    "next_attempt": "after the first request appends, compute the delta from its readback once the component is admitted"
+  },
+  "return_path": {
+    "ledger_leg": "the computed delta is committed as a transition request under .stegverse/transition-requests/ and appended as an organization-ledger receipt (existing intake)",
+    "sdk_leg": {
+      "disposition": "FAIL_CLOSED",
+      "failure_code": "SDK_TO_SV011_TRANSITION_REQUEST_ROUTE_NOT_PRESENT",
+      "failed_predicate": "SDK_MANIFESTED_PACKET_REACHES_SV011_TRANSITION_REQUEST_INTAKE",
+      "required_evidence_or_repair": "an SDK reader for stegverse.organization-ledger-observation/v1 and a manifested route from the SDK to this intake (B6)",
+      "retry_entrypoint": "StegVerse-org/StegVerse-SDK stegverse/organization_ledger_evidence.py",
+      "owning_existing_goal": "SV011-TT-CAPABILITY-MAP-OBSERVATION-001",
+      "next_attempt": "source proposal to the SDK owner; this artifact is not changed by it"
+    }
+  }
+}

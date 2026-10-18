@@ -1,15 +1,73 @@
 #!/usr/bin/env python3
 """Read the organization ledger back from the location the caller supplies.
 
-A dispatch reads ``refs/stegverse/organization-ledger`` from a fresh fetch.
-The readback walks the organization chain and the repository subtree of that
-same ref, checks each receipt against its own body, and checks that an
-intr-destination closure's repository receipt, organization receipt, and
-``communication_id`` are on those chains.
+A workflow run reads ``refs/stegverse/organization-ledger`` from a fresh
+fetch. The readback walks the organization chain and the repository subtree of
+that same ref and checks each receipt against its own body. Given an
+intr-destination closure result, it checks that the closure's repository
+receipt, organization receipt, and ``communication_id`` are on those chains.
+Given a transition-request result, it checks that the request's two receipts
+are on those chains.
+
+Current-state basis
+-------------------
+``current_state`` is taken only from the organization head receipt's
+``current_state`` object. The shape is the Current-state basis section of
+``Admissible-Existence/TT`` commit ``ba3cca71b6928cf739ab6b321c939860fd1edbb1``
+``docs/SV_011_NEXT_REQUIRED_CAPABILITY_DERIVATION_CONTRACT.md`` (git blob
+``8f7d4cc2127325b155e1a91edfe531b5737f7c75``). A complete basis has exactly:
+
+- ``state_id``: identifier ``^[A-Za-z0-9._:-]{1,128}$``
+- ``as_of`` and ``fresh_until``: ``YYYY-MM-DDTHH:MM:SSZ``; fresh when
+  ``as_of <= fresh_until``
+- ``declared_transition_element``: ``transition_id`` (``T-`` and three
+  digits) and ``fixture_ref`` (``fixtures/transition-elements/<name>.json``,
+  ``<name>`` in ``[a-z0-9.-]+``, the TT engine's pattern)
+- ``declared_role_escalation``: ``role_id``, ``from_role``, ``to_role``,
+  identifiers, with ``from_role != to_role``
+- ``satisfied_scope_ids``: a duplicate-free prefix of
+  ``["transition_element", "role_escalation"]``
+- ``basis_digest``: lowercase hex SHA-256 of the UTF-8 ``json.dumps`` of
+  ``current_state`` without ``basis_digest`` (``sort_keys=True``,
+  ``separators=(",", ":")``, ``ensure_ascii=False``). No ``sha256:`` prefix.
+
+The fixture file named by ``fixture_ref`` lives in the TT tree, not in this
+repository. The readback checks the path pattern and copies the declaration.
+It does not open the fixture or compare its ``transition_id``; the TT engine
+does that against its own root, and a missing fixture there is TT's
+``BASIS_UNKNOWN``. The readback reports this as ``fixture_ref_resolution``.
+
+A head receipt without ``current_state`` is ``BASIS_ABSENT`` with
+``current_state_detail`` ``HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE``. A missing
+field is ``BASIS_ABSENT``. A wrong type or pattern, an unparseable time, or a
+scope id outside the manifest scope is ``BASIS_UNKNOWN``. A later ``as_of`` is
+``BASIS_STALE``. Equal roles, a duplicated or non-prefix scope list, or a
+digest that does not match is ``BASIS_CONTRADICTORY``. In each case
+``basis_established`` is false and ``current_state`` is null. Nothing is
+copied from an earlier receipt, the clock, or a default.
+
+Observation only
+----------------
+A readback records no transition, so its output carries no disposition. A
+disposition is evidence that a state transition occurred, and it stays inside
+the receipt that recorded that transition. The output reports two things
+separately: ``verification`` (the chains read back and each receipt verifies
+against its own body) and the current-state basis (``basis_established``,
+``current_state_reason``). A verified chain whose head declares no basis
+reports ``BASIS_ABSENT``; that is never turned into a current state.
+
+Non-ALLOW findings
+------------------
+The readback has no disposition of its own, but its non-ALLOW outcomes carry
+the six fields of the Organization Role conformance standard
+(``resident-runtime/non_allow.py``): a refused readback carries them at the top
+level, and a basis that is not established carries them in
+``current_state_finding`` (null when the basis is established). A bare
+``BASIS_*`` code is not reported on its own.
 
 The readback does not select admission, routing, or execution. Authority and
-time stay constraint variables. A disposition here is transition evidence.
-This module does not claim an authentic production receipt.
+time stay constraint variables. This module does not claim an authentic
+production receipt.
 """
 from __future__ import annotations
 
@@ -17,7 +75,10 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,10 +87,64 @@ LEDGER_REF = "refs/stegverse/organization-ledger"
 LEDGER_REPOSITORY = "SV-011/.github"
 RETRY = "resident-runtime/organization_ledger_readback.py::main"
 
+# The six fields covered by basis_digest. basis_digest itself is the seventh.
+BASIS_INPUT_FIELDS = (
+    "state_id",
+    "as_of",
+    "fresh_until",
+    "declared_transition_element",
+    "declared_role_escalation",
+    "satisfied_scope_ids",
+)
+MANIFEST_SCOPE_IDS = ("transition_element", "role_escalation")
+IDENTIFIER = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# DEFAULT in force (fail-closed) (B3, audit item N7). This readback is
+# observation only and carries no disposition, so it does not use
+# stegverse.organization-ledger-readback/v1: that id names StegVerse-org's
+# canonical readback (top-level disposition ALLOW), which the SDK reader
+# stegverse/organization_ledger_evidence.py consumes. A separate id keeps one id
+# from naming two shapes; the SDK reader refuses this document on its schema
+# rather than on a missing disposition. Revert by restoring the old id here.
+OBSERVATION_SCHEMA = "stegverse.organization-ledger-observation/v1"
+SUPERSEDED_SCHEMA = "stegverse.organization-ledger-readback/v1"
+TRANSITION_ID = re.compile(r"^T-[0-9]{3}$")
+FIXTURE_REF = re.compile(r"^fixtures/transition-elements/[a-z0-9.-]+\.json$")
+UTC_TIMESTAMP = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TRANSITION_ELEMENT_FIELDS = ("fixture_ref", "transition_id")
+ROLE_ESCALATION_FIELDS = ("from_role", "role_id", "to_role")
+FIXTURE_REF_RESOLUTION = {
+    "checked_here": "PATH_PATTERN_ONLY",
+    "fixture_opened": False,
+    "resolved_by": "Admissible-Existence/TT engine/sv011_next_required_capability.py against its own root",
+    "missing_fixture_at_that_root": "BASIS_UNKNOWN",
+    "fixture_transition_id_mismatch_at_that_root": "BASIS_CONTRADICTORY",
+}
+
 _spec = importlib.util.spec_from_file_location(
     "ledger_store_readback", SOURCE / "resident-runtime/ledger_store.py")
 ledger_store = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ledger_store)
+
+_non_allow_spec = importlib.util.spec_from_file_location(
+    "non_allow_readback", SOURCE / "resident-runtime/non_allow.py")
+non_allow = importlib.util.module_from_spec(_non_allow_spec)
+_non_allow_spec.loader.exec_module(non_allow)
+
+BASIS_PREDICATE = "ORGANIZATION_HEAD_RECEIPT_DECLARES_A_CURRENT_STATE_BASIS"
+BASIS_RETRY = (".stegverse/transition-requests/ (a committed request carrying current_state; "
+               "job request-transition), then " + RETRY)
+BASIS_REPAIR = {
+    "BASIS_ABSENT": "a committed transition request whose current_state declares every field",
+    "BASIS_UNKNOWN": "a committed transition request whose current_state fields match the TT contract shapes",
+    "BASIS_STALE": "a committed transition request whose current_state has as_of not later than fresh_until",
+    "BASIS_CONTRADICTORY": "a committed transition request whose current_state is internally consistent",
+}
+
+
+# The one canonical form, used for receipt self-hashes and for a legacy segment's
+# declaration_sha256. Pinned as the shared readback component C6 pins it.
+CANONICAL_JSON = {"encoding": "utf-8", "sort_keys": True, "separators": [",", ":"], "ensure_ascii": False}
 
 
 def canon(value: Any) -> bytes:
@@ -45,11 +160,146 @@ def _body_sha(document: Mapping[str, Any]) -> str:
     return sha(body)
 
 
+def basis_digest(subject: Mapping[str, Any]) -> str:
+    """Lowercase hex SHA-256 of current_state with basis_digest removed."""
+    payload = {key: value for key, value in subject.items() if key != "basis_digest"}
+    preimage = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+
+def basis_finding(reason: str, fields: list[str] | tuple[str, ...], detail: str) -> dict[str, str]:
+    """The six fields for a current-state basis that is not established."""
+    return non_allow.fields(
+        failure_code=reason,
+        failed_predicate=BASIS_PREDICATE,
+        required_evidence_or_repair=(BASIS_REPAIR.get(reason, BASIS_REPAIR["BASIS_UNKNOWN"])
+                                     + " (" + detail + ": " + ", ".join(fields) + ")"),
+        retry_entrypoint=BASIS_RETRY,
+        owning_existing_goal=non_allow.LEDGER_GOAL,
+        next_attempt="read the ledger back after the next committed request is appended; "
+                     "nothing is filled in from an earlier receipt, the clock, or a default")
+
+
+def _incomplete(reason: str, fields: list[str] | tuple[str, ...], detail: str) -> dict[str, Any]:
+    return {
+        "basis_established": False,
+        "current_state": None,
+        "current_state_reason": reason,
+        "current_state_detail": detail,
+        "current_state_fields": list(fields),
+        "current_state_finding": basis_finding(reason, fields, detail),
+        "fixture_ref_resolution": dict(FIXTURE_REF_RESOLUTION),
+    }
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str) or UTC_TIMESTAMP.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def _copy_transition_element(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(TRANSITION_ELEMENT_FIELDS):
+        return None
+    transition_id = value.get("transition_id")
+    fixture_ref = value.get("fixture_ref")
+    if not isinstance(transition_id, str) or TRANSITION_ID.fullmatch(transition_id) is None:
+        return None
+    if not isinstance(fixture_ref, str) or FIXTURE_REF.fullmatch(fixture_ref) is None:
+        return None
+    return {"transition_id": transition_id, "fixture_ref": fixture_ref}
+
+
+def _copy_role_escalation(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(ROLE_ESCALATION_FIELDS):
+        return None
+    copied = {}
+    for name in ROLE_ESCALATION_FIELDS:
+        item = value.get(name)
+        if not isinstance(item, str) or IDENTIFIER.fullmatch(item) is None:
+            return None
+        copied[name] = item
+    return copied
+
+
+def project_current_state(head_receipt: Any) -> dict[str, Any]:
+    """The head receipt's current_state, or the contract reason it is not a basis.
+
+    Every value comes from this one receipt. A missing declaration is not
+    filled in from an older receipt, the clock, or a default.
+    """
+    if not isinstance(head_receipt, dict) or "current_state" not in head_receipt:
+        return _incomplete("BASIS_ABSENT", BASIS_INPUT_FIELDS, "HEAD_RECEIPT_DECLARES_NO_CURRENT_STATE")
+    declared = head_receipt["current_state"]
+    if not isinstance(declared, dict):
+        return _incomplete("BASIS_UNKNOWN", ["current_state"], "CURRENT_STATE_IS_NOT_AN_OBJECT")
+    missing = [name for name in BASIS_INPUT_FIELDS if declared.get(name) is None]
+    if missing:
+        return _incomplete("BASIS_ABSENT", missing, "CURRENT_STATE_FIELD_ABSENT")
+    unknown = sorted(name for name in declared if name not in BASIS_INPUT_FIELDS and name != "basis_digest")
+    if unknown:
+        return _incomplete("BASIS_UNKNOWN", unknown, "CURRENT_STATE_FIELD_OUTSIDE_THE_CONTRACT")
+    if not isinstance(declared["state_id"], str) or IDENTIFIER.fullmatch(declared["state_id"]) is None:
+        return _incomplete("BASIS_UNKNOWN", ["state_id"], "STATE_ID_PATTERN")
+    as_of = _parse_utc(declared["as_of"])
+    fresh_until = _parse_utc(declared["fresh_until"])
+    bad_times = [name for name, parsed in (("as_of", as_of), ("fresh_until", fresh_until)) if parsed is None]
+    if bad_times:
+        return _incomplete("BASIS_UNKNOWN", bad_times, "TIMESTAMP_FORMAT")
+    if "basis_digest" in declared and (
+            not isinstance(declared["basis_digest"], str)
+            or HEX_SHA256.fullmatch(declared["basis_digest"]) is None):
+        return _incomplete("BASIS_UNKNOWN", ["basis_digest"], "BASIS_DIGEST_FORMAT")
+    element = _copy_transition_element(declared["declared_transition_element"])
+    if element is None:
+        return _incomplete("BASIS_UNKNOWN", ["declared_transition_element"], "TRANSITION_ELEMENT_SHAPE_OR_FIXTURE_REF_PATTERN")
+    role = _copy_role_escalation(declared["declared_role_escalation"])
+    if role is None:
+        return _incomplete("BASIS_UNKNOWN", ["declared_role_escalation"], "ROLE_ESCALATION_SHAPE")
+    scopes = declared["satisfied_scope_ids"]
+    if not isinstance(scopes, list) or any(not isinstance(item, str) for item in scopes):
+        return _incomplete("BASIS_UNKNOWN", ["satisfied_scope_ids"], "SATISFIED_SCOPE_IDS_SHAPE")
+    if any(item not in MANIFEST_SCOPE_IDS for item in scopes):
+        return _incomplete("BASIS_UNKNOWN", ["satisfied_scope_ids"], "SCOPE_ID_OUTSIDE_THE_MANIFEST_SCOPE")
+    if as_of > fresh_until:
+        return _incomplete("BASIS_STALE", ["as_of", "fresh_until"], "AS_OF_AFTER_FRESH_UNTIL")
+    if role["from_role"] == role["to_role"]:
+        return _incomplete("BASIS_CONTRADICTORY", ["declared_role_escalation"], "FROM_ROLE_EQUALS_TO_ROLE")
+    if len(scopes) != len(set(scopes)) or list(scopes) != list(MANIFEST_SCOPE_IDS[:len(scopes)]):
+        return _incomplete("BASIS_CONTRADICTORY", ["satisfied_scope_ids"], "SATISFIED_SCOPE_IDS_NOT_A_MANIFEST_PREFIX")
+    state = {
+        "state_id": declared["state_id"],
+        "as_of": declared["as_of"],
+        "fresh_until": declared["fresh_until"],
+        "declared_transition_element": element,
+        "declared_role_escalation": role,
+        "satisfied_scope_ids": list(scopes),
+    }
+    state["basis_digest"] = basis_digest(state)
+    if "basis_digest" in declared and declared["basis_digest"] != state["basis_digest"]:
+        return _incomplete("BASIS_CONTRADICTORY", ["basis_digest"], "BASIS_DIGEST_MISMATCH")
+    return {
+        "basis_established": True,
+        "current_state": state,
+        "current_state_reason": "HEAD_RECEIPT_CURRENT_STATE",
+        "current_state_detail": None,
+        "current_state_fields": [],
+        "current_state_finding": None,
+        "fixture_ref_resolution": dict(FIXTURE_REF_RESOLUTION),
+    }
+
+
 class ReadbackRefused(Exception):
-    def __init__(self, failed_predicate: str, detail: str) -> None:
+    def __init__(self, failed_predicate: str, detail: str, failure_code: str | None = None,
+                 next_attempt: str | None = None) -> None:
         super().__init__(failed_predicate + ": " + detail)
         self.failed_predicate = failed_predicate
         self.detail = detail
+        self.failure_code = failure_code
+        self.next_attempt = next_attempt
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -102,7 +352,7 @@ def designated_locators(workspace: Path) -> dict[str, Any]:
         "repository_locator": "git+" + str(root) + "#" + str(ref) + ":" + str(namespace),
         "authority_constraint": "NONE_LOCATOR_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
-        "disposition_is_transition_evidence": True,
+        "records_no_transition": True,
         "production_receipt_claimed": False,
     }
 
@@ -116,24 +366,50 @@ def _repository_location(location: str, namespace: str) -> str:
     return str(Path(locator) / namespace)
 
 
-def _verify_chain(store: Any, schema: str, required: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+# DEFAULT in force (fail-closed) (C6 parity 2 and 3): the organization chain
+# uses C6's predicate names, and a missing HEAD is the refusal
+# ORGANIZATION_LEDGER_HEAD_ABSENT on ORGANIZATION_LEDGER_HEAD_PRESENT, as C6
+# refuses it. The repository chain keeps its names.
+ORGANIZATION_CHAIN_PREDICATES = {
+    "head": "ORGANIZATION_LEDGER_HEAD_PRESENT",
+    "acyclic": "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC",
+    "complete": "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+    "self_hash": "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY",
+}
+REPOSITORY_CHAIN_PREDICATES = {
+    "head": "LEDGER_HEAD_PRESENT",
+    "acyclic": "LEDGER_CHAIN_IS_ACYCLIC",
+    "complete": "LEDGER_CHAIN_IS_COMPLETE",
+    "self_hash": "RECEIPT_VERIFIES_AGAINST_ITS_BODY",
+}
+HEAD_ABSENT_FAILURE_CODE = "ORGANIZATION_LEDGER_HEAD_ABSENT"
+HEAD_ABSENT_NEXT = ("an empty ledger opens only through a manifest-directed GENESIS append; "
+                    "the readback writes nothing")
+
+
+def _verify_chain(store: Any, schema: str, required: list[str],
+                  names: Mapping[str, str] = REPOSITORY_CHAIN_PREDICATES,
+                  location: str = "") -> tuple[dict[str, Any], list[dict[str, Any]]]:
     head = store.get(ledger_store.HEAD_KEY)
     if not isinstance(head, dict) or not isinstance(head.get("receipt_sha256"), str):
-        raise ReadbackRefused("LEDGER_HEAD_PRESENT", "no HEAD at the supplied location")
+        if names is ORGANIZATION_CHAIN_PREDICATES:
+            raise ReadbackRefused(names["head"], "no HEAD at " + (location or "the supplied location"),
+                                  failure_code=HEAD_ABSENT_FAILURE_CODE, next_attempt=HEAD_ABSENT_NEXT)
+        raise ReadbackRefused(names["head"], "no HEAD at the supplied location")
     chain: list[dict[str, Any]] = []
     cursor = head["receipt_sha256"]
     seen: set[str] = set()
     while cursor is not None:
         if cursor in seen:
-            raise ReadbackRefused("LEDGER_CHAIN_IS_ACYCLIC", str(cursor))
+            raise ReadbackRefused(names["acyclic"], str(cursor))
         seen.add(cursor)
         receipt = store.get(ledger_store.receipt_key(cursor))
         if not isinstance(receipt, dict):
-            raise ReadbackRefused("LEDGER_CHAIN_IS_COMPLETE", "missing " + str(cursor))
+            raise ReadbackRefused(names["complete"], "missing " + str(cursor))
         if receipt.get("schema") != schema:
             raise ReadbackRefused("RECEIPT_SCHEMA_MATCHES_THE_CONTRACT", str(cursor))
         if receipt.get("receipt_sha256") != cursor or _body_sha(receipt) != cursor:
-            raise ReadbackRefused("RECEIPT_VERIFIES_AGAINST_ITS_BODY", str(cursor))
+            raise ReadbackRefused(names["self_hash"], str(cursor))
         missing = [field for field in required if field not in receipt]
         if missing:
             raise ReadbackRefused("RECEIPT_HAS_THE_CONTRACT_FIELDS", ",".join(missing))
@@ -151,6 +427,253 @@ def _verify_chain(store: Any, schema: str, required: list[str]) -> tuple[dict[st
     return head, chain
 
 
+SOURCE_RETENTION_PREDICATE = "SOURCE_RECEIPT_RETAINED_AND_VERIFIES"
+# DEFAULT in force (fail-closed) (H45, G4, C6 convergence). The legacy-segment
+# declaration follows the shared readback component C6 rule (P1 Ecosystem AI
+# lane, C6 at ebf4aaf): the same required members, the same CANONICAL_JSON
+# digest, the same failure codes and the same order of checks. C6 is not
+# admitted under StegVerse-Labs/.github data/reusable-task-components/, so it is
+# not vendored; this implementation is kept aligned with it instead. Only SOURCE_RECEIPT_RETAINED_AND_VERIFIES is waived, and only for
+# the declared receipts; self-hash and chain linkage are never waived. The
+# whole-ledger result for a declared segment stays FAIL_CLOSED with
+# DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED; it is never ALLOW.
+LEGACY_SEGMENT_MEMBERS = ("receipts", "waived_predicate", "six_fields", "ledger_tip_commit",
+                          "re_minted", "reported_as_source_retained", "declaration_sha256")
+# DEFAULT in force (fail-closed) (C6 parity 1): C6's never-waivable set
+# (C6 ebf4aaf INTEGRITY_PREDICATES), exactly. A waived_predicate naming any of
+# them is refused LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE.
+LEGACY_INTEGRITY_PREDICATES = frozenset({
+    "ORGANIZATION_RECEIPT_VERIFIES_AGAINST_ITS_BODY", "ORGANIZATION_LEDGER_CHAIN_IS_COMPLETE",
+    "ORGANIZATION_LEDGER_CHAIN_IS_ACYCLIC", "ORGANIZATION_LEDGER_HEAD_PRESENT",
+    "REPOSITORY_CHAIN_VERIFIES", "REPOSITORY_LEDGER_HEAD_PRESENT",
+    "RECEIPT_SELF_HASH", "CHAIN_LINKAGE", "SELF_HASH", "LINKAGE",
+})
+DECLARED_LEGACY_FAILURE_CODE = "DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED"
+DECLARATION_NEXT = ("correct the committed legacy-segment declaration in org-contract.json "
+                    "(source_receipt_retention.legacy_pre_retention_segment) and read back again; "
+                    "the readback writes nothing and no receipt is ever re-minted")
+_SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
+
+
+def legacy_declaration_digest(segment: Mapping[str, Any]) -> str:
+    """sha256 over the sorted-key compact UTF-8 JSON of the segment without declaration_sha256."""
+    body = {key: value for key, value in segment.items() if key != "declaration_sha256"}
+    return "sha256:" + hashlib.sha256(canon(body)).hexdigest()
+
+
+def _declaration_refused(failure_code: str, predicate: str, detail: str) -> ReadbackRefused:
+    return ReadbackRefused(predicate, detail, failure_code=failure_code, next_attempt=DECLARATION_NEXT)
+
+
+def legacy_segment_of(org: Mapping[str, Any] | None) -> Any:
+    """The declared legacy segment in an org contract, or None when it declares none."""
+    if not org:
+        return None
+    rule = org.get("source_receipt_retention")
+    if rule is None:
+        return None
+    if not isinstance(rule, dict):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID", "SOURCE_RECEIPT_RETENTION_IS_AN_OBJECT",
+                                   "source_receipt_retention must be an object")
+    return rule.get("legacy_pre_retention_segment")
+
+
+def validate_legacy_segment(segment: Any) -> dict[str, Any]:
+    """Static checks on the declared legacy segment, in C6's order. Refuses six-field."""
+    if not isinstance(segment, dict):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID", "LEGACY_SEGMENT_IS_AN_OBJECT",
+                                   "legacy_pre_retention_segment must be an object")
+    missing = [name for name in LEGACY_SEGMENT_MEMBERS if name not in segment]
+    if missing:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INCOMPLETE",
+                                   "LEGACY_SEGMENT_DECLARES_EVERY_REQUIRED_MEMBER",
+                                   "legacy_pre_retention_segment lacks " + ", ".join(missing))
+    waived = segment["waived_predicate"]
+    named = waived if isinstance(waived, list) else [waived]
+    if not named or any(not isinstance(item, str) or item in LEGACY_INTEGRITY_PREDICATES for item in named):
+        raise _declaration_refused("LEGACY_SEGMENT_WAIVES_SELF_HASH_OR_LINKAGE",
+                                   "LEGACY_SEGMENT_NEVER_WAIVES_SELF_HASH_OR_LINKAGE", json.dumps(waived))
+    if named != [SOURCE_RETENTION_PREDICATE]:
+        raise _declaration_refused("LEGACY_SEGMENT_WAIVES_A_NON_WAIVABLE_PREDICATE",
+                                   "LEGACY_SEGMENT_WAIVES_ONLY_SOURCE_RETENTION", json.dumps(waived))
+    receipts = segment["receipts"]
+    if (not isinstance(receipts, list) or not receipts or len(set(map(str, receipts))) != len(receipts)
+            or any(not isinstance(item, str) or not _SHA256_REF.fullmatch(item) for item in receipts)):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_RECEIPTS_ARE_DISTINCT_SHA256_DIGESTS", "receipts")
+    six = segment["six_fields"]
+    if (not isinstance(six, dict) or set(six) != set(non_allow.SIX_FIELDS)
+            or any(not isinstance(six[name], str) or not six[name].strip() for name in non_allow.SIX_FIELDS)):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID", "LEGACY_SEGMENT_CARRIES_SIX_FIELDS",
+                                   "six_fields must hold exactly the six fields as non-empty strings")
+    if segment["re_minted"] is not False or segment["reported_as_source_retained"] is not False:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_IS_NEVER_RE_MINTED_OR_REPORTED_RETAINED",
+                                   "re_minted and reported_as_source_retained must both be false")
+    tip = segment["ledger_tip_commit"]
+    if not isinstance(tip, str) or not _COMMIT_HEX.fullmatch(tip):
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_INVALID",
+                                   "LEGACY_SEGMENT_LEDGER_TIP_COMMIT_IS_40_HEX", str(tip))
+    expected = legacy_declaration_digest(segment)
+    if segment["declaration_sha256"] != expected:
+        raise _declaration_refused("LEGACY_SEGMENT_DECLARATION_DIGEST_MISMATCH",
+                                   "LEGACY_SEGMENT_DECLARATION_IS_DIGEST_BOUND",
+                                   "declaration_sha256 must be " + expected)
+    return segment
+
+
+def _tip_head(location: str, tip: str) -> Any:
+    """The organization HEAD receipt digest at the declared ledger commit, which must be on the ref read.
+
+    DEFAULT in force (fail-closed) (C6 convergence a): a legacy segment is
+    bound to a git ledger commit, so it is read only through a git+ locator (a
+    clone of the published ref, or tests/fixtures/organization-ledger-2cc58cec.bundle
+    fetched into one). A directory copy has no commits and is refused.
+    """
+    locator = ledger_store.parse_locator(location)
+    if not isinstance(locator, ledger_store.GitLocator) or locator.namespace:
+        raise _declaration_refused("LEGACY_SEGMENT_TIP_COMMIT_UNVERIFIABLE",
+                                   "LEGACY_SEGMENT_IS_BOUND_TO_A_LEDGER_COMMIT",
+                                   "a legacy segment is bound to a git ledger commit; read it from a "
+                                   "git+<repository>#<ref> locator, not " + str(location))
+    ancestor = subprocess.run(["git", "-C", str(locator.repository), "merge-base", "--is-ancestor",
+                               tip, locator.ref], capture_output=True, text=True)
+    if ancestor.returncode != 0:
+        raise _declaration_refused("LEGACY_SEGMENT_TIP_COMMIT_NOT_ON_THE_LEDGER_REF",
+                                   "LEGACY_SEGMENT_TIP_COMMIT_IS_ON_THE_LEDGER_REF",
+                                   tip + " is not " + locator.ref + " or one of its ancestors")
+    shown = subprocess.run(["git", "-C", str(locator.repository), "show", tip + ":" + ledger_store.HEAD_KEY],
+                           capture_output=True, text=True)
+    try:
+        return json.loads(shown.stdout).get("receipt_sha256") if shown.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def _retains_its_source(store: Any, receipt: Mapping[str, Any], repo_by_digest: Mapping[str, Any]) -> bool:
+    source_digest = receipt.get("source_transition_sha256")
+    source = store.get(ledger_store.source_key(source_digest)) if isinstance(source_digest, str) else None
+    return (isinstance(source, dict) and source_digest == receipt.get("repo_receipt_sha256")
+            and source.get("receipt_sha256") == source_digest and _body_sha(source) == source_digest
+            and source == repo_by_digest.get(source_digest))
+
+
+def source_receipt_retention(store: Any, org_chain: list[dict[str, Any]],
+                             repo_chain: list[dict[str, Any]], org: Mapping[str, Any],
+                             location: str | None = None) -> dict[str, Any]:
+    """Source-receipt retention per organization receipt (DEFAULT in force (fail-closed), H45).
+
+    Every organization receipt names its source in ``source_transition_sha256``
+    and the ledger holds that source under ``source-receipts/``, verifying
+    against its body and equal to the repository receipt it names. With no
+    declared legacy segment, any receipt that does not is refused. A declared
+    segment is checked as C6 checks it: every declared receipt is in the chain
+    (C6 convergence b: there is no "does not apply" case), the segment is a
+    contiguous prefix from genesis, it ends at the HEAD of ``ledger_tip_commit``
+    on the ref read and holds no receipt of the retention shape, no failure
+    outside it, and each legacy receipt names a repository receipt on the
+    repository chain. The result then names the declared receipts and is
+    FAIL_CLOSED (DECLARED_LEGACY_SEGMENT_NOT_SOURCE_RETAINED); never ALLOW.
+    """
+    segment = legacy_segment_of(org)
+    rule = org.get("source_receipt_retention") or {}
+    repo_by_digest = {receipt["receipt_sha256"]: receipt for receipt in repo_chain}
+    order = [receipt["receipt_sha256"] for receipt in org_chain]
+    failing = [receipt["receipt_sha256"] for receipt in org_chain
+               if not _retains_its_source(store, receipt, repo_by_digest)]
+    report: dict[str, Any] = {
+        "rule_status": rule.get("status") if isinstance(rule, dict) else None,
+        "prefix": ledger_store.SOURCE_PREFIX,
+        "retained": [digest for digest in order if digest not in failing],
+        "legacy_pre_retention": [],
+        "legacy_segment": None,
+        "legacy_receipts_re_minted": False,
+        "every_source_receipt_retained_and_verifies": not failing,
+        "undeclared_failures": [],
+        "legacy_segment_finding": None,
+    }
+    if segment is None:
+        if failing:
+            raise ReadbackRefused(SOURCE_RETENTION_PREDICATE, ", ".join(failing) + " retain no verifying source")
+        return report
+    validate_legacy_segment(segment)
+    declared = list(segment["receipts"])
+    absent = [digest for digest in declared if digest not in order]
+    if absent:
+        raise _declaration_refused("LEGACY_SEGMENT_NAMES_A_RECEIPT_NOT_IN_THE_CHAIN",
+                                   "LEGACY_SEGMENT_RECEIPTS_ARE_IN_THE_CHAIN",
+                                   "declared receipts not in the chain: " + ", ".join(absent))
+    if order[:len(declared)] != declared:
+        raise _declaration_refused("LEGACY_SEGMENT_NOT_A_CONTIGUOUS_PREFIX",
+                                   "LEGACY_SEGMENT_IS_A_CONTIGUOUS_PREFIX_FROM_GENESIS",
+                                   "declared " + ", ".join(declared) + " but the chain opens "
+                                   + ", ".join(order[:len(declared)]))
+    by_digest = {receipt["receipt_sha256"]: receipt for receipt in org_chain}
+    retained_shape = [digest for digest in declared if "source_transition_sha256" in by_digest[digest]]
+    tip_head = _tip_head(location or "", segment["ledger_tip_commit"])
+    if retained_shape or tip_head != declared[-1]:
+        raise _declaration_refused("LEGACY_SEGMENT_OVERLAPS_RETENTION",
+                                   "LEGACY_SEGMENT_ENDS_BEFORE_SOURCE_RETENTION_BEGINS",
+                                   "the segment must end at the HEAD of ledger_tip_commit "
+                                   + segment["ledger_tip_commit"] + " (HEAD there: " + str(tip_head)
+                                   + ") and hold no receipt naming source_transition_sha256")
+    undeclared = [digest for digest in failing if digest not in declared]
+    if undeclared:
+        raise ReadbackRefused(SOURCE_RETENTION_PREDICATE,
+                              "undeclared source-retention failures: " + ", ".join(undeclared),
+                              failure_code="UNDECLARED_SOURCE_RECEIPT_RETENTION_FAILURE")
+    findings: list[dict[str, Any]] = []
+    for digest in declared:
+        named = by_digest[digest].get("repo_receipt_sha256")
+        if not isinstance(named, str) or not _SHA256_REF.fullmatch(named):
+            raise _declaration_refused("LEGACY_RECEIPT_NAMES_NO_SOURCE",
+                                       "LEGACY_RECEIPT_NAMES_ITS_REPOSITORY_RECEIPT", digest)
+        if named not in repo_by_digest:
+            raise ReadbackRefused("LEGACY_RECEIPT_SOURCE_IS_ON_THE_REPOSITORY_CHAIN", digest,
+                                  failure_code="LEGACY_RECEIPT_SOURCE_NOT_ON_THE_REPOSITORY_CHAIN")
+        findings.append({
+            "receipt_sha256": digest,
+            "self_hash_verified": True,
+            "chain_link_verified": True,
+            "source_receipt_retained": False,
+            "re_minted": False,
+            "names_source_receipt_sha256": named,
+            **non_allow.fields(**segment["six_fields"]),
+        })
+    fully_verified = order[len(declared):]
+    six = segment["six_fields"]
+    report.update({
+        "retained": fully_verified,
+        "legacy_pre_retention": declared,
+        "legacy_segment": {
+            "declaration_sha256": segment["declaration_sha256"],
+            "declaration_digest_canonicalization": dict(CANONICAL_JSON),
+            "receipts": declared,
+            "ledger_tip_commit": segment["ledger_tip_commit"],
+            "ledger_tip_commit_on_ref": True,
+            "ledger_tip_commit_head_is_segment_end": True,
+            "waived_predicate": SOURCE_RETENTION_PREDICATE,
+            "fully_verified_receipts": fully_verified,
+            "re_minted": False,
+            "reported_as_source_retained": False,
+            "findings": findings,
+        },
+        "legacy_segment_finding": non_allow.fields(
+            failure_code=DECLARED_LEGACY_FAILURE_CODE,
+            failed_predicate=SOURCE_RETENTION_PREDICATE,
+            required_evidence_or_repair=(
+                "receipts " + ", ".join(declared) + " are a declared legacy pre-retention segment (declaration "
+                + segment["declaration_sha256"] + "); they self-hash and chain-link, and every other receipt "
+                "and predicate verified; they are never re-minted. Declared repair: "
+                + six["required_evidence_or_repair"]),
+            retry_entrypoint=six["retry_entrypoint"],
+            owning_existing_goal=six["owning_existing_goal"],
+            next_attempt=six["next_attempt"]),
+    })
+    return report
+
+
 def _communication_id(receipt: Mapping[str, Any]) -> Any:
     evidence = receipt.get("evidence")
     if isinstance(evidence, dict):
@@ -158,10 +681,101 @@ def _communication_id(receipt: Mapping[str, Any]) -> Any:
     return None
 
 
+def _refusal_result_in_chains(transition_result: Mapping[str, Any],
+                              repo_chain: list[dict[str, Any]],
+                              org_chain: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check that a recorded refusal is on both chains, correlated on the request digest."""
+    request_sha = transition_result.get("request_sha256")
+    repo_sha = transition_result.get("refusal_repository_receipt_sha256")
+    org_sha = transition_result.get("refusal_organization_receipt_sha256")
+    if not isinstance(request_sha, str) or not request_sha.startswith("sha256:"):
+        raise ReadbackRefused("REFUSAL_RESULT_CARRIES_REQUEST_SHA256", repr(request_sha))
+    repository_receipt = next((item for item in repo_chain if item.get("receipt_sha256") == repo_sha), None)
+    organization_receipt = next((item for item in org_chain if item.get("receipt_sha256") == org_sha), None)
+    if repository_receipt is None:
+        raise ReadbackRefused("REFUSAL_REPOSITORY_RECEIPT_IS_IN_THE_REPOSITORY_LEDGER", str(repo_sha))
+    if organization_receipt is None:
+        raise ReadbackRefused("REFUSAL_ORGANIZATION_RECEIPT_IS_IN_THE_ORGANIZATION_LEDGER", str(org_sha))
+    if organization_receipt.get("repo_receipt_sha256") != repo_sha:
+        raise ReadbackRefused("ORGANIZATION_RECEIPT_PRESERVES_REPOSITORY_RECEIPT", str(org_sha))
+    for receipt, predicate in ((repository_receipt, "REPOSITORY_RECEIPT_RECORDS_THE_REFUSAL"),
+                               (organization_receipt, "ORGANIZATION_RECEIPT_RECORDS_THE_REFUSAL")):
+        evidence = receipt.get("evidence")
+        if (not isinstance(evidence, dict) or evidence.get("request_sha256") != request_sha
+                or evidence.get("disposition") != "FAIL_CLOSED"
+                or receipt.get("predecessor_state_sha256") != request_sha
+                or receipt.get("successor_state_sha256") != request_sha):
+            raise ReadbackRefused(predicate, request_sha)
+    return {
+        "request_id": transition_result.get("request_id"),
+        "request_sha256": request_sha,
+        "request_refused": True,
+        "refusal_repository_receipt_sha256": repo_sha,
+        "refusal_organization_receipt_sha256": org_sha,
+        "refusal_receipts_in_chain": True,
+        "request_receipt_is_head": org_chain[-1].get("receipt_sha256") == org_sha,
+    }
+
+
+def _transition_result_in_chains(transition_result: Mapping[str, Any],
+                                 repo_chain: list[dict[str, Any]],
+                                 org_chain: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check that one applied, or recorded-refused, transition request is on both chains."""
+    if transition_result.get("refusal_recorded") is True:
+        return _refusal_result_in_chains(transition_result, repo_chain, org_chain)
+    request_id = transition_result.get("request_id")
+    repo_sha = transition_result.get("repository_receipt_sha256")
+    org_sha = transition_result.get("organization_receipt_sha256")
+    if not isinstance(request_id, str) or not request_id:
+        raise ReadbackRefused("TRANSITION_RESULT_CARRIES_REQUEST_ID", repr(request_id))
+    repository_receipt = next((item for item in repo_chain if item.get("receipt_sha256") == repo_sha), None)
+    organization_receipt = next((item for item in org_chain if item.get("receipt_sha256") == org_sha), None)
+    if repository_receipt is None:
+        raise ReadbackRefused("REQUEST_REPOSITORY_RECEIPT_IS_IN_THE_REPOSITORY_LEDGER", str(repo_sha))
+    if organization_receipt is None:
+        raise ReadbackRefused("REQUEST_ORGANIZATION_RECEIPT_IS_IN_THE_ORGANIZATION_LEDGER", str(org_sha))
+    if organization_receipt.get("repo_receipt_sha256") != repo_sha:
+        raise ReadbackRefused("ORGANIZATION_RECEIPT_PRESERVES_REPOSITORY_RECEIPT", str(org_sha))
+    for receipt, predicate in ((repository_receipt, "REPOSITORY_RECEIPT_CARRIES_REQUEST_ID"),
+                               (organization_receipt, "ORGANIZATION_RECEIPT_CARRIES_REQUEST_ID")):
+        evidence = receipt.get("evidence")
+        if not isinstance(evidence, dict) or evidence.get("request_id") != request_id:
+            raise ReadbackRefused(predicate, request_id)
+    return {
+        "request_id": request_id,
+        "request_repository_receipt_sha256": repo_sha,
+        "request_organization_receipt_sha256": org_sha,
+        "request_receipts_in_chain": True,
+        "request_receipt_is_head": org_chain[-1].get("receipt_sha256") == org_sha,
+    }
+
+
 def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
-             repository_namespace: str | None = None) -> dict[str, Any]:
-    """Verify the chains at ``location`` and, when given, the closure result."""
+             repository_namespace: str | None = None,
+             transition_result: Mapping[str, Any] | None = None,
+             org_contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Verify the chains at ``location`` and, when given, a closure or request result.
+
+    The organization head receipt's ``current_state`` is projected against the
+    TT current-state basis. A location with no HEAD and no result to check is
+    an empty ledger, refused ORGANIZATION_LEDGER_HEAD_ABSENT (DEFAULT, C6 parity 3).
+
+    DEFAULT in force (fail-closed) (C6 convergence c): a successful read is
+    an observation with no top-level ``disposition``
+    (stegverse.organization-ledger-observation/v1, B3). A read that verifies
+    every chain but holds a declared legacy segment is non-ALLOW, so the
+    report carries a top-level ``disposition: FAIL_CLOSED`` with the six fields
+    and the CLI exits 1. ``org_contract`` replaces this checkout's
+    org-contract.json, for example a contract that declares no legacy segment.
+    """
     contract, org = contracts(SOURCE)
+    if org_contract is not None:
+        if not isinstance(org_contract, dict):
+            raise ReadbackRefused("LEDGER_CONTRACT_IS_AN_OBJECT", "--org-contract")
+        org = dict(org_contract)
+    segment = legacy_segment_of(org)
+    if segment is not None:
+        validate_legacy_segment(segment)
     expected_namespace = (contract.get("repository_ledger_location") or {}).get("namespace")
     if repository_namespace != expected_namespace:
         raise ReadbackRefused("REPOSITORY_NAMESPACE_MATCHES_THE_CONTRACT", str(repository_namespace))
@@ -170,7 +784,8 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     organization_store = ledger_store.open_store(ledger_store.parse_locator(location))
     repository_store = ledger_store.open_store(_repository_location(location, repository_namespace))
     org_head, org_chain = _verify_chain(
-        organization_store, "stegverse.organization-transition-receipt/v1", org_required)
+        organization_store, "stegverse.organization-transition-receipt/v1", org_required,
+        ORGANIZATION_CHAIN_PREDICATES, location)
     repo_head, repo_chain = _verify_chain(
         repository_store, "stegverse.repo-transition-receipt/v1", repo_required)
     repo_digests = {receipt["receipt_sha256"] for receipt in repo_chain}
@@ -179,10 +794,15 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
             raise ReadbackRefused("ORGANIZATION_RECEIPT_PRESERVES_REPOSITORY_RECEIPT",
                                   str(receipt.get("receipt_sha256")))
     result: dict[str, Any] = {
-        "schema": "stegverse.organization-ledger-readback/v1",
+        "schema": OBSERVATION_SCHEMA,
         "location": location,
-        "disposition": "ALLOW",
-        "disposition_is_transition_evidence": True,
+        "readback": "OBSERVATION_ONLY",
+        "records_no_transition": True,
+        "verification": {
+            "organization_chain_verifies": True,
+            "repository_chain_verifies": True,
+            "every_organization_receipt_preserves_a_repository_receipt": True,
+        },
         "head_receipt_sha256": org_head["receipt_sha256"],
         "chain_length": len(org_chain),
         "genesis_receipt_sha256": org_chain[0]["receipt_sha256"],
@@ -198,11 +818,26 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
             "every_receipt_verifies_against_its_body": True,
             "replay_read_organization_receipts": False,
         },
+        "ledger_empty": False,
+        "head_receipt_declares_current_state": "current_state" in org_chain[-1],
     }
+    retention = source_receipt_retention(organization_store, org_chain, repo_chain, org, location)
+    finding = retention.pop("legacy_segment_finding")
+    result["source_receipt_retention"] = retention
+    result.update(project_current_state(org_chain[-1]))
+    if finding is not None:
+        # Never ALLOW: the whole-ledger predicate is false for the declared receipts.
+        result.update({
+            "disposition": "FAIL_CLOSED",
+            **finding,
+            "every_source_receipt_retained_and_verifies": False,
+            "every_chain_link_verified": True,
+            "undeclared_failures": [],
+        })
+    if transition_result is not None:
+        result.update(_transition_result_in_chains(transition_result, repo_chain, org_chain))
     if ingress_result is None:
         return result
-    if ingress_result.get("disposition") != "ALLOW":
-        raise ReadbackRefused("INGRESS_DISPOSITION_IS_ALLOW", str(ingress_result.get("disposition")))
     communication_id = ingress_result.get("communication_id")
     repo_sha = ingress_result.get("repository_receipt_sha256")
     org_sha = ingress_result.get("organization_receipt_sha256")
@@ -222,8 +857,18 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
         raise ReadbackRefused("REPOSITORY_RECEIPT_CARRIES_COMMUNICATION_ID", str(communication_id))
     if _communication_id(organization_receipt) != communication_id:
         raise ReadbackRefused("ORGANIZATION_RECEIPT_CARRIES_COMMUNICATION_ID", str(communication_id))
+    # The closure result is the writer's report. Its disposition must be the
+    # one the receipts recorded; the readback does not require any value.
+    for receipt, predicate in ((repository_receipt, "CLOSURE_RESULT_MATCHES_REPOSITORY_RECEIPT_EVIDENCE"),
+                               (organization_receipt, "CLOSURE_RESULT_MATCHES_ORGANIZATION_RECEIPT_EVIDENCE")):
+        evidence = receipt.get("evidence") if isinstance(receipt.get("evidence"), dict) else {}
+        if "disposition" in ingress_result and evidence.get("disposition") != ingress_result.get("disposition"):
+            raise ReadbackRefused(predicate, str(receipt.get("receipt_sha256")))
+    if retention["legacy_segment"] is not None:
+        result["ingress_receipt_in_fully_verified_suffix"] = (
+            org_sha in retention["legacy_segment"]["fully_verified_receipts"])
     result.update({
-        "ingress_disposition": "ALLOW",
+        "closure_result_matches_receipt_evidence": True,
         "communication_id": communication_id,
         "repository_receipt_sha256": repo_sha,
         "organization_receipt_sha256": org_sha,
@@ -236,21 +881,44 @@ def readback(location: str, ingress_result: Mapping[str, Any] | None = None,
     return result
 
 
-def _refusal(location: str, exc: BaseException) -> dict[str, Any]:
+def _refusal(location: str, exc: BaseException,
+             owning_existing_goal: str = non_allow.LEDGER_GOAL) -> dict[str, Any]:
+    predicate = getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK")
+    detail = getattr(exc, "detail", str(exc))
     return {
-        "schema": "stegverse.organization-ledger-readback/v1",
+        "schema": OBSERVATION_SCHEMA,
         "location": location,
+        "readback": "OBSERVATION_ONLY",
+        "records_no_transition": True,
+        "verification": {"organization_chain_verifies": False, "repository_chain_verifies": False},
+        "basis_established": False,
+        "current_state": None,
         "disposition": "FAIL_CLOSED",
-        "disposition_is_transition_evidence": True,
-        "failure_code": "ORGANIZATION_LEDGER_READBACK_FAILED",
-        "failed_predicate": getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK"),
-        "detail": getattr(exc, "detail", str(exc)),
-        "retry_entrypoint": RETRY,
-        "next_attempt": "fetch the ledger ref again and rerun the readback; the readback writes nothing",
+        **non_allow.fields(
+            failure_code=getattr(exc, "failure_code", None) or "ORGANIZATION_LEDGER_READBACK_FAILED",
+            failed_predicate=predicate,
+            required_evidence_or_repair="a ledger ref at the supplied location on which "
+                                        + predicate + " holds (" + detail + ")",
+            retry_entrypoint=RETRY,
+            owning_existing_goal=owning_existing_goal,
+            next_attempt=(getattr(exc, "next_attempt", None)
+                          or "fetch the ledger ref again and rerun the readback; the readback writes nothing")),
+        "detail": detail,
         "authority_constraint": "NONE_READBACK_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
         "production_receipt_claimed": False,
     }
+
+
+def _owning_goal(ingress: Any, transition: Any) -> str:
+    """The goal a refusal answers to: the request's own, the closure's, or the ledger's."""
+    if isinstance(transition, Mapping):
+        goal = transition.get("owning_existing_goal")
+        if isinstance(goal, str) and goal.strip():
+            return goal
+    if ingress is not None:
+        return non_allow.BOUNDARY_GOAL
+    return non_allow.LEDGER_GOAL
 
 
 def main() -> int:
@@ -258,23 +926,39 @@ def main() -> int:
     parser.add_argument("--location", help="ledger locator, for example git+<repository>#<ref>")
     parser.add_argument("--ingress-result", type=Path, default=None)
     parser.add_argument("--repository-namespace", default=None)
+    parser.add_argument("--transition-result", type=Path, default=None,
+                        help="result of organization_ledger_transition.py for a committed request")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--org-contract", type=Path, default=None,
+                        help="an org-contract.json to read with instead of this checkout's "
+                             "(for example one that declares no legacy segment)")
     parser.add_argument("--designated-locators", type=Path, default=None,
                         help="print the published ref locators for this checkout and write nothing")
     args = parser.parse_args()
     location = args.location or ""
+    ingress: Any = None
+    transition: Any = None
     try:
         if args.designated_locators is not None:
             result, code = designated_locators(args.designated_locators), 0
         else:
             if not args.location:
                 parser.error("--location is required")
-            ingress = None
             if args.ingress_result is not None:
                 ingress = json.loads(args.ingress_result.read_text(encoding="utf-8"))
-            result, code = readback(args.location, ingress, args.repository_namespace), 0
+            if args.transition_result is not None:
+                transition = json.loads(args.transition_result.read_text(encoding="utf-8"))
+            org_contract = None
+            if args.org_contract is not None:
+                try:
+                    org_contract = json.loads(args.org_contract.read_text(encoding="utf-8"))
+                except ValueError:
+                    org_contract = {"source_receipt_retention": "unreadable org-contract.json"}
+            result = readback(args.location, ingress, args.repository_namespace, transition, org_contract)
+            # Exit 1 on any non-ALLOW; a successful observation carries no disposition.
+            code = 1 if "disposition" in result else 0
     except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
-        result, code = _refusal(location, exc), 1
+        result, code = _refusal(location, exc, _owning_goal(ingress, transition)), 1
     text = json.dumps(result, indent=2, sort_keys=True)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
