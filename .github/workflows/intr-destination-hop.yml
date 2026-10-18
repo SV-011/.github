@@ -65,7 +65,7 @@ on:
         required: true
         type: string
       hb_epoch:
-        description: 'supplied heartbeat epoch for this phase (non-negative integer)'
+        description: 'supplied heartbeat epoch for this phase (ASCII [0-9]+, at least 32)'
         required: true
         type: string
       frame:
@@ -131,9 +131,9 @@ jobs:
           import json, os, re, sys
           slug = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
           phase = os.environ["PHASE"]
-          def refuse(predicate, detail, repair=None):
+          def refuse(predicate, detail, repair=None, code="INTR_HOP_DISPATCH_INPUT_REFUSED"):
               result = {"disposition": "FAIL_CLOSED", "phase": phase, "detail": detail, "receipts_appended": False,
-                        "failure_code": "INTR_HOP_DISPATCH_INPUT_REFUSED", "failed_predicate": predicate,
+                        "failure_code": code, "failed_predicate": predicate,
                         "required_evidence_or_repair": repair or ("dispatch inputs that satisfy " + predicate + "; nothing was appended"),
                         "retry_entrypoint": ".github/workflows/intr-destination-hop.yml phase=" + phase,
                         "owning_existing_goal": "StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 P0-runtime-and-custody",
@@ -149,8 +149,14 @@ jobs:
           if not cid or len(cid) > 160 or not all(33 <= ord(ch) <= 126 for ch in cid):
               refuse("COMMUNICATION_ID_IS_PRINTABLE_ASCII_WITHOUT_SPACES", repr(cid))
           epoch = os.environ.get("INPUT_HB_EPOCH", "")
-          if not epoch.isdigit():
-              refuse("HB_EPOCH_IS_SUPPLIED_AS_A_NON_NEGATIVE_INTEGER", repr(epoch))
+          # The shared supplied-epoch rule (resident-runtime/intr_hop.py
+          # supplied_epoch_failure): ASCII [0-9]+ only, value at least 32.
+          if not epoch:
+              refuse("SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH", "no hb_epoch was supplied and no clock is read",
+                     code="HB_EPOCH_NOT_SUPPLIED")
+          if not (epoch.isascii() and epoch.isdigit()) or int(epoch) < 32:
+              refuse("SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH", "hb_epoch " + repr(epoch)
+                     + " is not ASCII [0-9]+ at least 32", code="HB_EPOCH_INVALID")
           peer = os.environ["INPUT_DESTINATION_SLUG"] if phase == "send" else os.environ["INPUT_PEER_SLUG"]
           if not slug.match(peer or ""):
               refuse("PEER_IS_AN_ORGANIZATION_SLUG", repr(peer))
@@ -292,7 +298,7 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write("NEXT_REPOSITORY=%s\nNEXT_PHASE=%s\nOWN_SLUG=%s\n" % (repository, nxt, own_slug))
           PY
-          next_epoch=$((INPUT_HB_EPOCH + 1))
+          next_epoch=$((10#$INPUT_HB_EPOCH + 1))
           if ! gh workflow run intr-destination-hop.yml -R "$NEXT_REPOSITORY" \
             -f phase="$NEXT_PHASE" -f peer_slug="$OWN_SLUG" \
             -f communication_id="$INPUT_COMMUNICATION_ID" -f hb_epoch="$next_epoch" \

@@ -7,6 +7,8 @@ published.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import shutil
@@ -215,11 +217,11 @@ class OneWayHopTests(unittest.TestCase):
     def test_refusals_append_nothing(self) -> None:
         sender, destination = self.sides("refusals")
         cases = (
-            ("send", "--destination-slug", self.slug, "--communication-id", "c", "--hb-epoch", "1",
+            ("send", "--destination-slug", self.slug, "--communication-id", "c", "--hb-epoch", "33",
              "--peer-root", str(ROOT)),
-            ("send", "--destination-slug", "not-the-advertiser", "--communication-id", "c", "--hb-epoch", "1",
+            ("send", "--destination-slug", "not-the-advertiser", "--communication-id", "c", "--hb-epoch", "33",
              "--peer-root", str(destination.root)),
-            ("send", "--destination-slug", FIXTURE_SLUG, "--communication-id", "has space", "--hb-epoch", "1",
+            ("send", "--destination-slug", FIXTURE_SLUG, "--communication-id", "has space", "--hb-epoch", "33",
              "--peer-root", str(destination.root)),
             ("send", "--destination-slug", FIXTURE_SLUG, "--communication-id", "c", "--hb-epoch", "-1",
              "--peer-root", str(destination.root)),
@@ -300,6 +302,113 @@ class OneWayHopTests(unittest.TestCase):
         self.assertNotIn("federation.json", source.replace("``federation.json`` is not read", ""))
         self.assertNotIn("load_federation_directory", source)
         self.assertNotIn("resolve_destination(", source)
+
+
+SUPPLIED_EPOCH_FAILURE_SHA256 = "7f36f0e697cadc91acd27af121eee3fc460b887ec67cfa258727bfccec0ca5f8"
+EPOCH_PREDICATE = "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
+COERCED_EPOCHS = ("+33", " 33", "3_3")
+BELOW_ANCHOR = tuple(str(value) for value in range(32))
+
+
+def load_intr_hop():
+    sys.path.insert(0, str(ROOT / "resident-runtime"))
+    try:
+        import intr_hop
+    finally:
+        sys.path.pop(0)
+    return intr_hop
+
+
+class SuppliedEpochTests(unittest.TestCase):
+    """require_epoch is the shared supplied_epoch_failure; every refusal has six fields."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.hop = load_intr_hop()
+        cls.home = Path(tempfile.mkdtemp(prefix="intr-hop-epoch-"))
+        cls.peer_root = stamp_fixture(cls.home / "peer")
+        cls.slug = slug(registry(ROOT)["organization"])
+        cls.frame = frame_file(cls.hop.encode_frame({"schema": "not-a-carrier-frame"}))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.home, ignore_errors=True)
+
+    def assert_epoch_refusal(self, result: dict, failure_code: str) -> None:
+        assert_six_fields(self, result)
+        self.assertEqual(result["disposition"], "FAIL_CLOSED", result)
+        self.assertEqual(result["failure_code"], failure_code, result)
+        self.assertEqual(result["failed_predicate"], EPOCH_PREDICATE, result)
+        self.assertIs(result["receipts_appended"], False)
+
+    def test_supplied_epoch_failure_is_byte_identical_to_the_shared_rule(self) -> None:
+        source = (ROOT / "resident-runtime/intr_hop.py").read_text(encoding="utf-8")
+        node = next(n for n in ast.parse(source).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "supplied_epoch_failure")
+        segment = ast.get_source_segment(source, node) + "\n"
+        self.assertEqual(SUPPLIED_EPOCH_FAILURE_SHA256, hashlib.sha256(segment.encode("utf-8")).hexdigest())
+        self.assertEqual(SUPPLIED_EPOCH_FAILURE_SHA256, self.hop.SUPPLIED_EPOCH_FAILURE_SHA256)
+
+    def test_require_epoch_accepts_ascii_digits_at_or_above_the_anchor(self) -> None:
+        for value, expected in ((32, 32), ("32", 32), ("4000", 4000), ("0033", 33), (4000, 4000)):
+            self.assertEqual(self.hop.require_epoch(value), expected, value)
+        self.assertEqual(self.hop.require_epoch("33", {"derived_from_clock": False}), 33)
+
+    def test_require_epoch_refuses_coerced_below_anchor_and_missing(self) -> None:
+        cases = [(None, "HB_EPOCH_NOT_SUPPLIED")]
+        cases += [(value, "HB_EPOCH_INVALID") for value in COERCED_EPOCHS + BELOW_ANCHOR]
+        cases += [(value, "HB_EPOCH_INVALID") for value in
+                  (*range(32), -1, True, False, 33.0, "33.0", "", "-33", "\u0663\u0663", "33 ")]
+        for value, code in cases:
+            with self.assertRaises(self.hop.HopRefused, msg=repr(value)) as raised:
+                self.hop.require_epoch(value)
+            self.assertEqual((raised.exception.failure_code, raised.exception.failed_predicate),
+                             (code, EPOCH_PREDICATE), repr(value))
+        for reference in ({"derived_from_clock": True}, {"derived_from_clock": None}, "not-an-object"):
+            with self.assertRaises(self.hop.HopRefused, msg=repr(reference)) as raised:
+                self.hop.require_epoch("33", reference)
+            self.assertEqual(raised.exception.failure_code, "HB_EPOCH_INVALID")
+
+    def function_phases(self, hb_epoch):
+        yield "send", self.hop.send(FIXTURE_SLUG, "c", hb_epoch, peer_root=self.peer_root)
+        yield "receive", self.hop.receive({"schema": "not-a-carrier-frame"}, hb_epoch, origin_slug=self.slug)
+        yield "close", self.hop.close({"schema": "not-a-carrier-frame"}, FIXTURE_SLUG, "c", hb_epoch)
+
+    def test_every_phase_function_refuses_with_six_fields(self) -> None:
+        cases = [(None, "HB_EPOCH_NOT_SUPPLIED")]
+        cases += [(value, "HB_EPOCH_INVALID") for value in COERCED_EPOCHS + BELOW_ANCHOR]
+        cases += [(value, "HB_EPOCH_INVALID") for value in range(32)]
+        for value, code in cases:
+            for phase, result in self.function_phases(value):
+                with self.subTest(phase=phase, hb_epoch=value):
+                    self.assertEqual(result["phase"], phase)
+                    self.assert_epoch_refusal(result, code)
+
+    def cli_phases(self, side: Side, epoch_args: tuple[str, ...]):
+        yield "send", side.run("send", "--destination-slug", FIXTURE_SLUG, "--communication-id", "c",
+                               *epoch_args, "--peer-root", str(self.peer_root))
+        yield "receive", side.run("receive", "--frame-file", self.frame, "--origin-slug", self.slug, *epoch_args)
+        yield "close", side.run("close", "--frame-file", self.frame, "--destination-slug", FIXTURE_SLUG,
+                                "--communication-id", "c", *epoch_args)
+
+    def test_every_phase_cli_refuses_with_six_fields_and_appends_nothing(self) -> None:
+        side = Side(ROOT, self.home / "cli")
+        cases = [((), "HB_EPOCH_NOT_SUPPLIED")]
+        cases += [(("--hb-epoch", value), "HB_EPOCH_INVALID") for value in COERCED_EPOCHS + BELOW_ANCHOR]
+        cases += [(("--hb-epoch=" + value,), "HB_EPOCH_INVALID") for value in COERCED_EPOCHS]
+        for epoch_args, code in cases:
+            for phase, (exit_code, result) in self.cli_phases(side, epoch_args):
+                with self.subTest(phase=phase, epoch_args=epoch_args):
+                    self.assertNotEqual(exit_code, 0, result)
+                    self.assertEqual(result["phase"], phase)
+                    self.assert_epoch_refusal(result, code)
+        self.assertEqual(side.chain(repository=True), [])
+        self.assertEqual(side.chain(repository=False), [])
+
+    def test_cli_epoch_arguments_are_strings_not_int_coercions(self) -> None:
+        source = (ROOT / "resident-runtime/intr_hop.py").read_text(encoding="utf-8")
+        self.assertNotIn('"--hb-epoch", type=int', source)
+        self.assertEqual(source.count('"--hb-epoch", type=str, default=None'), 3)
 
 
 if __name__ == "__main__":

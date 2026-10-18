@@ -95,11 +95,19 @@ SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 HOP_STANDING = {"mode": "ESTABLISH_GENESIS", "node_ref": "intr-destination-hop", "predecessor": None}
 
 
+EPOCH_PREDICATE = "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
+#: sha256 of the byte-identical ``supplied_epoch_failure`` segment below, as
+#: shared with StegVerse-org/.github organization_egress_boundary.py (#186) and
+#: StegVerse-org/StegVerse-SDK universal_intr_route_installer.py (#544).
+SUPPLIED_EPOCH_FAILURE_SHA256 = "7f36f0e697cadc91acd27af121eee3fc460b887ec67cfa258727bfccec0ca5f8"
+
+
 class HopRefused(Exception):
-    def __init__(self, failed_predicate: str, detail: str) -> None:
+    def __init__(self, failed_predicate: str, detail: str, failure_code: str | None = None) -> None:
         super().__init__(failed_predicate + ": " + detail)
         self.failed_predicate = failed_predicate
         self.detail = detail
+        self.failure_code = failure_code
 
 
 def _module(name: str, path: Path):
@@ -151,10 +159,57 @@ def call_named(fn: Callable[..., Any], **available: Any) -> Any:
     return fn(**kwargs)
 
 
-def require_epoch(hb_epoch: Any) -> int:
-    if isinstance(hb_epoch, bool) or not isinstance(hb_epoch, int) or hb_epoch < 0:
-        raise HopRefused("HB_EPOCH_IS_SUPPLIED_AS_A_NON_NEGATIVE_INTEGER", repr(hb_epoch))
-    return hb_epoch
+# --- shared supplied-epoch rule (byte copy; sha256 pinned in SUPPLIED_EPOCH_FAILURE_SHA256) ---
+
+def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, str] | None:
+    """The shared supplied-epoch rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH).
+
+    Byte-identical in StegVerse-org/.github#185 and StegVerse-Labs/.github#3212
+    and #3213. `hb_epoch` absent (None) is HB_EPOCH_NOT_SUPPLIED. Otherwise it
+    must be ASCII [0-9]+ only -- an int is read as its decimal text; a bool, a
+    float or anything coerced ('+33', ' 33', '3_3', '33.0') is refused -- with
+    integer value >= 32 (the HB32 anchor). `reference`, the carrier frame's
+    heartbeat reference when there is one, must be an object, and a
+    `derived_from_clock` it carries must be exactly false. Any failure is
+    HB_EPOCH_INVALID. Returns (failure_code, detail), or None when the epoch is
+    supplied. No clock is read.
+    """
+    if reference is not None and not isinstance(reference, dict):
+        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference is not an object"
+    if hb_epoch is None:
+        return "HB_EPOCH_NOT_SUPPLIED", "no hb_epoch was supplied and no clock is read"
+    if isinstance(hb_epoch, bool):
+        text = None
+    elif isinstance(hb_epoch, int):
+        text = str(hb_epoch)
+    elif isinstance(hb_epoch, str):
+        text = hb_epoch
+    else:
+        text = None
+    if text is None or not text.isascii() or not text.isdigit():
+        return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
+    if int(text) < 32:
+        return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
+    if reference is not None and "derived_from_clock" in reference \
+            and reference["derived_from_clock"] is not False:
+        return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
+                                    "a clock-derived epoch is not a supplied one")
+    return None
+
+
+def require_epoch(hb_epoch: Any, reference: Any = None) -> int:
+    """The supplied ``hb_epoch`` as an int, or HopRefused under the shared rule.
+
+    ``reference``, when given, is a heartbeat reference whose
+    ``derived_from_clock`` must be exactly false. The phases pass none: a kernel
+    whose ``carrier_frame`` has no ``epoch`` parameter marks a frame built from
+    the supplied epoch as clock-derived, so the forwarded frame's reference is
+    left to that kernel's own ``recover_packet``.
+    """
+    failure = supplied_epoch_failure(hb_epoch, reference)
+    if failure is not None:
+        raise HopRefused(EPOCH_PREDICATE, failure[1], failure[0])
+    return int(str(hb_epoch))
 
 
 def require_communication_id(value: Any) -> str:
@@ -292,7 +347,8 @@ def non_allow(failure_code: str, failed_predicate: str, required_evidence_or_rep
 def _refusal(phase: str, exc: HopRefused, **extra: Any) -> dict[str, Any]:
     return {"schema": SCHEMA, "phase": phase, "disposition": FAIL_CLOSED, "detail": exc.detail,
             "receipts_appended": False, **extra,
-            **non_allow("INTR_HOP_" + phase.upper() + "_PREDICATE_NOT_SATISFIED", exc.failed_predicate,
+            **non_allow(exc.failure_code or "INTR_HOP_" + phase.upper() + "_PREDICATE_NOT_SATISFIED",
+                        exc.failed_predicate,
                         "supply " + phase + " inputs that satisfy " + exc.failed_predicate
                         + " (" + exc.detail[:200] + "); nothing was appended",
                         RETRY_ENTRYPOINT + " phase=" + phase,
@@ -301,12 +357,12 @@ def _refusal(phase: str, exc: HopRefused, **extra: Any) -> dict[str, Any]:
             **CONSTRAINTS}
 
 
-def send(destination_slug: str, communication_id: str, hb_epoch: int, *, peer_root: Path) -> dict[str, Any]:
+def send(destination_slug: str, communication_id: str, hb_epoch: Any, *, peer_root: Path) -> dict[str, Any]:
     """Record "sent" and return the frame addressed to ``<destination_slug>.intr-destination``."""
     try:
         require_slug(destination_slug, "destination_slug")
         require_communication_id(communication_id)
-        require_epoch(hb_epoch)
+        hb_epoch = require_epoch(hb_epoch)
         origin = this_organization()
         origin_slug = organization_slug(origin)
         if destination_slug == origin_slug:
@@ -423,11 +479,11 @@ def far_side_chain(packet_id: str, service_id: str, payload_hash: str) -> list[s
     return list(k.far_side_receipt_chain(packet_id, service_id, payload_hash))
 
 
-def receive(frame: Mapping[str, Any], hb_epoch: int, *, origin_slug: str | None = None) -> dict[str, Any]:
+def receive(frame: Mapping[str, Any], hb_epoch: Any, *, origin_slug: str | None = None) -> dict[str, Any]:
     """Record "arrived" through this organization's intr-destination, and answer it."""
     k = kernel()
     try:
-        require_epoch(hb_epoch)
+        hb_epoch = require_epoch(hb_epoch)
         if origin_slug is not None:
             require_slug(origin_slug, "origin_slug")
         try:
@@ -549,13 +605,13 @@ def _closure_refused(findings: Any) -> dict[str, Any]:
 
 
 def close(response_frame: Mapping[str, Any], destination_slug: str, communication_id: str,
-          hb_epoch: int) -> dict[str, Any]:
+          hb_epoch: Any) -> dict[str, Any]:
     """Record "closed" for the responded request class carrying ``communication_id``."""
     e, k = egress(), kernel()
     try:
         require_slug(destination_slug, "destination_slug")
         require_communication_id(communication_id)
-        require_epoch(hb_epoch)
+        hb_epoch = require_epoch(hb_epoch)
         origin = this_organization()
         try:
             response = k.recover_packet(dict(response_frame))
@@ -715,19 +771,19 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("send")
     p.add_argument("--destination-slug", required=True)
     p.add_argument("--communication-id", required=True)
-    p.add_argument("--hb-epoch", type=int, required=True)
+    p.add_argument("--hb-epoch", type=str, default=None)
     p.add_argument("--peer-root", type=Path, required=True)
     p.add_argument("--out", type=Path)
     p = sub.add_parser("receive")
     p.add_argument("--frame-file", type=Path, required=True)
     p.add_argument("--origin-slug", required=True)
-    p.add_argument("--hb-epoch", type=int, required=True)
+    p.add_argument("--hb-epoch", type=str, default=None)
     p.add_argument("--out", type=Path)
     p = sub.add_parser("close")
     p.add_argument("--frame-file", type=Path, required=True)
     p.add_argument("--destination-slug", required=True)
     p.add_argument("--communication-id", required=True)
-    p.add_argument("--hb-epoch", type=int, required=True)
+    p.add_argument("--hb-epoch", type=str, default=None)
     p.add_argument("--out", type=Path)
     p = sub.add_parser("readback")
     p.add_argument("--location", required=True)
