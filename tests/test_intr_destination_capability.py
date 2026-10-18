@@ -445,7 +445,9 @@ class AddressedAndClosedTests(RedirectedLedgers):
                          emitted["destination_service"])
         pending = egress.close(PEER, emitted["packet_id"], "closable-diagnostic",
                                mesh_root=self.mesh, hb_epoch=33)
-        self.assertEqual(pending["disposition"], "PENDING")
+        self.assertEqual(pending["disposition"], "FAIL_CLOSED")
+        self.assertEqual(pending["failure_code"],
+                         "DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION")
         self.assertIs(pending["closed"], False)
         self.assertIs(pending["closure_recorded"], False)
         self.assertIs(pending["absence_is_not_a_transition"], True)
@@ -478,6 +480,142 @@ class AddressedAndClosedTests(RedirectedLedgers):
                                            egress.CLOSED_CLASS)), 1)
         self.assertTrue(self.receipts("STEGVERSE_ORG_LEDGER_ROOT",
                                       "stegverse.organization-transition-receipt/v1"))
+
+
+class CloseResponseAbsentFailsClosed(unittest.TestCase):
+    """`close` with no response in the mesh fails closed with the six fields.
+
+    Function-level port of StegVerse-org/.github#186's
+    tests/test_egress_close_response_absent_fail_closed.py onto this
+    organization's module. An absent response is the protocol's
+    receiver-unavailable disposition, DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION,
+    returned FAIL_CLOSED with the six fields; nothing is written at either
+    ledger level. The supplied epoch is checked first. Both ledger roots and the
+    mesh are temporary; a passing test is not an authentic receipt.
+    """
+    SIX_FIELDS = ("failure_code", "failed_predicate", "required_evidence_or_repair",
+                  "retry_entrypoint", "owning_existing_goal", "next_attempt")
+    ENTRYPOINT = "resident-runtime/organization_egress_boundary.py::close"
+    LEDGER_ENV = ("STEGVERSE_REPO_LEDGER_ROOT", "STEGVERSE_ORG_LEDGER_ROOT")
+
+    def setUp(self):
+        self._work = tempfile.TemporaryDirectory()
+        self.addCleanup(self._work.cleanup)
+        work = Path(self._work.name)
+        self.mesh = work / "mesh"
+        self.mesh.mkdir()
+        self.repo_ledger = work / "repo-ledger"
+        self.org_ledger = work / "org-ledger"
+        previous = {name: os.environ.get(name) for name in self.LEDGER_ENV}
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.repo_ledger)
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(self.org_ledger)
+
+        def restore():
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        self.addCleanup(restore)
+
+    @staticmethod
+    def _files(root):
+        if not root.exists():
+            return []
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+
+    def close(self, hb_epoch="40"):
+        return egress.close(PEER, "packet-response-absent", "comm-response-absent",
+                            mesh_root=self.mesh, hb_epoch=hb_epoch)
+
+    def assert_six_fields(self, result):
+        self.assertEqual(result["disposition"], "FAIL_CLOSED")
+        for field in self.SIX_FIELDS:
+            self.assertIsInstance(result.get(field), str, field)
+            self.assertTrue(result[field].strip(), field)
+        self.assertEqual(result["retry_entrypoint"], self.ENTRYPOINT)
+        self.assertEqual(result["owning_existing_goal"],
+                         "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001")
+        self.assertEqual(result["owning_existing_goal"], egress.INTR_PROTOCOL_GOAL)
+        self.assertIs(result["closed"], False)
+        self.assertIs(result["closure_recorded"], False)
+        self.assertIs(result["refusal_recorded"], False)
+        self.assertEqual(result["authority_constraint"], "NONE_REFUSAL_ONLY")
+        self.assertEqual(result["request_packet_id"], "packet-response-absent")
+        self.assertEqual(result["communication_id"], "comm-response-absent")
+
+    def assert_response_absent_refusal(self, result):
+        self.assert_six_fields(result)
+        self.assertNotEqual(result["disposition"], "PENDING")
+        self.assertEqual(result["failure_code"], egress.RESPONSE_ABSENT_FAILURE_CODE)
+        self.assertEqual(result["failure_code"],
+                         "DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION")
+        self.assertEqual(result["failed_predicate"],
+                         "EGRESS_RESPONSE_DURABLY_MATERIALIZED_BEFORE_CLOSE")
+        self.assertIn("comm-response-absent", result["required_evidence_or_repair"])
+        self.assertIn(self.ENTRYPOINT, result["next_attempt"])
+        self.assertIs(result["absence_is_not_a_transition"], True)
+        self.assertEqual(result["destination_organization"], PEER)
+        self.assertNotIn("closure_repository_receipt_sha256", result)
+        self.assertNotIn("closure_organization_receipt_sha256", result)
+
+    def assert_epoch_refusal(self, result, failure_code):
+        self.assert_six_fields(result)
+        self.assertEqual(result["failure_code"], failure_code)
+        self.assertEqual(result["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
+
+    def assert_nothing_appended(self):
+        self.assertEqual(self._files(self.repo_ledger), [])
+        self.assertEqual(self._files(self.org_ledger), [])
+
+    def test_no_response_fails_closed_with_the_six_fields(self):
+        self.assert_response_absent_refusal(self.close())
+        self.assert_nothing_appended()
+
+    def test_the_refusal_is_the_same_on_every_attempt_and_records_nothing(self):
+        first, second = self.close("40"), self.close("41")
+        self.assertEqual(first, second)
+        self.assert_response_absent_refusal(second)
+        self.assert_nothing_appended()
+
+    def test_no_epoch_and_no_response_is_hb_epoch_not_supplied(self):
+        self.assert_epoch_refusal(self.close(None), "HB_EPOCH_NOT_SUPPLIED")
+        self.assert_nothing_appended()
+
+    def test_an_invalid_epoch_and_no_response_is_hb_epoch_invalid(self):
+        for invalid in ("31", "+33", " 33", "3_3", "33.0", True, 31):
+            with self.subTest(hb_epoch=invalid):
+                self.assert_epoch_refusal(self.close(invalid), "HB_EPOCH_INVALID")
+        self.assert_nothing_appended()
+
+    def test_a_supplied_epoch_and_no_response_is_the_response_absence(self):
+        for supplied in ("32", "0033", 40):
+            with self.subTest(hb_epoch=supplied):
+                self.assert_response_absent_refusal(self.close(supplied))
+        self.assert_nothing_appended()
+
+    def test_the_epoch_is_checked_before_the_destination_or_the_mesh_is_read(self):
+        from unittest import mock
+        with mock.patch.object(egress, "resolve_destination",
+                               side_effect=AssertionError("destination read")), \
+                mock.patch.object(egress.kernel, "collect_ecosystem_responses",
+                                  side_effect=AssertionError("mesh read")):
+            self.assert_epoch_refusal(self.close(None), "HB_EPOCH_NOT_SUPPLIED")
+        self.assert_nothing_appended()
+
+    def test_the_declared_precedence_puts_inputs_before_state_and_the_epoch_first(self):
+        order = egress.CLOSE_REFUSAL_PRECEDENCE
+        self.assertEqual(order[0], ("SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH", "INPUT"))
+        kinds = [kind for _, kind in order]
+        self.assertEqual(kinds, sorted(kinds, key=lambda kind: kind != "INPUT"))
+        self.assertIn(("EGRESS_RESPONSE_DURABLY_MATERIALIZED_BEFORE_CLOSE", "STATE"), order)
+
+    def test_the_owning_organization_is_unchanged(self):
+        self.assertEqual(egress.OWNER_REPOSITORY, "SV-011/.github")
+
+    def test_an_unattested_emission_reports_no_recorded_attestation(self):
+        self.assertIsNone(egress._recorded_attestation(None))
+        self.assertIsNone(egress._recorded_attestation({"origin_attestation_state": "NOT_PROVEN"}))
 
 
 if __name__ == "__main__":
