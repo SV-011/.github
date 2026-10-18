@@ -41,6 +41,7 @@
           "github_token_runtime_authority": "NONE"
         },
         "binding_role": "ORGANIZATION_RECEIVING_OPERATION_RESOLUTION",
+        "authority_effect": "NONE_BINDING_ONLY",
         "authority_constraint": "NONE_BINDING_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
         "disposition_role": "TRANSITION_EVIDENCE_ONLY",
