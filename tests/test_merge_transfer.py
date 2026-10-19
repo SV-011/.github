@@ -386,6 +386,44 @@ class Refusals(unittest.TestCase):
         finally:
             ledger.close()
 
+    def test_a_commit_not_in_the_clone_is_six_fields_terminal_not_a_traceback(self):
+        """V-P11: `append` / `verify` naming a commit absent from the clone is MERGE_TRANSFER_COMMIT_NOT_IN_REPOSITORY,
+        terminal, non-zero (even under verify --expect FAIL_CLOSED), no traceback, nothing written."""
+        missing = "0123456789abcdef0123456789abcdef01234567"
+        for command in (["append"], ["verify"], ["verify", "--expect", "FAIL_CLOSED"]):
+            with self.subTest(command=command):
+                ledger = Ledger(self.fixture)
+                try:
+                    before = ledger.files()
+                    ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), *command,
+                                          "--commit", missing], capture_output=True, text=True,
+                                         env=dict(os.environ), cwd=ROOT)
+                    self.assertEqual(ran.returncode, 1, ran.stderr)
+                    self.assertNotIn("Traceback", ran.stderr)
+                    [refused] = json.loads(ran.stdout)
+                    self._six(refused, mt.COMMIT_NOT_IN_REPOSITORY)
+                    self.assertIs(refused["terminal"], True)
+                    self.assertEqual(refused["required_evidence_or_repair"], "supply a commit present in the clone")
+                    self.assertEqual(ledger.files(), before)
+                finally:
+                    ledger.close()
+
+    def test_verify_with_an_unwritable_out_is_six_fields_not_a_traceback(self):
+        ledger = Ledger(self.fixture)
+        try:
+            ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), "verify",
+                                  "--commit", self.merge, "--expect", "FAIL_CLOSED", "--out", str(ledger.root)],
+                                 capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+            self.assertEqual(ran.returncode, 1, ran.stderr)
+            self.assertNotIn("Traceback", ran.stderr)
+            text = ran.stdout.strip()
+            _results, index = json.JSONDecoder().raw_decode(text)
+            refusal = json.loads(text[index:])
+            self._six(refusal, mt.RESULT_WRITE_FAILED)
+            self.assertIs(refusal["terminal"], False)
+        finally:
+            ledger.close()
+
     def test_the_cli_exits_non_zero_on_a_write_fault(self):
         from unittest import mock
         failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)

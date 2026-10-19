@@ -73,6 +73,7 @@ COLLISION = "MERGE_TRANSFER_RECEIPT_COLLISION"
 WRITER_REFUSED = "LEDGER_WRITER_REFUSED"
 WRITE_FAILED = "MERGE_TRANSFER_WRITE_FAILED"
 RESULT_WRITE_FAILED = "MERGE_TRANSFER_RESULT_WRITE_FAILED"
+COMMIT_NOT_IN_REPOSITORY = "MERGE_TRANSFER_COMMIT_NOT_IN_REPOSITORY"
 APPEND_ENTRYPOINT = "resident-runtime/merge_transfer.py append"
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -431,10 +432,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     results = []
     for commit in commits:
+        try:
+            facts = commit_facts(commit)
+        except subprocess.CalledProcessError as exc:
+            # An input defect: the commit is not in this clone. Six fields, terminal, never a traceback.
+            results.append(refusal(COMMIT_NOT_IN_REPOSITORY, "THE_NAMED_COMMIT_IS_IN_THE_CLONE",
+                                   "supply a commit present in the clone",
+                                   "none for this commit in this clone; nothing was read or written",
+                                   repository=repository(), merge_commit=commit, terminal=True,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command
+                                   + " --commit <a commit present in the clone>",
+                                   detail="git cat-file commit " + commit + " exited " + str(exc.returncode)
+                                   + ": " + (exc.stderr or "").strip()))
+            continue
         if args.command == "append":
-            results.append(append_merge_transfer(commit_facts(commit)))
+            results.append(append_merge_transfer(facts))
         else:
-            results.append(verify_merge_transfer(repository(), commit_facts(commit)["merge_commit"]))
+            results.append(verify_merge_transfer(repository(), facts["merge_commit"]))
     text = json.dumps(results, indent=2, sort_keys=True)
     print(text)
     if args.out:
@@ -448,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     expected = args.expect if args.command == "verify" else ALLOW
     for result in results:
-        if result["disposition"] != expected:
+        if result["disposition"] != expected or result.get("failure_code") == COMMIT_NOT_IN_REPOSITORY:
             return 1
         if expected == FAIL_CLOSED and not all(result.get(f) for f in SIX_FIELDS):
             return 1

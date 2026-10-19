@@ -408,6 +408,21 @@ class EgressAndIngestRefuseFirst(Redirected):
             objects.append(value)
         return objects
 
+    def phase5_probe_with_a_file_for_its_evidence_dir(self):
+        occupied = self.mesh / "occupied"
+        occupied.write_text("x", encoding="utf-8")
+        ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/run_phase5_probe.py"),
+                              "--request", str(ROOT / "resident-runtime/requests/phase5-allow.json"),
+                              "--evidence-dir", str(occupied), "--runtime-observer", "test"],
+                             capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(ran.returncode, 1, ran.stderr)
+        self.assertNotIn("Traceback", ran.stderr)
+        refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+        self.assertEqual(refusal["failed_predicate"], "OUT_FILE_ACCEPTS_THE_RESULT:FileExistsError")
+        self.assertIs(refusal["terminal"], False)
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+
     def test_an_unwritable_out_file_is_six_fields_not_a_traceback(self):
         """V-P11 (F-WRITER-TRACE follow-up): when --out cannot be written (here: it is a directory), the ingress
         CLI, merge_transfer and the readback print their result and a six-field non-terminal
@@ -437,6 +452,7 @@ class EgressAndIngestRefuseFirst(Redirected):
                     self.assertTrue(refusal.get(field), field)
                 if name == "ingress":
                     self.assertEqual(objects[0]["disposition"], "ALLOW")
+                    self.phase5_probe_with_a_file_for_its_evidence_dir()
                     before = sorted(str(p) for p in self.written())
                     out = self.mesh / "ingress-result.json"
                     rerun = subprocess.run(command + ["--out", str(out)], capture_output=True, text=True,
