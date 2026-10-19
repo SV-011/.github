@@ -617,6 +617,57 @@ class CarriedProvenanceIsVerified(Redirected):
             self.assertIs(receipt["hb_reference"]["derived_from_clock"], False)
 
 
+class ConsumedRouteNeverReachesAClockDefault(Redirected):
+    """B-P36g (07:10Z) row 2: a CONSUMED frame route reads no clock at all.
+
+    The capability ingress loads its receiving operation (and that operation's
+    writers and kernel copy) afresh on every dispatch, so patching an already
+    loaded copy is not enough: the ``datetime`` module itself is replaced for the
+    duration, and any copy loaded during the call binds a ``datetime`` whose
+    ``now`` raises.
+    """
+
+    def test_a_consumed_frame_makes_zero_clock_calls(self):
+        import datetime as real
+        import sys
+        import types
+        calls = []
+
+        class Raising(real.datetime):
+            @classmethod
+            def now(cls, *_a, **_k):
+                calls.append("now")
+                raise AssertionError("a CONSUMED route read the clock")
+        shim = types.ModuleType("datetime")
+        shim.__dict__.update({name: getattr(real, name) for name in dir(real) if not name.startswith("__")})
+        shim.datetime = Raising
+        sys.modules["datetime"] = shim
+        self.addCleanup(sys.modules.__setitem__, "datetime", real)
+        saved = kernel.datetime
+        kernel.datetime = Raising
+        self.addCleanup(setattr, kernel, "datetime", saved)
+        packet = kernel.build_packet(
+            origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
+            destination_org="SV-011", destination_service=ADDRESS,
+            payload=diagnostic("zero-clock"), standing=GENESIS,
+            transition_reference="intr:transition:zero-clock", authority_effect="NONE", packet_id="zero-clock")
+        kernel.publish_packet(packet, root=self.mesh, epoch="4096")
+        result, = kernel.consume_addressed_frames(
+            ROOT, mesh_root=self.mesh,
+            repo_ledger_root=os.environ["STEGVERSE_REPO_LEDGER_ROOT"],
+            org_ledger_root=os.environ["STEGVERSE_ORG_LEDGER_ROOT"])
+        self.assertEqual(result["result"]["status"], "CONSUMED")
+        operation = result["result"]["execution_result"]["application_result"]["receiving_operation_result"]
+        self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+        self.assertEqual(calls, [])
+        referenced = [json.loads(p.read_text(encoding="utf-8")).get("hb_reference") for p in self.written()]
+        referenced = [r for r in referenced if r is not None]
+        self.assertEqual(len(referenced), 2)
+        for reference in referenced:
+            self.assertEqual(reference["epoch"], 4096)
+            self.assertIs(reference["derived_from_clock"], False)
+
+
 class NoUnmarkedClockOnAnyRoute(Redirected):
     """B-P36g rows 4 and 6: a route that writes nothing reads no clock, and every clock value is marked.
 
