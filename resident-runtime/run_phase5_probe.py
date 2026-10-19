@@ -19,7 +19,7 @@ def main():
     ap.add_argument("--runtime-observer",required=True)
     a=ap.parse_args()
     req=json.loads(Path(a.request).read_text(encoding="utf-8"))
-    outdir=Path(a.evidence_dir); outdir.mkdir(parents=True,exist_ok=True)
+    outdir=Path(a.evidence_dir)
     envelope=intr.build_ingress(
       {"org":"SV-011","service":"resident-observer"},
       {"org":"SV-011","service":req["destination_service"]},
@@ -40,7 +40,20 @@ def main():
       egress=intr.build_egress(envelope,execution)
       intr.validate_org_crossing(egress,"EGRESS")
       evidence["egress"]=egress
-    Path(outdir/(req["request_id"]+".json")).write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+    try:
+      outdir.mkdir(parents=True,exist_ok=True)
+      Path(outdir/(req["request_id"]+".json")).write_text(json.dumps(evidence,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+    except OSError as exc:
+      # Six fields, non-terminal: the evidence file could not be written; nothing else was (F-WRITER-TRACE).
+      print(json.dumps({"disposition":"FAIL_CLOSED","failure_code":"RESULT_WRITE_FAILED",
+                        "failed_predicate":"OUT_FILE_ACCEPTS_THE_RESULT:"+type(exc).__name__,
+                        "detail":type(exc).__name__+": "+str(exc),
+                        "required_evidence_or_repair":"an --evidence-dir that accepts a file write",
+                        "retry_entrypoint":"resident-runtime/run_phase5_probe.py --evidence-dir <writable dir>",
+                        "owning_existing_goal":"INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
+                        "next_attempt":"re-run the same invocation; it writes only this file",
+                        "terminal":False,"derived_from_clock":False,"consequence_committed":False},sort_keys=True))
+      return 1
     print(json.dumps({"request_id":req["request_id"],"decision":result["decision"],"evidence":str(outdir/(req["request_id"]+".json"))}))
     return 0
 if __name__=="__main__": raise SystemExit(main())

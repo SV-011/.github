@@ -72,6 +72,7 @@ FACTS_INVALID = "MERGE_COMMIT_FACTS_INVALID"
 COLLISION = "MERGE_TRANSFER_RECEIPT_COLLISION"
 WRITER_REFUSED = "LEDGER_WRITER_REFUSED"
 WRITE_FAILED = "MERGE_TRANSFER_WRITE_FAILED"
+RESULT_WRITE_FAILED = "MERGE_TRANSFER_RESULT_WRITE_FAILED"
 APPEND_ENTRYPOINT = "resident-runtime/merge_transfer.py append"
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -435,9 +436,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             results.append(verify_merge_transfer(repository(), commit_facts(commit)["merge_commit"]))
     text = json.dumps(results, indent=2, sort_keys=True)
-    if args.out:
-        Path(args.out).write_text(text + "\n", encoding="utf-8")
     print(text)
+    if args.out:
+        try:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            # The appends are committed; only the result file failed. Six fields, never a traceback.
+            print(json.dumps(ingress.repository_ledger.kernel.result_write_refusal(
+                exc, RESULT_WRITE_FAILED, "resident-runtime/merge_transfer.py " + args.command
+                + " --out <writable path>"), indent=2, sort_keys=True))
+            return 1
     expected = args.expect if args.command == "verify" else ALLOW
     for result in results:
         if result["disposition"] != expected:

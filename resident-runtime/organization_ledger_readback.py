@@ -276,11 +276,27 @@ def main() -> int:
     except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
         result, code = _refusal(location, exc), 1
     text = json.dumps(result, indent=2, sort_keys=True)
-    if args.out is not None:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(text + "\n", encoding="utf-8")
     print(text)
+    if args.out is not None:
+        try:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(json.dumps(out_write_refusal(exc), indent=2, sort_keys=True))
+            return 1
     return code
+
+
+def out_write_refusal(exc: OSError) -> dict[str, Any]:
+    """Six fields, non-terminal, for a report file that could not be written; the readback itself wrote nothing."""
+    return {"disposition": "FAIL_CLOSED", "failure_code": "READBACK_RESULT_WRITE_FAILED",
+            "failed_predicate": "OUT_FILE_ACCEPTS_THE_RESULT:" + type(exc).__name__,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "an --out path whose directory accepts a file write",
+            "retry_entrypoint": "resident-runtime/organization_ledger_readback.py --out <writable path>",
+            "owning_existing_goal": "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
+            "next_attempt": "re-run the same invocation; a readback writes nothing",
+            "terminal": False, "derived_from_clock": False, "consequence_committed": False}
 
 
 if __name__ == "__main__":

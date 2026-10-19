@@ -780,6 +780,22 @@ def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
                                    "the next manifest-bound cycle; the frame stays pending")
 
 
+def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str) -> dict[str, Any]:
+    """The non-terminal six-field record for a CLI whose result file (--out) could not be written.
+
+    The transition itself is already recorded; the re-run is idempotent. No clock is read.
+    """
+    return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
+            "failed_predicate": "OUT_FILE_ACCEPTS_THE_RESULT:" + type(exc).__name__,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "an --out path whose directory accepts a file write",
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "re-run the same invocation; it is idempotent",
+            "status": "PENDING", "terminal": False,
+            "derived_from_clock": False, "consequence_committed": False}
+
+
 def own_state_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str,
                             next_attempt: str) -> dict[str, Any]:
     """The non-terminal six-field FAIL_CLOSED for a fault writing this repository's own state.

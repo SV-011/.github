@@ -363,6 +363,29 @@ class Refusals(unittest.TestCase):
                 finally:
                     ledger.close()
 
+    def test_an_unwritable_out_file_is_six_fields_not_a_traceback(self):
+        ledger = Ledger(self.fixture)
+        try:
+            command = [sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), "append",
+                       "--commit", self.merge, "--out", str(ledger.root)]  # a directory
+            ran = subprocess.run(command, capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+            self.assertEqual(ran.returncode, 1, ran.stderr)
+            self.assertNotIn("Traceback", ran.stderr)
+            decoder, text = json.JSONDecoder(), ran.stdout.strip()
+            results, index = decoder.raw_decode(text)
+            refusal = json.loads(text[index:])
+            self.assertEqual(results[0]["disposition"], "ALLOW")
+            self.assertEqual(refusal["failure_code"], mt.RESULT_WRITE_FAILED)
+            self.assertEqual(refusal["failed_predicate"], "OUT_FILE_ACCEPTS_THE_RESULT:IsADirectoryError")
+            self.assertIs(refusal["terminal"], False)
+            for field in mt.SIX_FIELDS:
+                self.assertTrue(refusal[field], field)
+            once = ledger.files()
+            self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+            self.assertEqual(ledger.files(), once)
+        finally:
+            ledger.close()
+
     def test_the_cli_exits_non_zero_on_a_write_fault(self):
         from unittest import mock
         failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)

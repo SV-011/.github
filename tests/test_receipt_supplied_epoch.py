@@ -397,6 +397,54 @@ class EgressAndIngestRefuseFirst(Redirected):
                 bound = [r for r in receipts if r.get("repo_receipt_sha256") == ours[0]["receipt_sha256"]]
                 self.assertEqual(len(bound), 1)
 
+    @staticmethod
+    def json_objects(text):
+        decoder, objects, index = json.JSONDecoder(), [], 0
+        while index < len(text):
+            if text[index].isspace():
+                index += 1
+                continue
+            value, index = decoder.raw_decode(text, index)
+            objects.append(value)
+        return objects
+
+    def test_an_unwritable_out_file_is_six_fields_not_a_traceback(self):
+        """V-P11 (F-WRITER-TRACE follow-up): when --out cannot be written (here: it is a directory), the ingress
+        CLI, merge_transfer and the readback print their result and a six-field non-terminal
+        *_RESULT_WRITE_FAILED, exit non-zero without a traceback; the re-run is idempotent."""
+        self.mesh.mkdir(parents=True, exist_ok=True)
+        unwritable = Path(tempfile.mkdtemp(dir=self.mesh))
+        environment = {k: v for k, v in os.environ.items() if k != "STEGVERSE_HB_EPOCH"}
+        ingress_cli = [sys.executable, str(ROOT / "resident-runtime/intr_destination_ingress.py"), "--self-closure",
+                       "--communication-id", "out-dir", "--packet-id", "out-dir",
+                       "--registry", str(ROOT / "org-boundary/registry/services.json"), "--hb-epoch", "4096"]
+        readback_cli = [sys.executable, str(ROOT / "resident-runtime/organization_ledger_readback.py"),
+                        "--location", str(self.mesh / "no-ledger-here")]
+        for name, command, rc, code in (("ingress", ingress_cli, 4, "INTR_INGRESS_RESULT_WRITE_FAILED"),
+                                        ("readback", readback_cli, 1, "READBACK_RESULT_WRITE_FAILED")):
+            with self.subTest(cli=name):
+                ran = subprocess.run(command + ["--out", str(unwritable)], capture_output=True, text=True,
+                                     env=environment, cwd=ROOT)
+                self.assertEqual(ran.returncode, rc, ran.stderr)
+                self.assertNotIn("Traceback", ran.stderr)
+                objects = self.json_objects(ran.stdout)
+                self.assertEqual(len(objects), 2, ran.stdout)  # the result, then the six-field record
+                refusal = objects[-1]
+                self.assertEqual(refusal["failure_code"], code)
+                self.assertEqual(refusal["failed_predicate"], "OUT_FILE_ACCEPTS_THE_RESULT:IsADirectoryError")
+                self.assertIs(refusal["terminal"], False)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+                if name == "ingress":
+                    self.assertEqual(objects[0]["disposition"], "ALLOW")
+                    before = sorted(str(p) for p in self.written())
+                    out = self.mesh / "ingress-result.json"
+                    rerun = subprocess.run(command + ["--out", str(out)], capture_output=True, text=True,
+                                           env=environment, cwd=ROOT)
+                    self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+                    self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["disposition"], "ALLOW")
+                    self.assertEqual(sorted(str(p) for p in self.written()), before)  # idempotent: no new receipt
+
     def test_egress_takes_a_supplied_digit_string_epoch(self):
         self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
         emitted = self.emit("4096", "egress-4096")

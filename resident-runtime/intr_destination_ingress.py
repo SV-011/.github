@@ -312,6 +312,7 @@ def receive(payload: Any, *, registry: Mapping[str, Any], standing: Mapping[str,
 
 
 INGRESS_WRITE_FAILED = "INTR_INGRESS_WRITE_FAILED"
+RESULT_WRITE_FAILED = "INTR_INGRESS_RESULT_WRITE_FAILED"
 CLI_ENTRYPOINT = "resident-runtime/intr_destination_ingress.py (--self-closure | --payload) --hb-epoch <same>"
 CLI_EPOCH_RETRY_ENTRYPOINT = ("resident-runtime/intr_destination_ingress.py --hb-epoch <digits >= 32> "
                               "(or STEGVERSE_HB_EPOCH)")
@@ -371,10 +372,16 @@ def main() -> int:
             sort_keys=True))
         return 3
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(rendered, encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
+    if args.out:
+        try:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            # The appends are committed; only the result file failed. Six fields, never a traceback.
+            print(json.dumps(repository_ledger.kernel.result_write_refusal(
+                exc, RESULT_WRITE_FAILED, CLI_ENTRYPOINT + " --out <writable path>"), sort_keys=True))
+            return 4
     return 0 if result.get("disposition") == ALLOW else 1
 
 
