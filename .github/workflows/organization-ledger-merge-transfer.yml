@@ -1,0 +1,104 @@
+name: Organization Ledger Main Merge Transfer
+
+# A merge on main is a state transition within this organization
+# (.stegverse/transition-ledger/org-contract.json organization_scope_rule:
+# EVERY_STATE_TRANSITION_OCCURRING_WITHIN_THE_ORGANIZATION_EMITS_AN_ORGANIZATION_RECEIPT).
+# The push that lands the merge is the trigger. There is no dispatch, schedule
+# or cross-repository call: the append is made in this repository, onto this
+# organization's own designated ledger ref, with this run's GITHUB_TOKEN.
+#
+# Each merge gets one repository receipt and one organization receipt through
+# the existing two-level append (resident-runtime/intr_destination_ingress.py
+# _append over emit.py / aggregate_repo_transition.py / ledger_store.py),
+# operation ORGANIZATION_MAIN_MERGE_TRANSFER, at the supplied epoch carried by
+# the ledger head (no clock). The transfer is VERIFIED only by
+# resident-runtime/merge_transfer.py verify on a fresh fetch of the published
+# ref; this run's success is not the evidence.
+#
+# Writer only. The PR-facing checks are
+# .github/workflows/organization-ledger-merge-transfer-validation.yml.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# ORGANIZATION_LEDGER_LOCK: one appender at a time, shared with
+# organization-ledger-transition.yml. The fast-forward push is the
+# compare-and-swap against the published ref.
+concurrency:
+  group: organization-ledger
+  cancel-in-progress: false
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LEDGER_REF: refs/stegverse/organization-ledger
+      BEFORE: ${{ github.event.before }}
+    steps:
+      - name: Checkout organization boundary
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bind the designated organization ledger ref and the repository ledger subtree
+        run: |
+          set -euo pipefail
+          ref=$(python3 -c 'import json; print(json.load(open(".stegverse/transition-ledger/org-contract.json")).get("organization_ledger_ref") or "refs/stegverse/organization-ledger")')
+          test "$ref" = "$LEDGER_REF"
+          namespace=$(python3 -c 'import json; l=json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]; assert l["ref"]=="refs/stegverse/organization-ledger", l; print(l["namespace"])')
+          echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
+          # No head, no supplied epoch: the append below refuses (HB_EPOCH_SOURCE_UNOBSERVED).
+          git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+          echo "ledger tip: $(git rev-parse "$LEDGER_REF")"
+
+      - name: Select the merges this push carries
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          python3 resident-runtime/merge_transfer.py commits --before "$BEFORE" --after "$GITHUB_SHA" \
+            --pending .stegverse/merge-transfer/pending.json > "$RUNNER_TEMP/results/commits.txt"
+          cat "$RUNNER_TEMP/results/commits.txt"
+
+      - name: Append each merge's repository and organization receipts
+        run: |
+          set -euo pipefail
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          python3 resident-runtime/merge_transfer.py append --commits-file "$RUNNER_TEMP/results/commits.txt" \
+            --out "$RUNNER_TEMP/results/append.json"
+
+      - name: Publish the ledger ref (fast-forward only)
+        run: |
+          if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/organization-ledger-merge-transfer.yml (re-run the push)","owning_existing_goal":"StegVerse-org/.github#162","next_attempt":"re-run; a merge already ledgered is answered from the ledger"}'
+            exit 1
+          fi
+
+      - name: Verify each transfer from a fresh fetch of the published ref
+        run: |
+          set -euo pipefail
+          fresh="$RUNNER_TEMP/readback.git"
+          git init -q --bare "$fresh"
+          auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
+          if [ -z "$auth_header" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","required_evidence_or_repair":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/organization-ledger-merge-transfer.yml","owning_existing_goal":"StegVerse-org/.github#162","next_attempt":"re-run with repository contents permission"}'
+            exit 1
+          fi
+          git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$fresh#$LEDGER_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$fresh#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          python3 resident-runtime/merge_transfer.py verify --commits-file "$RUNNER_TEMP/results/commits.txt" \
+            --out "$RUNNER_TEMP/results/verify.json"
+          { echo '### main merge transfer'; echo '```json'; cat "$RUNNER_TEMP/results/verify.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the run's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-merge-transfer-${{ github.sha }}
+          path: ${{ runner.temp }}/results

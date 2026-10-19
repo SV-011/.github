@@ -218,8 +218,13 @@ def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_i
 
 
 def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
-            hb_epoch: int | None) -> tuple[dict[str, Any], bool]:
+            hb_epoch: int | None, *, operation: str = OPERATION_ID, profile_id: str = PROFILE_ID,
+            boundary_extra: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     """Append at both levels. A replay of the same packet returns the recorded pair.
+
+    ``operation``, ``profile_id`` and ``boundary_extra`` name another operation
+    on the same two-level append (resident-runtime/merge_transfer.py); their
+    defaults are this ingress, so its receipts are unchanged.
 
     The repository locator and the organization locator are caller-supplied.
     On the published ref they are the same git ref: the organization chain at
@@ -241,9 +246,9 @@ def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
     epoch = repository_receipt["hb_reference"]["epoch"]
     organization_receipt = organization_ledger.append(
         repository_receipt, "REPO_STATE_PROPAGATION", predecessor, successor,
-        {"operation": OPERATION_ID, "profile_id": PROFILE_ID,
+        {"operation": operation, "profile_id": profile_id,
          "disposition": evidence["disposition"],
-         "communication_id": evidence.get("communication_id")},
+         "communication_id": evidence.get("communication_id"), **dict(boundary_extra or {})},
         "NONE", hb_epoch=epoch, idempotent=True)
     return ({"repository_receipt": repository_receipt,
              "organization_receipt": organization_receipt}, prior is not None)
