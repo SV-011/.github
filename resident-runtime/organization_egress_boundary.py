@@ -331,12 +331,25 @@ def _refusal_result(record: Mapping[str, Any], appended: Mapping[str, Any]) -> d
     }
 
 
+EMIT_EPOCH_RETRY_ENTRYPOINT = "resident-runtime/organization_egress_boundary.py::emit (hb_epoch=)"
+
+
 def emit(destination_organization: Any, payload: Mapping[str, Any], *,
          standing: Mapping[str, Any], capability: str | None = None,
          transition_reference: str = "ecosystem.transition.interorg.v1",
          root: Path | None = None, mesh_root: Path | None = None,
          hb_epoch: int | None = None) -> dict[str, Any]:
-    """Emit an outbound crossing to a declared peer and record the disposition."""
+    """Emit an outbound crossing to a declared peer and record the disposition.
+
+    ``hb_epoch`` is checked first: an absent or invalid one is
+    ``SuppliedEpochRefused`` (six-field FAIL_CLOSED) before anything is built,
+    published or recorded. The frame references the supplied epoch; no clock is
+    read.
+    """
+    refusal = kernel.writer_epoch_refusal(hb_epoch, retry_entrypoint=EMIT_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is not None:
+        raise kernel.SuppliedEpochRefused(refusal)
+    hb_epoch = int(str(hb_epoch))
     origin = this_organization(root)
     try:
         unclosable = closability_refusal(payload or {})

@@ -31,6 +31,7 @@ kernel = _module("kernel", "org-kernel/kernel.py")
 emit = _module("repo_transition_emit", ".stegverse/transition-ledger/emit.py")
 aggregate = _module("aggregate_repo_transition", "resident-runtime/aggregate_repo_transition.py")
 ingress = _module("intr_destination_ingress", "resident-runtime/intr_destination_ingress.py")
+egress = _module("organization_egress_boundary", "resident-runtime/organization_egress_boundary.py")
 
 REGISTRY = json.loads((ROOT / "org-boundary/registry/services.json").read_text(encoding="utf-8"))
 GENESIS = {"mode": "ESTABLISH_GENESIS", "node_ref": "supplied-epoch-test", "predecessor": None}
@@ -220,6 +221,65 @@ class CapabilityAddressCarriesTheEpoch(Redirected):
         for reference in referenced:
             self.assertEqual(reference["epoch"], 37)
             self.assertIs(reference["derived_from_clock"], False)
+
+
+class EgressAndIngestRefuseFirst(Redirected):
+    """An epoch-taking path refuses an absent or invalid epoch before it builds or writes."""
+
+    REFUSED = ((None, "HB_EPOCH_NOT_SUPPLIED"),) + tuple((epoch, "HB_EPOCH_INVALID") for epoch in INVALID)
+
+    def frames(self):
+        directory = self.mesh / "frames.d"
+        return sorted(directory.glob("*.json")) if directory.is_dir() else []
+
+    def emit(self, epoch, identifier="egress-epoch"):
+        return egress.emit("StegVerse-org", diagnostic(identifier), standing=GENESIS,
+                           capability="intr-destination", mesh_root=self.mesh, hb_epoch=epoch)
+
+    def test_egress_refuses_before_it_publishes_or_records(self):
+        self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
+        for epoch, code in self.REFUSED:
+            with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
+                self.emit(epoch)
+            self.assertSixFieldRefusal(refused, code, "organization_egress_boundary.py::emit")
+        self.assertEqual(self.frames(), [])
+        self.assertEqual(self.written(), [])
+
+    def test_egress_takes_a_supplied_digit_string_epoch(self):
+        self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
+        emitted = self.emit("4096", "egress-4096")
+        self.assertEqual(emitted["disposition"], "ALLOW", emitted.get("detail"))
+        frame, = (json.loads(path.read_text(encoding="utf-8")) for path in self.frames())
+        self.assertEqual(frame["heartbeat_reference"]["epoch"], 4096)
+        self.assertIs(frame["heartbeat_reference"]["derived_from_clock"], False)
+        receipts = [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]
+        referenced = [item["hb_reference"] for item in receipts if "hb_reference" in item]
+        self.assertEqual(len(referenced), 2)
+        for reference in referenced:
+            self.assertEqual(reference["epoch"], 4096)
+            self.assertIs(reference["derived_from_clock"], False)
+
+    def test_ingest_refuses_an_absent_or_invalid_carrier_epoch_with_six_fields(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        packet = kernel.build_packet(
+            origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
+            destination_org="SV-011", destination_service=ADDRESS,
+            payload=diagnostic("ingest-epoch"), standing=GENESIS,
+            transition_reference="intr:transition:ingest-epoch",
+            authority_effect="NONE", packet_id="ingest-epoch")
+        stamped = kernel.carrier_frame(packet, epoch=37)
+        for epoch, code in self.REFUSED:
+            frame = json.loads(json.dumps(stamped))
+            if epoch is None:
+                del frame["heartbeat_reference"]["epoch"]
+            else:
+                frame["heartbeat_reference"]["epoch"] = epoch
+            body = {key: value for key, value in frame.items() if key != "frame_sha256"}
+            frame["frame_sha256"] = kernel.sha(body)
+            with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
+                kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
+            self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
+        self.assertEqual(self.written(), [])
 
 
 if __name__ == "__main__":

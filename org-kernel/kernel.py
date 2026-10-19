@@ -500,10 +500,8 @@ CARRIER_EPOCH_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sende
 
 
 def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
-    packet = recover_packet(frame)
-    registry = load_registry(root)
-    if frame["destination_org"] != registry["organization"]:
-        return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
+    # The carrier epoch is checked before the frame is recovered, so an absent,
+    # invalid or clock-derived one is the six-field refusal, not a bare ValueError.
     reference = frame.get("heartbeat_reference")
     epoch = reference.get("epoch") if isinstance(reference, dict) else None
     failure = supplied_epoch_failure(epoch, reference)
@@ -512,6 +510,10 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
         refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
         refusal["failure_code"], refusal["detail"] = failure
         raise SuppliedEpochRefused(refusal)
+    packet = recover_packet(frame)
+    registry = load_registry(root)
+    if frame["destination_org"] != registry["organization"]:
+        return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
     result = dispatch(root, packet, mesh_root=mesh_root, epoch=epoch)
     return {"status": "CONSUMED", "packet": packet, "execution_result": result}
 
