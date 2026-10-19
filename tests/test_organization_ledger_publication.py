@@ -35,7 +35,7 @@ BYTE_COPIES = {
     "org-boundary/runtime/intr_transport.py":
         "0f48bb46617aeba98b750eecd406d9ab157eb9e473aae583105dafd52ed7205c",
     "org-boundary/runtime/process_boundary.py":
-        "a5af99cbf166422e1c40c72eaafb64342c731398a6d434a055ea485aa3782d0e",
+        "a1fd668198d92da8c4f213699a248c6ab628b72ed057dfac561fe908439d7681",  # Data-Continuation/.github#10 @ac8d7ea
     "resident-runtime/org_boundary_runtime.py":
         "1fedfdf46e854935e60260dab839ebd17d23df538ddfd1d0948828e1a978fa0b",
 }

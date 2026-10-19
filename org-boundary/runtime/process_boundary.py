@@ -1,13 +1,31 @@
 #!/usr/bin/env python3
-import argparse, hashlib, json
+import argparse, hashlib, json, os, sys, tempfile
 from pathlib import Path
 KINDS=["INGRESS_ACCEPTED","DISPATCHED","CONSUMED","RESULT_BOUND","EGRESS_EMITTED"]
 def canon(v): return json.dumps(v,sort_keys=True,separators=(",",":")).encode()
 def hid(prefix,v): return prefix+"-"+hashlib.sha256(canon(v)).hexdigest()[:24]
 def load(path): return json.loads(Path(path).read_text())
+def fault(code,predicate,repair,terminal,status):
+ rec={"failure_code":code,"failed_predicate":predicate,"required_evidence_or_repair":repair,"retry_entrypoint":"python3 org-boundary/runtime/process_boundary.py "+" ".join(sys.argv[1:]),"owning_existing_goal":"org-boundary execution (.github/workflows/org-boundary-execution.yml)","next_attempt":"re-run retry_entrypoint after the repair; no partial --out file was left" if not terminal else "none until the input is repaired; re-running unchanged input fails identically","terminal":terminal}
+ sys.stderr.write(json.dumps(rec,sort_keys=True)+"\n"); raise SystemExit(status)
+def load_input(path,name):
+ try: v=load(path)
+ except (OSError,ValueError) as e: fault("PROCESS_BOUNDARY_INPUT_FAULT","INPUT_READABLE_JSON_OBJECT","provide a readable UTF-8 JSON object for --"+name+" ("+type(e).__name__+")",True,65)
+ if not isinstance(v,dict): fault("PROCESS_BOUNDARY_INPUT_FAULT","INPUT_READABLE_JSON_OBJECT","--"+name+" must be a JSON object, got "+type(v).__name__,True,65)
+ return v
+def write_atomic(out,text):
+ out=Path(out); out.parent.mkdir(parents=True,exist_ok=True); fd,tmp=tempfile.mkstemp(dir=out.parent,prefix="."+out.name+".",suffix=".tmp")
+ try:
+  with os.fdopen(fd,"w") as f: f.write(text)
+  m=os.umask(0); os.umask(m); os.chmod(tmp,0o666&~m)
+  os.replace(tmp,out)
+ except BaseException:
+  try: os.unlink(tmp)
+  except OSError: pass
+  raise
 def main():
  ap=argparse.ArgumentParser(); ap.add_argument("--envelope",required=True); ap.add_argument("--registry",default="org-boundary/registry/services.json"); ap.add_argument("--out",required=True); a=ap.parse_args()
- env=load(a.envelope); reg=load(a.registry)
+ env=load_input(a.envelope,"envelope"); reg=load_input(a.registry,"registry")
  req=["schema_version","packet_id","direction","origin","destination","carrier","intr_profile","transition","payload","evidence"]
  miss=[k for k in req if k not in env]
  if miss: raise SystemExit("missing:"+",".join(miss))
@@ -21,5 +39,7 @@ def main():
   subject={**base,"kind":kind,"previous_receipt_id":prev}; rid=hid(kind.lower(),subject)
   receipts.append({"kind":kind,"receipt_id":rid,"subject":svc["service_id"],"evidence_hash":hashlib.sha256(canon(subject)).hexdigest(),"previous_receipt_id":prev}); prev=rid
  result={"schema_version":reg["organization"].lower().replace(" ","-")+".boundary-execution.v1","packet_id":env["packet_id"],"organization":reg["organization"],"service_id":svc["service_id"],"consumed":True,"application_result":{"echo":env["payload"]},"authority_effect":env["transition"]["authority_effect"],"receipts":receipts,"reconstruction":{"same_execution_required":True,"status":"RECONSTRUCTED","terminal_receipt_id":prev}}
- Path(a.out).parent.mkdir(parents=True,exist_ok=True); Path(a.out).write_text(json.dumps(result,indent=2,sort_keys=True)+"\n"); print(json.dumps({"status":"PASS","terminal_receipt_id":prev}))
+ try: write_atomic(a.out,json.dumps(result,indent=2,sort_keys=True)+"\n")
+ except OSError as e: fault("PROCESS_BOUNDARY_WRITE_FAULT","OUT_PATH_WRITABLE","make --out a writable file path whose parent is a writable directory ("+type(e).__name__+")",False,75)
+ print(json.dumps({"status":"PASS","terminal_receipt_id":prev}))
 if __name__=="__main__": main()
