@@ -19,6 +19,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -630,6 +631,36 @@ CARRIER_EPOCH_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sende
                                   "with publish_packet(..., epoch=<digits >= 32>)")
 
 
+CARRIED_HEAD_SOURCE = "ORGANIZATION_LEDGER_HEAD"
+
+
+def inbound_carried_refusal(root: Path, reference: dict[str, Any], clock_flagged: bool) -> dict[str, Any] | None:
+    """CARRIED_PROVENANCE_UNVERIFIED for an inbound claim that is not genuine, or None for one that verifies.
+
+    Genuine means the writers' own check passes against this organization's
+    ledger (STEGVERSE_ORG_LEDGER_ROOT): source ORGANIZATION_LEDGER_HEAD,
+    derived_from_clock exactly false, head_receipt_sha the current sealed head,
+    whose supplied-rule epoch equals the frame's. No clock is read.
+    """
+    provenance = {key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}
+    configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
+    spec = importlib.util.spec_from_file_location("ledger_store", Path(root) / "resident-runtime/ledger_store.py")
+    store_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(store_module)
+    store = store_module.open_store(store_module.parse_locator(configured)) if configured else None
+    refusal = carried_provenance_refusal(provenance, {"epoch": int(str(reference.get("epoch")))}, store,
+                                         store_module.receipt_key, store_module.HEAD_KEY,
+                                         retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is None and (clock_flagged or reference.get("derived_from_clock") is not False
+                            or provenance["source"] != CARRIED_HEAD_SOURCE):
+        refusal = carried_provenance_refusal({"head_receipt_sha": None}, {}, store, store_module.receipt_key,
+                                             store_module.HEAD_KEY, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+        refusal["detail"] = ("a CARRIED claim must name source " + CARRIED_HEAD_SOURCE + " with derived_from_clock "
+                             "false; this one is " + repr({**provenance,
+                                                          "derived_from_clock": reference.get("derived_from_clock")}))
+    return refusal
+
+
 def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
     # The carrier epoch is checked before the frame is recovered, so an absent,
     # invalid or clock-derived one is the six-field refusal, not a bare ValueError.
@@ -648,8 +679,12 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     failure = supplied_epoch_failure(epoch) if clock_flagged else supplied_epoch_failure(epoch, reference)
     carried = failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS)
     if carried:
-        # The manifest declares accepts_carried_crossings: false for inbound frames (09:03Z, option 1). The
-        # claim is not judged forged: this destination takes a SUPPLIED epoch, and the sender re-sends one.
+        # The manifest declares accepts_carried_crossings: false for inbound frames (09:03Z, option 1). A claim
+        # that verifies against this organization's ledger head is genuine and not accepted here: the sender
+        # re-sends a SUPPLIED epoch. A forged, non-current or tampered claim is CARRIED_PROVENANCE_UNVERIFIED.
+        unverified = inbound_carried_refusal(root, reference, clock_flagged)
+        if unverified is not None:
+            raise SuppliedEpochRefused(unverified)
         failure = (CARRIED_NOT_ACCEPTED_BY_DESTINATION, "a carrier frame asserts CARRIED provenance "
                    + repr({key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}))
     if failure is not None:

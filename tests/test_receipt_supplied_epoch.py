@@ -402,18 +402,27 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertIs(refusal["derived_from_clock"], False)
         self.assertIs(refusal["consequence_committed"], False)
 
+    def assertCarriedUnverified(self, refused):
+        refusal = refused.exception.refusal
+        self.assertEqual(refusal["disposition"], "FAIL_CLOSED")
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+        self.assertEqual(refusal["failure_code"], "CARRIED_PROVENANCE_UNVERIFIED")
+        self.assertEqual(refusal["failed_predicate"], "CARRIED_EPOCH_IS_THE_VERIFIED_ORGANIZATION_LEDGER_HEAD_EPOCH")
+        self.assertIs(refusal["derived_from_clock"], False)
+
     def test_a_carrier_cannot_self_assert_carried_provenance(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         for marker, code in (({}, "HB_EPOCH_PROVENANCE_UNMARKED"),
-                             # bare-sampled is CLOCK (08:10Z); its CARRIED claim is still not accepted here
-                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "CARRIED_NOT_ACCEPTED_BY_DESTINATION"),
+                             # bare-sampled is CLOCK (08:10Z); its forged CARRIED claim is still unverified
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "CARRIED_PROVENANCE_UNVERIFIED"),
                              ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS, "derived_from_clock": False},
                               "HB_EPOCH_INVALID"),
-                             ({"derived_from_clock": False}, "CARRIED_NOT_ACCEPTED_BY_DESTINATION")):
+                             ({"derived_from_clock": False}, "CARRIED_PROVENANCE_UNVERIFIED")):
             with self.subTest(marker=marker), self.assertRaises(ValueError) as refused:
                 kernel.ingest_frame(ROOT, self.fabricated_carried_frame(**marker), mesh_root=self.mesh)
-            if code == "CARRIED_NOT_ACCEPTED_BY_DESTINATION":
-                self.assertCarriedNotAccepted(refused)
+            if code == "CARRIED_PROVENANCE_UNVERIFIED":
+                self.assertCarriedUnverified(refused)
             else:
                 self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
@@ -421,7 +430,8 @@ class EgressAndIngestRefuseFirst(Redirected):
     def test_a_real_carried_frame_is_not_accepted_and_is_not_called_forged(self):
         """09:03Z option (1): the manifest declares accepts_carried_crossings false for inbound frames. A frame
         whose CARRIED claim names this organization's real ledger head is CARRIED_NOT_ACCEPTED_BY_DESTINATION
-        (re-send SUPPLIED), never CARRIED_PROVENANCE_UNVERIFIED; nothing is written."""
+        (re-send SUPPLIED), never CARRIED_PROVENANCE_UNVERIFIED; a forged, non-current or tampered one stays
+        CARRIED_PROVENANCE_UNVERIFIED. Nothing is written either way."""
         manifest = json.loads((ROOT / "org-runtime/interlock-intr.json").read_text(encoding="utf-8"))
         sources = [source for operation in manifest["ingress"]["capability_endpoint_bindings"]
                    for source in operation["receiving_operation"]["hb_epoch_binding"]["sources"]
@@ -442,6 +452,29 @@ class EgressAndIngestRefuseFirst(Redirected):
             kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
         self.assertCarriedNotAccepted(refused)
         self.assertEqual(sorted(str(p) for p in self.written()), before)
+        # forged, non-current or tampered claims stay CARRIED_PROVENANCE_UNVERIFIED
+        ingress._recorded("ALLOW", {"communication_id": "head", "body": 2}, "head-next", 4096)
+        stale = head["receipt_sha256"]  # no longer the head
+        current = json.loads((Path(os.environ["STEGVERSE_ORG_LEDGER_ROOT"]) / "HEAD.json").read_text(
+            encoding="utf-8"))["receipt_sha256"]
+        before = sorted(str(p) for p in self.written())
+        for case, change in (("non-current head", {"head_receipt_sha": stale}),
+                             ("forged head", {"head_receipt_sha": "sha256:" + "f" * 64}),
+                             ("other epoch", {"head_receipt_sha": current, "epoch": 4097, "generation": 4097}),
+                             ("wrong source", {"head_receipt_sha": current, "source": "SOMEWHERE_ELSE"}),
+                             ("clock flag absent", {"head_receipt_sha": current, "derived_from_clock": None})):
+            with self.subTest(case=case):
+                claim = self.digit_string_frame("4096")
+                claim["heartbeat_reference"].update(derived_from_clock=False, source="ORGANIZATION_LEDGER_HEAD")
+                claim["heartbeat_reference"].update({k: v for k, v in change.items() if v is not None})
+                if "derived_from_clock" in change:
+                    claim["heartbeat_reference"].pop("derived_from_clock")
+                    claim["heartbeat_reference"]["sampled_unix_ns"] = kernel.HB_ANCHOR_UNIX_NS
+                claim["frame_sha256"] = kernel.sha({k: v for k, v in claim.items() if k != "frame_sha256"})
+                with self.assertRaises(ValueError) as refused:
+                    kernel.ingest_frame(ROOT, claim, mesh_root=self.mesh)
+                self.assertCarriedUnverified(refused)
+        self.assertEqual(sorted(str(p) for p in self.written()), before)
 
     def test_a_forged_carried_frame_writes_nothing_on_the_consume_route(self):
         """B-P36k: a forged CARRIED claim is never stripped and accepted as SUPPLIED on any route."""
@@ -450,7 +483,7 @@ class EgressAndIngestRefuseFirst(Redirected):
         name = kernel.publish_frame(forged, root=self.mesh).name
         result, = kernel.consume_addressed_frames(ROOT, mesh_root=self.mesh)
         self.assertEqual(result["result"]["failure_code"], "FRAME_REFUSED_QUARANTINED")
-        self.assertEqual(result["result"]["refusal_failure_code"], "CARRIED_NOT_ACCEPTED_BY_DESTINATION")
+        self.assertEqual(result["result"]["refusal_failure_code"], "CARRIED_PROVENANCE_UNVERIFIED")
         self.assertEqual(self.written(), [])  # no receipt at either ledger level
         files = sorted(str(p.relative_to(self.mesh)) for p in self.mesh.rglob("*") if p.is_file())
         self.assertEqual(files, ["frames.d/" + name, "quarantine.d/" + name])

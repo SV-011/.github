@@ -288,6 +288,42 @@ class Refusals(unittest.TestCase):
                     finally:
                         ledger.close()
 
+    def test_an_os_error_at_any_put_is_six_fields_not_a_traceback(self):
+        """V-P11 F-MT-TRACE-OS: a one-shot OSError at each of the append's four puts is MERGE_TRANSFER_WRITE_FAILED,
+        non-terminal; the next run appends once and verifies."""
+        real_write = Path.write_bytes
+        for fail_at in (1, 2, 3, 4):
+            with self.subTest(fail_at=fail_at):
+                ledger = Ledger(self.fixture)
+                try:
+                    root = ledger.root.resolve()
+                    writes = []
+
+                    def failing(path, data, _real=real_write):
+                        if root in Path(path).resolve().parents:
+                            writes.append(path)
+                            if len(writes) == fail_at:
+                                raise OSError(28, "No space left on device")
+                        return _real(path, data)
+                    Path.write_bytes = failing
+                    try:
+                        failed = mt.append_merge_transfer(self.fixture["commit"])
+                    finally:
+                        Path.write_bytes = real_write
+                    self.assertEqual(len(writes), fail_at)
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertIs(failed["terminal"], False)
+                    self.assertEqual(failed["failed_predicate"], "MERGE_TRANSFER_WRITES_THIS_REPOSITORYS_LEDGER:OSError")
+                    again = mt.append_merge_transfer(self.fixture["commit"])
+                    self.assertEqual(again["disposition"], "ALLOW", again)
+                    once = ledger.files()
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                    verified = mt.verify_merge_transfer(self.repo, self.merge)
+                    self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                finally:
+                    ledger.close()
+
     def test_the_cli_exits_non_zero_on_a_write_fault(self):
         from unittest import mock
         failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)

@@ -336,7 +336,7 @@ def append_merge_transfer(facts: Mapping[str, Any]) -> dict[str, Any]:
             boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]},
             hb_provenance=provenance)
     except Exception as exc:
-        if getattr(exc, "ledger_write_fault", False) is True:
+        if isinstance(exc, OSError) or getattr(exc, "ledger_write_fault", False) is True:
             # A fault writing our own ledger (lost comparison, contention, store collision): six fields, not a
             # traceback, and not terminal. The writers are idempotent, so the next run resumes without a duplicate.
             return refusal(WRITE_FAILED, "MERGE_TRANSFER_WRITES_THIS_REPOSITORYS_LEDGER:" + type(exc).__name__,
