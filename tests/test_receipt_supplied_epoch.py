@@ -221,10 +221,14 @@ class CapabilityAddressCarriesTheEpoch(Redirected):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         # The sender stamped the frame from a clock sample: derived_from_clock is true.
         self.publish("clock-stamped", now_ns=kernel.HB_ANCHOR_UNIX_NS + 5 * kernel.HB_PERIOD_NS)
-        with self.assertRaises(ValueError) as refused:
-            self.consume()
-        self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "kernel.py::ingest_frame")
-        self.assertIn("derived_from_clock", refused.exception.refusal["detail"])
+        result, = self.consume()
+        marker = result["result"]
+        self.assertEqual(marker["status"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(marker["failure_code"], "HB_EPOCH_INVALID")
+        self.assertIn("derived_from_clock", marker["detail"])
+        self.assertIn("kernel.py::ingest_frame", marker["retry_entrypoint"])
+        for field in SIX_FIELDS:
+            self.assertTrue(marker.get(field), field)
         self.assertEqual(self.written(), [])
 
     def test_a_consumed_frame_hands_its_carrier_epoch_to_both_writers(self):
@@ -694,6 +698,97 @@ class ConsumedRouteNeverReachesAClockDefault(Redirected):
         for reference in referenced:
             self.assertEqual(reference["epoch"], 4096)
             self.assertIs(reference["derived_from_clock"], False)
+
+
+class MixedBatchQuarantinesTheRefusedFrame(Redirected):
+    """B-P36j: a refused frame in a mixed batch is terminal and never blocks a valid one.
+
+    The refused frame gets one write-once six-field FRAME_REFUSED_QUARANTINED
+    marker (not a receipt) and is marked seen; the valid frame in the same batch
+    is consumed whichever of the two sorts first; a later cycle, even with a
+    fresh seen set, neither re-refuses nor re-consumes. No clock is read.
+    """
+
+    def frame(self, packet_id, **stamp):
+        packet = kernel.build_packet(
+            origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
+            destination_org="SV-011", destination_service=ADDRESS,
+            payload=diagnostic(packet_id), standing=GENESIS,
+            transition_reference="intr:transition:" + packet_id, authority_effect="NONE", packet_id=packet_id)
+        if "now_ns" in stamp:
+            return kernel.carrier_frame(packet, now_ns=stamp["now_ns"])
+        return kernel.carrier_frame(packet, epoch=stamp["epoch"])
+
+    def name(self, frame):
+        return kernel._frame_path(self.mesh, frame).name
+
+    def pair(self, refused_first):
+        """A clock-stamped frame and a valid one whose file names sort in the requested order."""
+        for index in range(64):
+            bad = self.frame("mixed-bad-%d" % index, now_ns=kernel.HB_ANCHOR_UNIX_NS + 3 * kernel.HB_PERIOD_NS)
+            good = self.frame("mixed-good-%d" % index, epoch=4096)
+            if (self.name(bad) < self.name(good)) == refused_first:
+                return bad, good
+        self.fail("no pair in the requested sort order")
+
+    def consume(self, seen=None):
+        return kernel.consume_addressed_frames(
+            ROOT, mesh_root=self.mesh, seen=seen,
+            repo_ledger_root=os.environ["STEGVERSE_REPO_LEDGER_ROOT"],
+            org_ledger_root=os.environ["STEGVERSE_ORG_LEDGER_ROOT"])
+
+    def run_batch(self, refused_first):
+        import datetime as real
+        import sys
+        import types
+        calls = []
+
+        class Raising(real.datetime):
+            @classmethod
+            def now(cls, *_a, **_k):
+                calls.append("now")
+                raise AssertionError("the batch read the clock")
+        shim = types.ModuleType("datetime")
+        shim.__dict__.update({n: getattr(real, n) for n in dir(real) if not n.startswith("__")})
+        shim.datetime = Raising
+        bad, good = self.pair(refused_first)
+        for frame in (bad, good):
+            kernel.publish_frame(frame, root=self.mesh)
+        sys.modules["datetime"] = shim
+        try:
+            seen = set()
+            results = self.consume(seen)
+            again = self.consume()  # a later cycle with a fresh seen set
+        finally:
+            sys.modules["datetime"] = real
+        self.assertEqual(calls, [])
+        self.assertEqual([r["path"].rsplit("/", 1)[1] for r in results], sorted([self.name(bad), self.name(good)]))
+        by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
+        marker = by_name[self.name(bad)]
+        self.assertEqual(marker["status"], "FRAME_REFUSED_QUARANTINED")
+        self.assertIs(marker["terminal"], True)
+        self.assertIs(marker["is_a_receipt"], False)
+        for field in SIX_FIELDS:
+            self.assertTrue(marker.get(field), field)
+        on_disk = json.loads((self.mesh / "quarantine.d" / self.name(bad)).read_text(encoding="utf-8"))
+        self.assertEqual(on_disk, marker)
+        consumed = by_name[self.name(good)]
+        self.assertEqual(consumed["status"], "CONSUMED")
+        operation = consumed["execution_result"]["application_result"]["receiving_operation_result"]
+        self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+        self.assertEqual(seen, {self.name(bad), self.name(good)})
+        # the next cycle does not re-refuse the quarantined frame; only the consumed one is offered again
+        self.assertEqual([r["path"].rsplit("/", 1)[1] for r in again], [self.name(good)])
+        receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+        for reference in [r["hb_reference"] for r in receipts if "hb_reference" in r]:
+            self.assertEqual(reference["epoch"], 4096)
+            self.assertIs(reference["derived_from_clock"], False)
+
+    def test_the_refused_frame_sorting_first_does_not_block_the_batch(self):
+        self.run_batch(refused_first=True)
+
+    def test_the_refused_frame_sorting_second_is_quarantined(self):
+        self.run_batch(refused_first=False)
 
 
 class NoUnmarkedClockOnAnyRoute(Redirected):

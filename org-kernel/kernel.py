@@ -395,10 +395,11 @@ def scan_addressed_frames(organization: str, *, root: Path | None = None,
     directory = resolved / "frames.d"
     if not directory.is_dir():
         return []
-    consumed = seen or set()
+    consumed = seen if seen is not None else set()
+    quarantined = resolved / QUARANTINE_DIRECTORY
     found = []
     for path in sorted(directory.glob("*.json")):
-        if path.name in consumed:
+        if path.name in consumed or (quarantined / path.name).is_file():
             continue
         frame = json.loads(path.read_text(encoding="utf-8"))
         if frame.get("destination_org") == organization:
@@ -620,6 +621,34 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     return {"status": "CONSUMED", "packet": packet, "execution_result": result}
 
 
+QUARANTINE_DIRECTORY = "quarantine.d"
+FRAME_REFUSED_QUARANTINED = "FRAME_REFUSED_QUARANTINED"
+
+
+def quarantine_frame(item: dict[str, Any], refusal: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
+    """Write the terminal seen marker of a refused frame and return it. It is a marker, not a receipt.
+
+    It carries the refusal's six fields. It is write-once and keyed by the frame
+    file, so a later scan skips the frame instead of refusing it on every cycle.
+    No clock is read.
+    """
+    resolved, _provenance = resolve_federation_root(mesh_root)
+    frame = item["frame"]
+    marker = {"schema": "stegverse.frame-quarantine/v1", "status": FRAME_REFUSED_QUARANTINED,
+              "terminal": True, "frame": item["name"], "frame_sha256": frame.get("frame_sha256"),
+              "packet_id": frame.get("packet_id"), "is_a_receipt": False,
+              **{key: refusal[key] for key in ("disposition", "failure_code", "failed_predicate", "detail",
+                                               "required_evidence_or_repair", "retry_entrypoint",
+                                               "owning_existing_goal", "next_attempt")},
+              "derived_from_clock": False, "consequence_committed": False}
+    path = resolved / QUARANTINE_DIRECTORY / item["name"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(marker, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    if not path.is_file():
+        path.write_text(rendered, encoding="utf-8")
+    return marker
+
+
 def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
                              seen: set[str] | None = None, node_state_root: Path | None = None,
                              repo_ledger_root: Path | None = None,
@@ -633,8 +662,14 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     """
     del node_state_root, repo_ledger_root, org_ledger_root
     registry = load_registry(repo_root)
+    seen = seen if seen is not None else set()
     results = []
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
-        result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+        try:
+            result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+        except SuppliedEpochRefused as refused:
+            # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
+            result = quarantine_frame(item, refused.refusal, mesh_root=mesh_root)
+        seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})
     return results
