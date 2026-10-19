@@ -345,7 +345,9 @@ def append_merge_transfer(facts: Mapping[str, Any]) -> dict[str, Any]:
                            "the organization ledger store accepts the append",
                            "the next push or dispatch of the merge-transfer transition", repository=repo,
                            merge_commit=facts["merge_commit"], retry_entrypoint=APPEND_ENTRYPOINT,
-                           terminal=False, detail=type(exc).__name__ + ": " + str(exc))
+                           terminal=False, consequence_committed="UNDETERMINED_RETRY_IS_IDEMPOTENT",
+                           detail=type(exc).__name__ + ": " + str(exc) + "; part of the append may be committed "
+                           "(a receipt or HEAD); the retry is idempotent and returns the recorded receipt")
         if not isinstance(exc, ValueError):
             raise
         code = COLLISION if str(exc) == "ledger_receipt_collision" else WRITER_REFUSED
@@ -486,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
             # The appends are committed; only the result file failed. Six fields, never a traceback.
             print(json.dumps(ingress.repository_ledger.kernel.result_write_refusal(
                 exc, RESULT_WRITE_FAILED, "resident-runtime/merge_transfer.py " + args.command
-                + " --out <writable path>"), indent=2, sort_keys=True))
+                + " --out <writable path>", committed=args.command == "append"), indent=2, sort_keys=True))
             return 1
     expected = args.expect if args.command == "verify" else ALLOW
     for result in results:

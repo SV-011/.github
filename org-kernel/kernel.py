@@ -802,10 +802,12 @@ def input_refusal(cli: str, argument: str, exc: BaseException, retry_entrypoint:
             "terminal": True, "derived_from_clock": False, "consequence_committed": False}
 
 
-def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str) -> dict[str, Any]:
+def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str, *,
+                         committed: bool = True) -> dict[str, Any]:
     """The non-terminal six-field record for a CLI whose result file (--out) could not be written.
 
-    The transition itself is already recorded; the re-run is idempotent. No clock is read.
+    ``committed``: the transition was recorded before the result write (an
+    append); the re-run is idempotent and returns it. No clock is read.
     """
     return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
             "failed_predicate": "OUT_FILE_ACCEPTS_THE_RESULT:" + type(exc).__name__,
@@ -815,25 +817,28 @@ def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint
             "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
             "next_attempt": "re-run the same invocation; it is idempotent",
             "status": "PENDING", "terminal": False,
-            "derived_from_clock": False, "consequence_committed": False}
+            "derived_from_clock": False, "consequence_committed": committed}
 
 
 def own_state_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str,
                             next_attempt: str) -> dict[str, Any]:
     """The non-terminal six-field FAIL_CLOSED for a fault writing this repository's own state.
 
-    The writers are idempotent and their writes atomic, so the retry resumes
-    without a duplicate. No clock is read.
+    The fault may fall after a write committed (F-POST-HEAD: HEAD replaced, then
+    a later step faults), so the record does not claim nothing was published.
+    The writers are idempotent and their writes atomic, so the retry returns
+    what was recorded and appends no second receipt. No clock is read.
     """
     return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
             "failed_predicate": "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:" + type(exc).__name__,
-            "detail": type(exc).__name__ + ": " + str(exc),
+            "detail": type(exc).__name__ + ": " + str(exc) + "; part of the write may be committed (a receipt or "
+                      "HEAD); the retry is idempotent and returns the recorded receipt",
             "required_evidence_or_repair": "this repository's ledger, receipt and outbox stores accept writes",
             "retry_entrypoint": retry_entrypoint,
             "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
             "next_attempt": next_attempt,
             "status": "PENDING", "terminal": False,
-            "derived_from_clock": False, "consequence_committed": False}
+            "derived_from_clock": False, "consequence_committed": "UNDETERMINED_RETRY_IS_IDEMPOTENT"}
 
 
 QUARANTINE_DIRECTORY = "quarantine.d"

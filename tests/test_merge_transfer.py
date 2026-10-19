@@ -424,6 +424,43 @@ class Refusals(unittest.TestCase):
         finally:
             ledger.close()
 
+    def test_a_fault_after_head_is_replaced_appends_no_second_receipt(self):
+        """F-POST-HEAD: an OSError after HEAD's replace; the record does not claim nothing was written, and the
+        re-run returns the recorded receipt and appends no second one."""
+        real_replace = os.replace
+        for fail_at in (1, 2):
+            with self.subTest(fail_at=fail_at):
+                ledger = Ledger(self.fixture)
+                try:
+                    root, heads = ledger.root.resolve(), []
+
+                    def replace_then_fault(source, target, _real=real_replace):
+                        _real(source, target)
+                        target = Path(target).resolve()
+                        if target.name == "HEAD.json" and root in target.parents:
+                            heads.append(target)
+                            if len(heads) == fail_at:
+                                raise OSError(5, "Input/output error (directory fsync)")
+                    os.replace = replace_then_fault
+                    try:
+                        failed = mt.append_merge_transfer(self.fixture["commit"])
+                    finally:
+                        os.replace = real_replace
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertNotEqual(failed["consequence_committed"], False)
+                    self.assertIn("may be committed", failed["detail"])
+                    again = mt.append_merge_transfer(self.fixture["commit"])
+                    self.assertEqual(again["disposition"], "ALLOW", again)
+                    self.assertTrue(again["replayed"])
+                    once = ledger.files()
+                    org = [k for k, v in once.items() if k.startswith("receipts/")
+                           and json.loads(v).get("repo_receipt_sha256") == again["repository_receipt_sha256"]]
+                    self.assertEqual(len(org), 1)
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                finally:
+                    ledger.close()
+
     def test_the_cli_exits_non_zero_on_a_write_fault(self):
         from unittest import mock
         failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)

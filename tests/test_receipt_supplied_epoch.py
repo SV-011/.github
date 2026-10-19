@@ -1480,6 +1480,47 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 self.assertEqual(consumed[self.name(later)]["status"], "CONSUMED")
                 self.assertConsistentChains()
 
+    def test_a_fault_after_head_is_replaced_appends_no_second_receipt(self):
+        """F-POST-HEAD: HEAD is replaced, then the durability step faults (OSError). The record says part of the
+        write may be committed, not that nothing was; the next cycle returns the recorded receipt (replayed) and
+        appends no second one."""
+        roots = [Path(os.environ[name]).resolve() for name in self.ROOTS]
+        real_replace = os.replace
+        for fail_at in (1, 2):  # 1: the repository HEAD; 2: the organization HEAD
+            with self.subTest(fail_at=fail_at):
+                good = self.frame("post-head-%d" % fail_at, epoch=4096)
+                kernel.publish_frame(good, root=self.mesh)
+                heads = []
+
+                def replace_then_fault(source, target, _real=real_replace):
+                    _real(source, target)
+                    target = Path(target).resolve()
+                    if target.name == "HEAD.json" and any(root in target.parents for root in roots):
+                        heads.append(target)
+                        if len(heads) == fail_at:
+                            raise OSError(5, "Input/output error (directory fsync)")
+                os.replace = replace_then_fault
+                try:
+                    [faulted] = [r for r in self.consume(set()) if r["path"].endswith(self.name(good))]
+                finally:
+                    os.replace = real_replace
+                record = faulted["result"]
+                self.assertEqual(record["failure_code"], "FRAME_DISPATCH_IO_FAILED")
+                self.assertIs(record["terminal"], False)
+                self.assertNotEqual(record["consequence_committed"], False)  # never "nothing was published"
+                self.assertIn("may be committed", record["detail"])
+                self.assertNotIn("nothing was written", json.dumps(record))
+                [again] = [r for r in self.consume(set()) if r["path"].endswith(self.name(good))]
+                operation = again["result"]["execution_result"]["application_result"]["receiving_operation_result"]
+                self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+                self.assertIs(operation["transition_replayed"], True)  # the recorded receipt, returned
+                receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+                ours = [r for r in receipts if str(r.get("transition_id", "")).endswith("post-head-%d" % fail_at)]
+                self.assertEqual(len(ours), 1)
+                bound = [r for r in receipts if r.get("repo_receipt_sha256") == ours[0]["receipt_sha256"]]
+                self.assertEqual(len(bound), 1)
+                self.assertConsistentChains()
+
     def assertConsistentChains(self):
         """HEAD names a sealed receipt, and walking previous_receipt_sha256 from it reaches every receipt."""
         for name in self.ROOTS:
