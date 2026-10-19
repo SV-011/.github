@@ -837,6 +837,41 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
             self.assertEqual(reference["epoch"], 4096)
             self.assertIs(reference["derived_from_clock"], False)
 
+    def malformed_clock_frame(self, packet_id, epoch):
+        frame = self.frame(packet_id, now_ns=kernel.HB_ANCHOR_UNIX_NS + 3 * kernel.HB_PERIOD_NS)
+        if epoch is None:
+            del frame["heartbeat_reference"]["epoch"]
+        else:
+            frame["heartbeat_reference"]["epoch"] = epoch
+        frame["frame_sha256"] = kernel.sha({k: v for k, v in frame.items() if k != "frame_sha256"})
+        return frame
+
+    def test_a_malformed_clock_flagged_frame_is_quarantined_in_either_order(self):
+        """F-S1a: a derived-true frame with a bad epoch is six-field INVALID and quarantined, never aborts."""
+        for bad_epoch in ("abc", None, 5):
+            for refused_first in (True, False):
+                with self.subTest(epoch=bad_epoch, refused_first=refused_first):
+                    for directory in ("frames.d", "quarantine.d"):
+                        for path in (self.mesh / directory).glob("*.json") if (self.mesh / directory).is_dir() else []:
+                            path.unlink()
+                    for index in range(64):
+                        bad = self.malformed_clock_frame("malformed-%s-%d" % (bad_epoch, index), bad_epoch)
+                        good = self.frame("malformed-good-%s-%d" % (bad_epoch, index), epoch=4096)
+                        if (self.name(bad) < self.name(good)) == refused_first:
+                            break
+                    for frame in (bad, good):
+                        kernel.publish_frame(frame, root=self.mesh)
+                    results = self.consume(set())
+                    by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
+                    marker = by_name[self.name(bad)]
+                    self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                    self.assertEqual(marker["refusal_failure_code"],
+                                     "HB_EPOCH_NOT_SUPPLIED" if bad_epoch is None else "HB_EPOCH_INVALID")
+                    for field in SIX_FIELDS:
+                        self.assertTrue(marker.get(field), field)
+                    self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                    self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
     def test_the_refused_frame_sorting_first_does_not_block_the_batch(self):
         self.run_batch(refused_first=True)
 

@@ -610,7 +610,9 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     # one refuses HB_EPOCH_NOT_SUPPLIED. Unmarked and other invalid references
     # are still refused here, as is a self-asserted CARRIED claim.
     clock_flagged = isinstance(reference, dict) and reference.get("derived_from_clock") is True
-    failure = None if clock_flagged else supplied_epoch_failure(epoch, reference)
+    # A clock-flagged frame lends no epoch, but its epoch must still be well-formed (the rule's
+    # digit and anchor check, without the reference), so a bad one is refused with six fields.
+    failure = supplied_epoch_failure(epoch) if clock_flagged else supplied_epoch_failure(epoch, reference)
     if failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS):
         # A carrier cannot assert CARRIED: only a writer verifying the ledger head records it.
         failure = (CARRIED_PROVENANCE_UNVERIFIED, "a carrier frame asserts CARRIED provenance "
