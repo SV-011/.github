@@ -100,8 +100,6 @@ jobs:
         with:
           ref: refs/stegverse/organization-ledger
           path: .published-ledger
-          # the whole chain: the readback walks it, and a shallow copy cannot be fetched into the temp ledger
-          fetch-depth: 0
           persist-credentials: false
 
       - name: 'Verify: bind the designated ref, copy the published ledger into a temporary ledger, read it back'
@@ -120,8 +118,11 @@ jobs:
           namespace=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["namespace"])' "$locators")
           before=$(git -C .published-ledger rev-parse HEAD)
           dry="$RUNNER_TEMP/verify-ledger.git"
-          git init -q --bare "$dry"
-          git --git-dir="$dry" fetch -q --no-tags "$GITHUB_WORKSPACE/.published-ledger" "+HEAD:$LEDGER_REF"
+          # The ledger checkout is shallow (its tree holds every receipt); a shallow
+          # repository cannot be fetched from, so the temporary ledger is a copy of it.
+          cp -a .published-ledger/.git "$dry"
+          git --git-dir="$dry" config core.bare true
+          git --git-dir="$dry" update-ref "$LEDGER_REF" HEAD
           test "$(git --git-dir="$dry" rev-parse "$LEDGER_REF")" = "$before"
           mkdir -p "$RUNNER_TEMP/results"
           python3 resident-runtime/organization_ledger_readback.py \
