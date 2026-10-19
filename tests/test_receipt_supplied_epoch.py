@@ -1009,5 +1009,58 @@ class NoUnmarkedClockOnAnyRoute(Redirected):
         self.assertEqual(self.written(), [])
 
 
+class ManifestEpochBindings(unittest.TestCase):
+    """B-P36n: every epoch-requiring entrypoint the manifest declares has a declared epoch binding,
+    and every declared dispatcher actually passes it."""
+
+    MANIFEST = ROOT / "org-runtime/interlock-intr.json"
+
+    def operations(self):
+        document = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
+        receiving = [entry["receiving_operation"] for entry in document["ingress"]["capability_endpoint_bindings"]]
+        return receiving + [document["egress"]["emitting_operation"]]
+
+    def test_every_epoch_requiring_entrypoint_is_bound(self):
+        for operation in self.operations():
+            with self.subTest(operation=operation["operation_id"]):
+                binding = operation.get("hb_epoch_binding")
+                self.assertIsInstance(binding, dict, "MANIFEST_ENTRYPOINT_LACKS_EPOCH_BINDING")
+                self.assertIs(binding["required"], True)
+                self.assertEqual(binding["rule"], "org-kernel/kernel.py::supplied_epoch_failure")
+                self.assertTrue(binding["sources"])
+                for source in binding["sources"]:
+                    self.assertIn(source["from"], ("carrier_frame", "dispatch_input", "caller_argument"))
+
+    def test_each_declared_dispatcher_passes_the_epoch(self):
+        for operation in self.operations():
+            for source in operation["hb_epoch_binding"]["sources"]:
+                if source["from"] != "dispatch_input":
+                    continue
+                with self.subTest(dispatcher=source["dispatcher"]):
+                    workflow = (ROOT / source["dispatcher"]).read_text(encoding="utf-8")
+                    self.assertIn("      " + source["input"] + ":\n", workflow)
+                    self.assertIn(source["env"] + ": ${{ inputs." + source["input"] + " }}", workflow)
+                    self.assertIn("python3 " + source["entrypoint"], workflow)
+
+    def test_each_caller_argument_is_a_real_parameter(self):
+        import inspect
+        for operation in self.operations():
+            for source in operation["hb_epoch_binding"]["sources"]:
+                if source["from"] != "caller_argument":
+                    continue
+                for entrypoint in source["entrypoints"]:
+                    path, name = entrypoint.split("::")
+                    module = _module("manifest_" + name, path)
+                    with self.subTest(entrypoint=entrypoint):
+                        self.assertIn(source["parameter"], inspect.signature(getattr(module, name)).parameters)
+
+    def test_each_carrier_frame_source_is_the_ingest_path(self):
+        for operation in self.operations():
+            for source in operation["hb_epoch_binding"]["sources"]:
+                if source["from"] == "carrier_frame":
+                    self.assertEqual(source["via"], "org-kernel/kernel.py::ingest_frame")
+                    self.assertTrue(callable(kernel.ingest_frame))
+
+
 if __name__ == "__main__":
     unittest.main()
