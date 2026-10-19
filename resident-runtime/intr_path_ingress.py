@@ -204,9 +204,6 @@ def consume(inbound: Path | str = INBOUND) -> list[dict[str, Any]]:
     rows = load_inbound(inbound)
     if not rows:
         return []
-    epoch, failed = mt.head_epoch(mt.org_store())
-    if failed is not None:
-        return [{**failed, "schema": RESULT_SCHEMA}]
     out = []
     for row in rows:
         pid, cid = row.get("path_id"), row.get("communication_id")
@@ -220,6 +217,10 @@ def consume(inbound: Path | str = INBOUND) -> list[dict[str, Any]]:
         if existing is not None:
             ok = verify_destination_pair(existing, existing_repo, checked)
             out.append({**ok, "replayed": True} if ok["disposition"] == ALLOW else ok)
+            continue
+        epoch, failed = mt.head_epoch(mt.org_store())   # read only when a row is to be appended
+        if failed is not None:
+            out.append({**failed, "schema": RESULT_SCHEMA, "path_id": pid, "communication_id": cid})
             continue
         evidence = ingress_evidence(checked)
         try:

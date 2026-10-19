@@ -36,7 +36,7 @@ def load(name, relative):
 pi = load("intr_path_ingress_under_test", "resident-runtime/intr_path_ingress.py")
 DESTINATION = pi.organization()
 SOURCE = "SV-011" if DESTINATION != "SV-011" else "StegVerse-org"
-OTHER = "SV-LLM"
+OTHER = "SV-LLM" if DESTINATION != "SV-LLM" else "StegGhost"
 PID = SOURCE + "->" + DESTINATION + ":intr-destination"
 CID = "intr-path-v1:" + SOURCE + "->" + DESTINATION
 
