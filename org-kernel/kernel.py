@@ -484,6 +484,20 @@ def build_packet(*, origin_org: str, origin_service: str, destination_org: str,
 PUBLISH_EPOCH_RETRY_ENTRYPOINT = "org-kernel/kernel.py::publish_packet (epoch=<digits >= 32>)"
 
 
+def frames_for_packet(packet_id: str, *, root: Path | None = None) -> list[dict[str, Any]]:
+    """The frames already published for ``packet_id``. An unreadable file is not one of them."""
+    resolved, _provenance = resolve_federation_root(root)
+    found = []
+    for path in sorted((resolved / MESH_FRAME_PREFIX).glob("*.json")):
+        try:
+            frame = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if isinstance(frame, dict) and frame.get("packet_id") == packet_id:
+            found.append(frame)
+    return found
+
+
 def publish_packet(packet: dict[str, Any], *, root: Path | None = None,
                    now_ns: int | None = None, epoch: int | None = None) -> dict[str, Any]:
     """Publish a packet in a carrier frame.

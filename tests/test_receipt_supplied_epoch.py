@@ -269,6 +269,45 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertEqual(self.frames(), [])
         self.assertEqual(self.written(), [])
 
+    def test_egress_publishes_one_frame_per_packet_id(self):
+        """V-P11 F-REPUB (egress): a retry with a different epoch is a six-field EMIT_PACKET_ID_COLLISION before
+        anything is published or written; a byte-identical retry is a no-op. Exactly one frame either way."""
+        self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
+        first = self.emit(4096, "egress-once")
+        self.assertEqual(first["disposition"], "ALLOW", first.get("detail"))
+        frames, written = self.frames(), sorted(str(p) for p in self.written())
+        self.assertEqual(len(frames), 1)
+        replay = self.emit(4096, "egress-once")
+        self.assertEqual(replay["disposition"], "ALLOW", replay.get("detail"))
+        self.assertEqual(replay["frame_sha256"], first["frame_sha256"])
+        self.assertEqual(self.frames(), frames)
+        self.assertEqual(sorted(str(p) for p in self.written()), written)
+        for epoch in (4097, "4100"):
+            with self.subTest(epoch=epoch):
+                refused = self.emit(epoch, "egress-once")
+                self.assertEqual(refused["disposition"], "FAIL_CLOSED")
+                self.assertEqual(refused["failure_code"], "EMIT_PACKET_ID_COLLISION")
+                self.assertEqual(refused["failed_predicate"], "ONE_PACKET_ID_PUBLISHES_ONE_FRAME")
+                self.assertIs(refused["emitted"], False)
+                self.assertIs(refused["terminal"], True)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refused.get(field), field)
+                self.assertEqual(self.frames(), frames)  # still exactly one frame
+                self.assertEqual(sorted(str(p) for p in self.written()), written)
+        # the frame alone (its receipt not yet written) also binds the packet id
+        for path in self.written():
+            path.unlink()
+        refused = self.emit(4097, "egress-once")
+        self.assertEqual(refused["failure_code"], "EMIT_PACKET_ID_COLLISION")
+        self.assertEqual(self.frames(), frames)
+        # and the emission receipt alone (its frame gone from the mesh) binds it too
+        self.assertEqual(self.emit(4096, "egress-receipt")["disposition"], "ALLOW")
+        for path in set(self.frames()) - set(frames):
+            path.unlink()
+        refused = self.emit(4097, "egress-receipt")
+        self.assertEqual(refused["failure_code"], "EMIT_PACKET_ID_COLLISION")
+        self.assertEqual(self.frames(), frames)
+
     def test_egress_takes_a_supplied_digit_string_epoch(self):
         self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
         emitted = self.emit("4096", "egress-4096")
