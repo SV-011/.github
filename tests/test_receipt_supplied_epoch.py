@@ -391,7 +391,8 @@ class EgressAndIngestRefuseFirst(Redirected):
     def test_a_carrier_cannot_self_assert_carried_provenance(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         for marker, code in (({}, "HB_EPOCH_PROVENANCE_UNMARKED"),
-                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "HB_EPOCH_INVALID"),
+                             # bare-sampled is CLOCK (08:10Z), but its CARRIED claim is still refused
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "CARRIED_PROVENANCE_UNVERIFIED"),
                              ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS, "derived_from_clock": False},
                               "HB_EPOCH_INVALID"),
                              ({"derived_from_clock": False}, "CARRIED_PROVENANCE_UNVERIFIED")):
@@ -872,6 +873,44 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                     self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
+    def bare_sampled_frame(self, packet_id, epoch="keep"):
+        frame = self.frame(packet_id, now_ns=kernel.HB_ANCHOR_UNIX_NS + 3 * kernel.HB_PERIOD_NS)
+        reference = frame["heartbeat_reference"]
+        del reference["derived_from_clock"]
+        if epoch is None:
+            del reference["epoch"]
+        elif epoch != "keep":
+            reference["epoch"] = epoch
+        frame["frame_sha256"] = kernel.sha({k: v for k, v in frame.items() if k != "frame_sha256"})
+        return frame
+
+    def test_a_bare_sampled_frame_is_clock_consumed_and_quarantined(self):
+        """08:10Z: a bare-sampled frame is CLOCK — consumed, no epoch lent, NOT_SUPPLIED, quarantined;
+        a malformed one is INVALID / NOT_SUPPLIED, quarantined; the valid frame is answered either way."""
+        for bad_epoch, code in (("keep", "HB_EPOCH_NOT_SUPPLIED"), ("abc", "HB_EPOCH_INVALID"),
+                                (5, "HB_EPOCH_INVALID"), (None, "HB_EPOCH_NOT_SUPPLIED")):
+            for refused_first in (True, False):
+                with self.subTest(epoch=bad_epoch, refused_first=refused_first):
+                    for directory in ("frames.d", "quarantine.d"):
+                        if (self.mesh / directory).is_dir():
+                            for path in (self.mesh / directory).glob("*.json"):
+                                path.unlink()
+                    for index in range(64):
+                        bad = self.bare_sampled_frame("bare-%s-%d" % (bad_epoch, index), bad_epoch)
+                        good = self.frame("bare-good-%s-%d" % (bad_epoch, index), epoch=4096)
+                        if (self.name(bad) < self.name(good)) == refused_first:
+                            break
+                    for frame in (bad, good):
+                        kernel.publish_frame(frame, root=self.mesh)
+                    by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
+                    marker = by_name[self.name(bad)]
+                    self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                    self.assertEqual(marker["refusal_failure_code"], code)
+                    for field in SIX_FIELDS:
+                        self.assertTrue(marker.get(field), field)
+                    self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                    self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
     def test_the_refused_frame_sorting_first_does_not_block_the_batch(self):
         self.run_batch(refused_first=True)
 
@@ -951,12 +990,21 @@ class NoUnmarkedClockOnAnyRoute(Redirected):
             kernel.ingest_frame(ROOT, clocked, mesh_root=self.mesh)
         self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_NOT_SUPPLIED")
         self.assertEqual(self.written(), [])
-        unmarked = json.loads(json.dumps(clocked))
-        del unmarked["heartbeat_reference"]["derived_from_clock"]
+        # bare-sampled (no flag, sampled_unix_ns): CLOCK at ingest (08:10Z), consumed with no epoch lent
+        bare = json.loads(json.dumps(clocked))
+        del bare["heartbeat_reference"]["derived_from_clock"]
+        bare["frame_sha256"] = kernel.sha({k: v for k, v in bare.items() if k != "frame_sha256"})
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, bare, mesh_root=self.mesh)
+        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_NOT_SUPPLIED")
+        self.assertEqual(self.written(), [])
+        # UNMARKED (no flag and no sample) is still refused at ingest
+        unmarked = json.loads(json.dumps(bare))
+        del unmarked["heartbeat_reference"]["sampled_unix_ns"]
         unmarked["frame_sha256"] = kernel.sha({k: v for k, v in unmarked.items() if k != "frame_sha256"})
         with self.assertRaises(ValueError) as refused:
             kernel.ingest_frame(ROOT, unmarked, mesh_root=self.mesh)
-        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_INVALID")  # sampled → CLOCK
+        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_PROVENANCE_UNMARKED")
         self.assertIn("kernel.py::ingest_frame", refused.exception.refusal["retry_entrypoint"])
         self.assertEqual(self.written(), [])
 

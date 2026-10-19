@@ -609,7 +609,10 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     # frame-only publisher's) is consumed but lends no epoch; a route that needs
     # one refuses HB_EPOCH_NOT_SUPPLIED. Unmarked and other invalid references
     # are still refused here, as is a self-asserted CARRIED claim.
-    clock_flagged = isinstance(reference, dict) and reference.get("derived_from_clock") is True
+    # A bare-sampled reference (no flag, sampled_unix_ns present) is CLOCK too (lead, 08:10Z).
+    clock_flagged = isinstance(reference, dict) and (
+        reference.get("derived_from_clock") is True
+        or ("derived_from_clock" not in reference and "sampled_unix_ns" in reference))
     # A clock-flagged frame lends no epoch, but its epoch must still be well-formed (the rule's
     # digit and anchor check, without the reference), so a bad one is refused with six fields.
     failure = supplied_epoch_failure(epoch) if clock_flagged else supplied_epoch_failure(epoch, reference)
