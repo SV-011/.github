@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -280,6 +282,47 @@ class EgressAndIngestRefuseFirst(Redirected):
                 kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
             self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
+
+
+class CliEpochIsTheSharedRule(Redirected):
+    """``--hb-epoch`` is text checked by the shared rule, not argparse ``int()``."""
+
+    def run_cli(self, epoch):
+        command = [sys.executable, str(ROOT / "resident-runtime/intr_destination_ingress.py"),
+                   "--self-closure", "--communication-id", "cli-epoch", "--packet-id", "cli-epoch",
+                   "--registry", str(ROOT / "org-boundary/registry/services.json")]
+        if epoch is not None:
+            command += ["--hb-epoch", epoch]
+        environment = {key: value for key, value in os.environ.items() if key != "STEGVERSE_HB_EPOCH"}
+        return subprocess.run(command, capture_output=True, text=True, env=environment, cwd=ROOT)
+
+    def test_a_coerced_or_absent_cli_epoch_refuses_with_six_fields_and_writes_nothing(self):
+        for epoch, code in ((None, "HB_EPOCH_NOT_SUPPLIED"), ("+33", "HB_EPOCH_INVALID"),
+                            ("\uff13\uff13", "HB_EPOCH_INVALID"), (" 33", "HB_EPOCH_INVALID"),
+                            ("True", "HB_EPOCH_INVALID"), ("abc", "HB_EPOCH_INVALID"),
+                            ("33.7", "HB_EPOCH_INVALID")):
+            with self.subTest(epoch=epoch):
+                ran = self.run_cli(epoch)
+                self.assertNotEqual(ran.returncode, 0)
+                refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                self.assertEqual(refusal["disposition"], "FAIL_CLOSED")
+                self.assertEqual(refusal["failure_code"], code)
+                self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+                self.assertIn("intr_destination_ingress.py --hb-epoch", refusal["retry_entrypoint"])
+        self.assertEqual(self.written(), [])
+
+    def test_a_digit_string_cli_epoch_is_accepted(self):
+        ran = self.run_cli("4096")
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertEqual(json.loads(ran.stdout)["disposition"], "ALLOW")
+        receipts = [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]
+        referenced = [item["hb_reference"] for item in receipts if "hb_reference" in item]
+        self.assertEqual(len(referenced), 2)
+        for reference in referenced:
+            self.assertEqual(reference["epoch"], 4096)
+            self.assertIs(reference["derived_from_clock"], False)
 
 
 if __name__ == "__main__":

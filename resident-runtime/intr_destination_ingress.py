@@ -292,6 +292,10 @@ def receive(payload: Any, *, registry: Mapping[str, Any], standing: Mapping[str,
     return _recorded(ALLOW, payload, packet_id, hb_epoch)
 
 
+CLI_EPOCH_RETRY_ENTRYPOINT = ("resident-runtime/intr_destination_ingress.py --hb-epoch <digits >= 32> "
+                              "(or STEGVERSE_HB_EPOCH)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--self-closure", action="store_true",
@@ -300,13 +304,21 @@ def main() -> int:
     parser.add_argument("--payload", type=Path, default=None)
     parser.add_argument("--registry", type=Path, required=True)
     parser.add_argument("--packet-id", default=os.environ.get("STEGVERSE_PACKET_ID"))
-    parser.add_argument("--hb-epoch", type=int, default=None)
+    # Read as text and checked by the shared rule: argparse's int() would admit
+    # "+33", " 33" or a fullwidth "３３" as 33.
+    parser.add_argument("--hb-epoch", type=str, default=None,
+                        help="the supplied heartbeat epoch: ASCII digits >= 32 (or STEGVERSE_HB_EPOCH)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     registry = json.loads(args.registry.read_text(encoding="utf-8"))
     hb_epoch = args.hb_epoch
     if hb_epoch is None and os.environ.get("STEGVERSE_HB_EPOCH"):
-        hb_epoch = int(os.environ["STEGVERSE_HB_EPOCH"])
+        hb_epoch = os.environ["STEGVERSE_HB_EPOCH"]
+    refusal = repository_ledger.kernel.writer_epoch_refusal(
+        hb_epoch, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is not None:
+        print(json.dumps(refusal, sort_keys=True))
+        return 2
     if args.self_closure:
         if not args.communication_id or not args.packet_id:
             parser.error("--self-closure requires communication_id and packet_id")
