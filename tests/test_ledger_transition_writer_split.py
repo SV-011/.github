@@ -50,6 +50,19 @@ MAIN_DISPATCH_ENV = """    env:
 """
 
 
+#: action pins (M-P9) mapped back to the tags main d7beaf59 used, so the digest still binds every other byte.
+ACTION_PINS = {
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4": "actions/checkout@v4",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4": "actions/upload-artifact@v4",
+}
+
+
+def unpin(step: str) -> str:
+    for pinned, tag in ACTION_PINS.items():
+        step = step.replace(pinned, tag)
+    return step
+
+
 WRITE_KEY = re.compile(r"(?m)^\s+contents:\s*write\s*$")
 WRITE_ALL = re.compile(r"(?m)^\s*permissions:\s*write-all\s*$")
 
@@ -110,7 +123,7 @@ class WriterSplit(unittest.TestCase):
                                        + MAIN_DISPATCH_ENV), job[:300])
 
     def test_the_writer_steps_are_the_dispatch_steps_of_main(self):
-        now = [s.rstrip() for s in steps(jobs(self.writer)["transition"])]
+        now = [unpin(s).rstrip() for s in steps(jobs(self.writer)["transition"])]
         self.assertEqual(hashlib.sha256("\n".join(now).encode()).hexdigest(), MAIN_DISPATCH_STEPS_SHA256)
 
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
