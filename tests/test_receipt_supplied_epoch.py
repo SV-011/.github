@@ -368,7 +368,7 @@ class EgressAndIngestRefuseFirst(Redirected):
     def test_a_carrier_cannot_self_assert_carried_provenance(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         for marker, code in (({}, "HB_EPOCH_PROVENANCE_UNMARKED"),
-                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "HB_EPOCH_PROVENANCE_UNMARKED"),
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "HB_EPOCH_INVALID"),
                              ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS, "derived_from_clock": False},
                               "HB_EPOCH_INVALID"),
                              ({"derived_from_clock": False}, "CARRIED_PROVENANCE_UNVERIFIED")):
