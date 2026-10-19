@@ -408,6 +408,41 @@ class Refusals(unittest.TestCase):
                 finally:
                     ledger.close()
 
+    def test_an_oversized_or_malformed_commit_token_is_terminal_before_any_git_call(self):
+        """V-P11 D-3: a ~200 KB token (or any non-hex token) in --commits-file / --commit is a terminal six-field
+        MERGE_TRANSFER_INPUT_INVALID before git runs: no E2BIG traceback, nothing written."""
+        for token in ("f" * 200000, "HEAD; rm -rf /", "ABCDEF01", "abc"):
+            with self.subTest(token=token[:12]):
+                ledger = Ledger(self.fixture)
+                try:
+                    before = ledger.files()
+                    listing = ledger.root / "commits.txt"
+                    listing.write_text(token + "\n", encoding="utf-8")
+                    for command in (["append"], ["verify"], ["verify", "--expect", "FAIL_CLOSED"]):
+                        ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"),
+                                              *command, "--commits-file", str(listing)],
+                                             capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+                        self.assertEqual(ran.returncode, 1, ran.stderr[-400:])
+                        self.assertNotIn("Traceback", ran.stderr)
+                        refusals = json.loads(ran.stdout)
+                        self.assertEqual(len(refusals), len(token.split()))
+                        for refused in refusals:
+                            self._six(refused, mt.INPUT_INVALID)
+                            self.assertIs(refused["terminal"], True)
+                    listing.unlink()
+                    self.assertEqual(ledger.files(), before)
+                finally:
+                    ledger.close()
+
+    def test_an_os_error_reading_the_clone_is_non_terminal_exit_75(self):
+        from unittest import mock
+        with mock.patch.object(mt, "commit_facts", side_effect=OSError(7, "Argument list too long")), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(mt.main(["append", "--commit", self.merge]), 75)
+        [record] = json.loads(printed.call_args_list[0].args[0])
+        self._six(record, mt.GIT_READ_FAILED)
+        self.assertIs(record["terminal"], False)
+
     def test_verify_with_an_unwritable_out_is_six_fields_not_a_traceback(self):
         ledger = Ledger(self.fixture)
         try:

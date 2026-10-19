@@ -74,6 +74,9 @@ WRITER_REFUSED = "LEDGER_WRITER_REFUSED"
 WRITE_FAILED = "MERGE_TRANSFER_WRITE_FAILED"
 RESULT_WRITE_FAILED = "MERGE_TRANSFER_RESULT_WRITE_FAILED"
 COMMIT_NOT_IN_REPOSITORY = "MERGE_TRANSFER_COMMIT_NOT_IN_REPOSITORY"
+INPUT_INVALID = "MERGE_TRANSFER_INPUT_INVALID"
+GIT_READ_FAILED = "MERGE_TRANSFER_GIT_READ_FAILED"
+COMMIT_TOKEN = re.compile(r"[0-9a-f]{4,40}")
 APPEND_ENTRYPOINT = "resident-runtime/merge_transfer.py append"
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -462,8 +465,28 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     results = []
     for commit in commits:
+        if not COMMIT_TOKEN.fullmatch(commit):
+            # Checked before any git call: an oversized or malformed token never reaches argv (E2BIG).
+            results.append(refusal(INPUT_INVALID, "SUPPLIED_COMMIT_IS_A_HEX_OBJECT_NAME",
+                                   "supply commits as 4-40 lowercase hex characters",
+                                   "none with this input; nothing was read or written",
+                                   repository=repository(), terminal=True,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command
+                                   + " --commit <hex commit>",
+                                   detail="commit token of " + str(len(commit)) + " characters: "
+                                   + repr(commit[:64]) + ("..." if len(commit) > 64 else "")))
+            continue
         try:
             facts = commit_facts(commit)
+        except OSError as exc:
+            # Our own fault reading the clone (git missing, E2BIG, EIO): non-terminal, exit 75.
+            results.append(refusal(GIT_READ_FAILED, "THIS_CLONE_ANSWERS_GIT_CAT_FILE:" + type(exc).__name__,
+                                   "a clone and a git executable this run can read",
+                                   "re-run the same invocation; nothing was read or written",
+                                   repository=repository(), merge_commit=commit, terminal=False,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command,
+                                   detail=type(exc).__name__ + ": " + str(exc)))
+            continue
         except subprocess.CalledProcessError as exc:
             # An input defect: the commit is not in this clone. Six fields, terminal, never a traceback.
             results.append(refusal(COMMIT_NOT_IN_REPOSITORY, "THE_NAMED_COMMIT_IS_IN_THE_CLONE",
@@ -490,9 +513,11 @@ def main(argv: list[str] | None = None) -> int:
                 exc, RESULT_WRITE_FAILED, "resident-runtime/merge_transfer.py " + args.command
                 + " --out <writable path>", committed=args.command == "append"), indent=2, sort_keys=True))
             return 1
+    if any(result.get("failure_code") == GIT_READ_FAILED for result in results):
+        return 75
     expected = args.expect if args.command == "verify" else ALLOW
     for result in results:
-        if result["disposition"] != expected or result.get("failure_code") == COMMIT_NOT_IN_REPOSITORY:
+        if result["disposition"] != expected or result.get("failure_code") in (COMMIT_NOT_IN_REPOSITORY, INPUT_INVALID):
             return 1
         if expected == FAIL_CLOSED and not all(result.get(f) for f in SIX_FIELDS):
             return 1
