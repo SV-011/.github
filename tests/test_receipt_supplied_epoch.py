@@ -225,9 +225,9 @@ class CapabilityAddressCarriesTheEpoch(Redirected):
         marker = result["result"]
         self.assertEqual(marker["status"], "REFUSED")
         self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
-        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_INVALID")
-        self.assertIn("derived_from_clock", marker["detail"])
-        self.assertIn("kernel.py::ingest_frame", marker["retry_entrypoint"])
+        # Narrow S1: a clock-flagged frame is consumed but lends no epoch, so the writer refuses NOT_SUPPLIED
+        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_NOT_SUPPLIED")
+        self.assertIn("emit.py::append", marker["retry_entrypoint"])
         for field in SIX_FIELDS:
             self.assertTrue(marker.get(field), field)
         self.assertEqual(self.written(), [])
@@ -799,7 +799,7 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         marker = by_name[self.name(bad)]
         self.assertEqual(marker["status"], "REFUSED")
         self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
-        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_INVALID")
+        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_NOT_SUPPLIED")  # consumed, no epoch lent
         self.assertIs(marker["terminal"], True)
         self.assertIs(marker["is_a_receipt"], False)
         for field in SIX_FIELDS:
@@ -887,13 +887,23 @@ class NoUnmarkedClockOnAnyRoute(Redirected):
         self.assertEqual(self.calls, ["now"])
         self.assertIs(reference["derived_from_clock"], True)
         self.assertLess(abs(reference["sampled_unix_ns"] - self.FIXED_NS), 1000)  # float clock sample
-        # the frame-only default writes no receipt, and its clock frame is refused at ingest
+        # the frame-only default writes no receipt. Under narrow S1 its clock-flagged frame is consumed but
+        # lends no epoch, so the epoch-needing writer refuses NOT_SUPPLIED before writing; an UNMARKED
+        # copy of the same frame is still refused at ingest.
         self.assertEqual(self.written(), [])
         frame = self.frame_to("SV-011", ADDRESS)
         clocked = kernel.carrier_frame(kernel.recover_packet(frame), now_ns=self.FIXED_NS)
         with self.assertRaises(ValueError) as refused:
             kernel.ingest_frame(ROOT, clocked, mesh_root=self.mesh)
-        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_INVALID")
+        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_NOT_SUPPLIED")
+        self.assertEqual(self.written(), [])
+        unmarked = json.loads(json.dumps(clocked))
+        del unmarked["heartbeat_reference"]["derived_from_clock"]
+        unmarked["frame_sha256"] = kernel.sha({k: v for k, v in unmarked.items() if k != "frame_sha256"})
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, unmarked, mesh_root=self.mesh)
+        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_INVALID")  # sampled → CLOCK
+        self.assertIn("kernel.py::ingest_frame", refused.exception.refusal["retry_entrypoint"])
         self.assertEqual(self.written(), [])
 
 

@@ -605,7 +605,12 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     # invalid or clock-derived one is the six-field refusal, not a bare ValueError.
     reference = frame.get("heartbeat_reference")
     epoch = reference.get("epoch") if isinstance(reference, dict) else None
-    failure = supplied_epoch_failure(epoch, reference)
+    # Narrow S1 (lead, 07:48Z): a frame flagged derived_from_clock true (a WU-B13
+    # frame-only publisher's) is consumed but lends no epoch; a route that needs
+    # one refuses HB_EPOCH_NOT_SUPPLIED. Unmarked and other invalid references
+    # are still refused here, as is a self-asserted CARRIED claim.
+    clock_flagged = isinstance(reference, dict) and reference.get("derived_from_clock") is True
+    failure = None if clock_flagged else supplied_epoch_failure(epoch, reference)
     if failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS):
         # A carrier cannot assert CARRIED: only a writer verifying the ledger head records it.
         failure = (CARRIED_PROVENANCE_UNVERIFIED, "a carrier frame asserts CARRIED provenance "
@@ -619,8 +624,9 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     registry = load_registry(root)
     if frame["destination_org"] != registry["organization"]:
         return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
-    result = dispatch(root, packet, mesh_root=mesh_root, epoch=int(str(epoch)))
-    return {"status": "CONSUMED", "packet": packet, "execution_result": result}
+    lent = None if clock_flagged else int(str(epoch))
+    result = dispatch(root, packet, mesh_root=mesh_root, epoch=lent)
+    return {"status": "CONSUMED", "packet": packet, "execution_result": result, "epoch_lent": lent is not None}
 
 
 QUARANTINE_DIRECTORY = "quarantine.d"
@@ -670,9 +676,13 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
         try:
             result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
-        except SuppliedEpochRefused as refused:
+        except ValueError as refused:
             # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
-            result = quarantine_frame(item, refused.refusal, mesh_root=mesh_root)
+            # A writer's refusal comes from its own kernel copy, so it is matched by its six fields.
+            refusal = getattr(refused, "refusal", None)
+            if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
+                raise
+            result = quarantine_frame(item, refusal, mesh_root=mesh_root)
         seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})
     return results
