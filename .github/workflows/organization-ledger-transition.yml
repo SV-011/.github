@@ -16,6 +16,7 @@ on:
       - 'resident-runtime/intr_destination_ingress.py'
       - 'tests/test_organization_ledger_publication.py'
       - 'tests/test_intr_destination_capability.py'
+      - 'tests/test_transition_job_runs_on_every_event.py'
       - '.github/workflows/organization-ledger-transition.yml'
   push:
     branches: [main]
@@ -27,6 +28,7 @@ on:
       - 'resident-runtime/intr_destination_ingress.py'
       - 'tests/test_organization_ledger_publication.py'
       - 'tests/test_intr_destination_capability.py'
+      - 'tests/test_transition_job_runs_on_every_event.py'
       - '.github/workflows/organization-ledger-transition.yml'
   workflow_dispatch:
     inputs:
@@ -47,8 +49,10 @@ on:
 # ORGANIZATION_LEDGER_LOCK: one appender at a time. The push is the
 # compare-and-swap against the published ref, so a writer that lost the race
 # fails closed instead of overwriting.
+# A verify run (any event but workflow_dispatch) appends nothing, so it takes its
+# own group and cannot displace a pending appender.
 concurrency:
-  group: organization-ledger
+  group: organization-ledger${{ github.event_name != 'workflow_dispatch' && format('-verify-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -64,10 +68,11 @@ jobs:
           persist-credentials: false
 
       - name: Validate ledger contracts, self-closure, and readback on a redirected root
-        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_intr_destination_capability -v
+        run: python3 -m unittest tests.test_organization_ledger_publication tests.test_intr_destination_capability tests.test_transition_job_runs_on_every_event -v
 
   transition:
-    if: github.event_name == 'workflow_dispatch'
+    # Runs on every event. Only workflow_dispatch reaches the steps that append
+    # and push; every other event runs the verify steps below.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -77,10 +82,75 @@ jobs:
       STEGVERSE_PACKET_ID: ${{ inputs.packet_id }}
       STEGVERSE_HB_EPOCH: ${{ inputs.hb_epoch }}
     steps:
+      # On pull_request and push this job runs a VERIFY instead of being
+      # skipped (the PR-safe transition variant, as StegVerse-Labs/.github#3251):
+      # both checkouts keep no credential, the published ledger is copied into a
+      # temporary ledger and read back through the same readback, and nothing is
+      # appended or pushed. The self-closure append needs the dispatch-supplied
+      # communication_id and hb_epoch; none is synthesized.
+      - name: Checkout organization boundary (verify, no persisted credential)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout the published ledger ref (verify, no persisted credential)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/stegverse/organization-ledger
+          path: .published-ledger
+          persist-credentials: false
+
+      - name: 'Verify: bind the designated ref, copy the published ledger into a temporary ledger, read it back'
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          for dir in . .published-ledger; do
+            if git -C "$dir" config --local --get-regexp '^http\..*\.extraheader$' >/dev/null; then
+              echo '{"disposition":"FAIL_CLOSED","failure_code":"VERIFY_CREDENTIAL_PERSISTED","failed_predicate":"VERIFY_RUN_HOLDS_NO_PERSISTED_CREDENTIAL","required_evidence_or_repair":"the verify checkouts must use persist-credentials: false","retry_entrypoint":".github/workflows/organization-ledger-transition.yml","owning_existing_goal":"StegVerse-org/.github#162","next_attempt":"restore persist-credentials: false and re-run; nothing was appended"}'
+              exit 1
+            fi
+          done
+          locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
+          ref=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ref"])' "$locators")
+          test "$ref" = "$LEDGER_REF"
+          namespace=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["namespace"])' "$locators")
+          before=$(git -C .published-ledger rev-parse HEAD)
+          dry="$RUNNER_TEMP/verify-ledger.git"
+          git init -q --bare "$dry"
+          git --git-dir="$dry" fetch -q --no-tags "$GITHUB_WORKSPACE/.published-ledger" "+HEAD:$LEDGER_REF"
+          test "$(git --git-dir="$dry" rev-parse "$LEDGER_REF")" = "$before"
+          mkdir -p "$RUNNER_TEMP/results"
+          python3 resident-runtime/organization_ledger_readback.py \
+            --location "git+$dry#$LEDGER_REF" \
+            --repository-namespace "$namespace" \
+            --out "$RUNNER_TEMP/results/readback.json" > /dev/null
+          python3 - <<'PY'
+          import json, os
+          r = json.load(open(os.environ["RUNNER_TEMP"] + "/results/readback.json"))
+          summary = {k: r.get(k) for k in ("disposition", "chain_length", "head_receipt_sha256",
+                                           "every_receipt_verifies_against_its_body")}
+          print(json.dumps({"mode": "VERIFY", "ledger": "TEMPORARY_COPY", "append_attempted": False,
+                            "published": False, **summary}, sort_keys=True))
+          if r.get("disposition") != "ALLOW" or r.get("every_receipt_verifies_against_its_body") is not True:
+              raise SystemExit(1)
+          PY
+          # the copy is untouched by the readback
+          test "$(git --git-dir="$dry" rev-parse "$LEDGER_REF")" = "$before"
+          {
+            echo "### organization ledger verify (temporary copy; no append; nothing published)"
+            echo '```json'
+            python3 -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/results/readback.json")); print(json.dumps({k: r.get(k) for k in ("disposition","chain_length","head_receipt_sha256")}, indent=2))'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout organization boundary
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
 
       - name: Bind the designated organization ledger ref
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
@@ -101,6 +171,7 @@ jobs:
           fi
 
       - name: Append the intr-destination diagnostic self-closure
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -130,6 +201,7 @@ jobs:
             "$RUNNER_TEMP/results/ingress.json"
 
       - name: Publish the ledger ref (fast-forward only)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet "$LEDGER_REF" >/dev/null; then
@@ -142,6 +214,7 @@ jobs:
           fi
 
       - name: Read the organization and repository ledgers back from a fresh fetch
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           fresh="$RUNNER_TEMP/readback.git"
