@@ -140,13 +140,14 @@ def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, s
         return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
     if int(text) < 32:
         return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
-    if reference is not None and "derived_from_clock" not in reference \
-            and not (reference.get("source") and reference.get("head_receipt_sha")):
-        return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference has no derived_from_clock and no CARRIED provenance"
+    if reference is not None and "derived_from_clock" not in reference:
+        return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference has no derived_from_clock"
     if reference is not None and "derived_from_clock" in reference \
             and reference["derived_from_clock"] is not False:
         return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
                                     "a clock-derived epoch is not a supplied one")
+    if reference is not None and "sampled_unix_ns" in reference:
+        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference carries sampled_unix_ns: a clock marker"
     return None
 
 class SuppliedEpochRefused(ValueError):
@@ -602,6 +603,10 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     reference = frame.get("heartbeat_reference")
     epoch = reference.get("epoch") if isinstance(reference, dict) else None
     failure = supplied_epoch_failure(epoch, reference)
+    if failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS):
+        # A carrier cannot assert CARRIED: only a writer verifying the ledger head records it.
+        failure = (CARRIED_PROVENANCE_UNVERIFIED, "a carrier frame asserts CARRIED provenance "
+                   + repr({key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}))
     if failure is not None:
         # The writer's six-field shape, with the carrier's own failure code and detail.
         refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)

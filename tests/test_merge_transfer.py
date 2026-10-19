@@ -220,7 +220,8 @@ class Refusals(unittest.TestCase):
                 else:
                     ledger.write(key, reseal(receipt))
                 before = ledger.files()
-                self._six(mt.append_merge_transfer(self.fixture["commit"]), mt.EPOCH_UNOBSERVED)
+                self._six(mt.append_merge_transfer(self.fixture["commit"]),
+                          mt.PROVENANCE_UNMARKED if mutate == "clock_flag_absent" else mt.EPOCH_UNOBSERVED)
                 self.assertEqual(ledger.files(), before, mutate)
             finally:
                 ledger.close()

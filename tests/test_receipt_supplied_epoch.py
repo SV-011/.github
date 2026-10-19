@@ -341,13 +341,41 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertSixFieldRefusal(refused, "HB_EPOCH_PROVENANCE_UNMARKED", "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
 
-    def test_the_shared_rule_refuses_an_unmarked_reference_unless_carried(self):
+    def test_the_shared_rule_refuses_an_unmarked_reference(self):
         self.assertEqual(kernel.supplied_epoch_failure(40, {"epoch": 40})[0], "HB_EPOCH_PROVENANCE_UNMARKED")
         self.assertIsNone(kernel.supplied_epoch_failure(40, {"epoch": 40, "derived_from_clock": False}))
+        # a carrier cannot self-assert CARRIED: source + sha without the flag is still unmarked
+        self.assertEqual(kernel.supplied_epoch_failure(
+            40, {"epoch": 40, "source": "ORGANIZATION_LEDGER_HEAD", "head_receipt_sha": "sha256:1"})[0],
+            "HB_EPOCH_PROVENANCE_UNMARKED")
+        self.assertEqual(kernel.supplied_epoch_failure(
+            40, {"epoch": 40, "sampled_unix_ns": 1, "derived_from_clock": False})[0], "HB_EPOCH_INVALID")
         self.assertIsNone(kernel.supplied_epoch_failure(
-            40, {"epoch": 40, "source": "ORGANIZATION_LEDGER_HEAD", "head_receipt_sha": "sha256:1"}))
+            40, {"epoch": 40, "derived_from_clock": False, "source": "ORGANIZATION_LEDGER_HEAD",
+                 "head_receipt_sha": "sha256:1"}))
         self.assertEqual(kernel.supplied_epoch_failure(40, {"epoch": 40, "derived_from_clock": True})[0],
                          "HB_EPOCH_INVALID")
+
+    def fabricated_carried_frame(self, **marker):
+        frame = self.digit_string_frame("4096")
+        reference = frame["heartbeat_reference"]
+        reference.pop("derived_from_clock")
+        reference.update({"source": "ORGANIZATION_LEDGER_HEAD", "head_receipt_sha": "sha256:" + "f" * 64}, **marker)
+        body = {key: value for key, value in frame.items() if key != "frame_sha256"}
+        frame["frame_sha256"] = kernel.sha(body)
+        return frame
+
+    def test_a_carrier_cannot_self_assert_carried_provenance(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        for marker, code in (({}, "HB_EPOCH_PROVENANCE_UNMARKED"),
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "HB_EPOCH_PROVENANCE_UNMARKED"),
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS, "derived_from_clock": False},
+                              "HB_EPOCH_INVALID"),
+                             ({"derived_from_clock": False}, "CARRIED_PROVENANCE_UNVERIFIED")):
+            with self.subTest(marker=marker), self.assertRaises(ValueError) as refused:
+                kernel.ingest_frame(ROOT, self.fabricated_carried_frame(**marker), mesh_root=self.mesh)
+            self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
+        self.assertEqual(self.written(), [])
 
     def test_ingest_takes_a_digit_string_carrier_epoch(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)

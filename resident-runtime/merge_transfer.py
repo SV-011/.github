@@ -179,6 +179,7 @@ def store_module() -> Any:
 
 
 HEAD_EPOCH_SOURCE = "ORGANIZATION_LEDGER_HEAD"
+PROVENANCE_UNMARKED = "HB_EPOCH_PROVENANCE_UNMARKED"
 
 
 def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
@@ -203,6 +204,12 @@ def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
         return unobserved("the organization ledger head receipt is absent or unsealed")
     reference = receipt.get("hb_reference")
     epoch = reference.get("epoch") if isinstance(reference, Mapping) else None
+    if isinstance(reference, dict) and "derived_from_clock" not in reference:
+        return None, refusal(PROVENANCE_UNMARKED, "MERGE_TRANSFER_EPOCH_IS_THE_LEDGER_HEAD_SUPPLIED_EPOCH",
+                             "the organization ledger head receipt's hb_reference must say derived_from_clock "
+                             "exactly false; an unmarked one is never a carried epoch",
+                             "re-run the push's merge-transfer workflow once the head is marked; nothing was written",
+                             detail="head hb_reference " + repr(reference) + " has no derived_from_clock")
     if type(epoch) is not int or not isinstance(reference, dict) or reference.get("derived_from_clock") is not False \
             or ingress.repository_ledger.kernel.supplied_epoch_failure(epoch, reference) is not None:
         return unobserved("head hb_reference " + repr(reference) + " is not a carried supplied-rule epoch")
