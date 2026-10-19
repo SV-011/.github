@@ -405,6 +405,15 @@ def pushed_commits(before: str, after: str, pending_path: Path | str | None, git
     return out
 
 
+def selection_refusal(message: str, retry_entrypoint: str) -> dict[str, Any]:
+    """Six fields for a commit selection refused by ``pending`` or ``pushed_commits`` (terminal)."""
+    code = message.split(":", 1)[-1].strip().split(" ", 1)[0] or "COMMIT_SELECTION_REFUSED"
+    return refusal(code, "THE_PUSH_NAMES_A_READABLE_SELECTION_OF_COMMITS_ON_MAIN",
+                   "supply a pending manifest of this repository and a pushed range on main",
+                   "none with this input; nothing was written", retry_entrypoint=retry_entrypoint,
+                   terminal=True, detail=message)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -420,12 +429,31 @@ def main(argv: list[str] | None = None) -> int:
         if name == "verify":
             p.add_argument("--expect", choices=(ALLOW, FAIL_CLOSED), default=ALLOW)
     args = parser.parse_args(argv)
+    kernel = ingress.repository_ledger.kernel
+    retry = "resident-runtime/merge_transfer.py " + args.command
     if args.command == "commits":
-        print("\n".join(pushed_commits(args.before, args.after, args.pending)))
+        try:
+            selected = pushed_commits(args.before, args.after, args.pending)
+        except (*kernel.INPUT_FAULTS, KeyError, TypeError, AttributeError) as exc:
+            # stdout is the commit list a workflow redirects; the six-field record goes to stderr.
+            print(json.dumps(kernel.input_refusal("MERGE_TRANSFER", "--pending", exc, retry + " --pending <file>"),
+                             sort_keys=True), file=sys.stderr)
+            return 1
+        except SystemExit as exc:
+            if not isinstance(exc.code, str):
+                raise
+            print(json.dumps(selection_refusal(exc.code, retry), sort_keys=True), file=sys.stderr)
+            return 1
+        print("\n".join(selected))
         return 0
     commits = list(args.commit)
     if args.commits_file:
-        commits += Path(args.commits_file).read_text(encoding="utf-8").split()
+        try:
+            commits += Path(args.commits_file).read_text(encoding="utf-8").split()
+        except kernel.INPUT_FAULTS as exc:
+            print(json.dumps([kernel.input_refusal("MERGE_TRANSFER", "--commits-file", exc,
+                                                   retry + " --commits-file <file>")], indent=2, sort_keys=True))
+            return 1
     if not commits:
         print(json.dumps(refusal(FACTS_INVALID, "A_PUSH_NAMES_ITS_COMMITS", "name at least one commit",
                                  "re-run with --commit or --commits-file; nothing was done"), indent=2))

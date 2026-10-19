@@ -246,6 +246,9 @@ def _refusal(location: str, exc: BaseException) -> dict[str, Any]:
         "failed_predicate": getattr(exc, "failed_predicate", "ORGANIZATION_LEDGER_READS_BACK"),
         "detail": getattr(exc, "detail", str(exc)),
         "retry_entrypoint": RETRY,
+        "required_evidence_or_repair": "a ledger locator that reads back, and readable --ingress-result / "
+                                       "--designated-locators inputs",
+        "owning_existing_goal": "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
         "next_attempt": "fetch the ledger ref again and rerun the readback; the readback writes nothing",
         "authority_constraint": "NONE_READBACK_ONLY",
         "time_constraint": "HEARTBEAT_EPOCH",
@@ -273,7 +276,8 @@ def main() -> int:
             if args.ingress_result is not None:
                 ingress = json.loads(args.ingress_result.read_text(encoding="utf-8"))
             result, code = readback(args.location, ingress, args.repository_namespace), 0
-    except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError) as exc:
+    except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError, KeyError, TypeError,
+            AttributeError) as exc:
         result, code = _refusal(location, exc), 1
     text = json.dumps(result, indent=2, sort_keys=True)
     print(text)

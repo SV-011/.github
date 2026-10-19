@@ -461,6 +461,73 @@ class EgressAndIngestRefuseFirst(Redirected):
                     self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["disposition"], "ALLOW")
                     self.assertEqual(sorted(str(p) for p in self.written()), before)  # idempotent: no new receipt
 
+    def test_every_supplied_input_file_fault_is_terminal_six_fields(self):
+        """V-P11 (never a traceback): every CLI input argument, when missing, a directory, not JSON, not UTF-8 or the
+        wrong shape, gives a terminal six-field *_INPUT_UNREADABLE / *_INPUT_INVALID, exits non-zero, writes nothing,
+        and prints no traceback."""
+        self.mesh.mkdir(parents=True, exist_ok=True)
+        bad = {"missing": self.mesh / "absent.json", "directory": Path(tempfile.mkdtemp(dir=self.mesh))}
+        for name, content in (("not-json", b"{not json"), ("not-utf8", b"\xff\xfe{}"), ("list", b"[1, 2]")):
+            bad[name] = self.mesh / (name + ".json")
+            bad[name].write_bytes(content)
+        registry = str(ROOT / "org-boundary/registry/services.json")
+        ingress_cli = str(ROOT / "resident-runtime/intr_destination_ingress.py")
+        merge_cli = str(ROOT / "resident-runtime/merge_transfer.py")
+        probe_cli = str(ROOT / "resident-runtime/run_phase5_probe.py")
+        cases = (
+            ("registry", lambda f: [ingress_cli, "--self-closure", "--communication-id", "c", "--packet-id", "p",
+                                    "--registry", f, "--hb-epoch", "4096"], "INTR_INGRESS", "REGISTRY", "stdout"),
+            ("payload", lambda f: [ingress_cli, "--registry", registry, "--payload", f, "--hb-epoch", "4096"],
+             "INTR_INGRESS", "PAYLOAD", "stdout"),
+            ("commits-file", lambda f: [merge_cli, "append", "--commits-file", f], "MERGE_TRANSFER", "COMMITS_FILE",
+             "stdout"),
+            ("verify commits-file", lambda f: [merge_cli, "verify", "--commits-file", f], "MERGE_TRANSFER",
+             "COMMITS_FILE", "stdout"),
+            ("pending", lambda f: [merge_cli, "commits", "--after", "HEAD", "--pending", f], "MERGE_TRANSFER",
+             "PENDING", "stderr"),
+            ("request", lambda f: [probe_cli, "--request", f, "--evidence-dir", str(self.mesh / "evidence"),
+                                   "--runtime-observer", "t"], "PHASE5_PROBE", "REQUEST", "stdout"),
+        )
+        environment = {k: v for k, v in os.environ.items() if k != "STEGVERSE_HB_EPOCH"}
+        for argument, command, cli, name, stream in cases:
+            for kind, path in bad.items():
+                if kind in ("list",) and argument in ("payload", "commits-file", "verify commits-file"):
+                    continue  # a list payload is a recorded diagnostic refusal; a commits file is plain text
+                if kind in ("not-json", "list") and argument in ("commits-file", "verify commits-file"):
+                    continue
+                with self.subTest(argument=argument, kind=kind):
+                    before = sorted(str(p) for p in self.written())
+                    ran = subprocess.run([sys.executable, *command(str(path))], capture_output=True, text=True,
+                                         env=environment, cwd=ROOT)
+                    self.assertNotEqual(ran.returncode, 0)
+                    self.assertNotIn("Traceback", ran.stderr + ran.stdout)
+                    text = (ran.stderr if stream == "stderr" else ran.stdout).strip()
+                    record = self.json_objects(text)[-1]
+                    record = record[0] if isinstance(record, list) else record
+                    unreadable = kind in ("missing", "directory")
+                    self.assertEqual(record["failure_code"],
+                                     cli + ("_INPUT_UNREADABLE" if unreadable else "_INPUT_INVALID"))
+                    self.assertEqual(record["failed_predicate"], "SUPPLIED_" + name + "_IS_A_READABLE_VALID_FILE")
+                    self.assertIs(record["terminal"], True)
+                    for field in SIX_FIELDS:
+                        self.assertTrue(record.get(field), field)
+                    self.assertEqual(sorted(str(p) for p in self.written()), before)
+        self.assertFalse((self.mesh / "evidence").exists())
+        # the readback answers its own input faults with its six-field refusal
+        readback_cli = str(ROOT / "resident-runtime/organization_ledger_readback.py")
+        for command in ([readback_cli, "--designated-locators", str(bad["missing"])],
+                        [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["not-json"])],
+                        [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["list"])]):
+            with self.subTest(readback=command[1:]):
+                ran = subprocess.run([sys.executable, *command], capture_output=True, text=True, env=environment,
+                                     cwd=ROOT)
+                self.assertEqual(ran.returncode, 1)
+                self.assertNotIn("Traceback", ran.stderr)
+                record = self.json_objects(ran.stdout)[-1]
+                self.assertEqual(record["disposition"], "FAIL_CLOSED")
+                for field in SIX_FIELDS:
+                    self.assertTrue(record.get(field), field)
+
     def test_egress_takes_a_supplied_digit_string_epoch(self):
         self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
         emitted = self.emit("4096", "egress-4096")

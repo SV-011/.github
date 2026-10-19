@@ -780,6 +780,28 @@ def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
                                    "the next manifest-bound cycle; the frame stays pending")
 
 
+INPUT_FAULTS = (OSError, ValueError)  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+
+
+def input_refusal(cli: str, argument: str, exc: BaseException, retry_entrypoint: str) -> dict[str, Any]:
+    """The terminal six-field record for a supplied input file that cannot be read or is not valid.
+
+    ``<CLI>_INPUT_UNREADABLE`` for a read fault, ``<CLI>_INPUT_INVALID`` for a
+    parse or shape fault. Nothing was written; no clock is read.
+    """
+    unreadable = isinstance(exc, OSError)
+    name = argument.lstrip("-").upper().replace("-", "_")
+    return {"disposition": "FAIL_CLOSED",
+            "failure_code": cli + ("_INPUT_UNREADABLE" if unreadable else "_INPUT_INVALID"),
+            "failed_predicate": "SUPPLIED_" + name + "_IS_A_READABLE_VALID_FILE",
+            "detail": argument + ": " + type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "supply " + argument + " as a readable file of the expected JSON",
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "none with this input; nothing was written",
+            "terminal": True, "derived_from_clock": False, "consequence_committed": False}
+
+
 def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str) -> dict[str, Any]:
     """The non-terminal six-field record for a CLI whose result file (--out) could not be written.
 

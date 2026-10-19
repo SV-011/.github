@@ -332,7 +332,15 @@ def main() -> int:
                         help="the supplied heartbeat epoch: ASCII digits >= 32 (or STEGVERSE_HB_EPOCH)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
-    registry = json.loads(args.registry.read_text(encoding="utf-8"))
+    kernel = repository_ledger.kernel
+    # One input stage: a supplied file that cannot be read or parsed is terminal six fields; nothing is written.
+    try:
+        registry = json.loads(args.registry.read_text(encoding="utf-8"))
+        if not isinstance(registry, dict):
+            raise ValueError("the registry is a " + type(registry).__name__ + ", not a JSON object")
+    except kernel.INPUT_FAULTS as exc:
+        print(json.dumps(kernel.input_refusal("INTR_INGRESS", "--registry", exc, CLI_ENTRYPOINT), sort_keys=True))
+        return 5
     # A set variable is a supplied value, "" included; only an unset one is absent.
     from_env = os.environ.get("STEGVERSE_HB_EPOCH") if "STEGVERSE_HB_EPOCH" in os.environ else None
     hb_epoch = args.hb_epoch if args.hb_epoch is not None else from_env
@@ -353,13 +361,19 @@ def main() -> int:
         parser.error("--self-closure requires communication_id and packet_id")
     if not args.self_closure and args.payload is None:
         parser.error("--payload is required")
+    if not args.self_closure:
+        try:
+            payload = json.loads(args.payload.read_text(encoding="utf-8"))
+        except kernel.INPUT_FAULTS as exc:
+            print(json.dumps(kernel.input_refusal("INTR_INGRESS", "--payload", exc, CLI_ENTRYPOINT), sort_keys=True))
+            return 5
     try:
         if args.self_closure:
             result = self_closure(args.communication_id, registry=registry,
                                   packet_id=args.packet_id, hb_epoch=hb_epoch)
         else:
             result = receive(
-                json.loads(args.payload.read_text(encoding="utf-8")),
+                payload,
                 registry=registry,
                 packet_id=args.packet_id or "organization-intr-destination",
                 hb_epoch=hb_epoch)

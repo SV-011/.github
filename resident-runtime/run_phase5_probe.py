@@ -12,20 +12,36 @@ def load_module(name,path):
 intr=load_module("intr_transport",ROOT/"org-boundary/runtime/intr_transport.py")
 adapter=load_module("denial_adapter",ROOT/"org-boundary/runtime/denial_adapter.py")
 
+def input_refusal(exc):
+    return {"disposition":"FAIL_CLOSED",
+            "failure_code":"PHASE5_PROBE_INPUT_"+("UNREADABLE" if isinstance(exc,OSError) else "INVALID"),
+            "failed_predicate":"SUPPLIED_REQUEST_IS_A_READABLE_VALID_FILE",
+            "detail":"--request: "+type(exc).__name__+": "+str(exc),
+            "required_evidence_or_repair":"supply --request as a readable phase-5 request JSON",
+            "retry_entrypoint":"resident-runtime/run_phase5_probe.py --request <file>",
+            "owning_existing_goal":"INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
+            "next_attempt":"none with this input; nothing was written",
+            "terminal":True,"derived_from_clock":False,"consequence_committed":False}
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--request",required=True)
     ap.add_argument("--evidence-dir",required=True)
     ap.add_argument("--runtime-observer",required=True)
     a=ap.parse_args()
-    req=json.loads(Path(a.request).read_text(encoding="utf-8"))
     outdir=Path(a.evidence_dir)
-    envelope=intr.build_ingress(
-      {"org":"SV-011","service":"resident-observer"},
-      {"org":"SV-011","service":req["destination_service"]},
-      req["payload"],req["carrier_reference"],req["transition_reference"],req.get("authority_effect","NONE"),req["request_id"]
-    )
-    intr.validate_org_crossing(envelope,"INGRESS")
+    # One input stage: an unreadable or invalid --request is terminal six fields; nothing is written.
+    try:
+      req=json.loads(Path(a.request).read_text(encoding="utf-8"))
+      envelope=intr.build_ingress(
+        {"org":"SV-011","service":"resident-observer"},
+        {"org":"SV-011","service":req["destination_service"]},
+        req["payload"],req["carrier_reference"],req["transition_reference"],req.get("authority_effect","NONE"),req["request_id"]
+      )
+      intr.validate_org_crossing(envelope,"INGRESS")
+    except (OSError,ValueError,KeyError,TypeError,AttributeError) as exc:
+      print(json.dumps(input_refusal(exc),sort_keys=True))
+      return 1
     result=adapter.process(envelope)
     evidence={
       "schema":"stegverse.sv011-resident-boundary-observation/v0.1",
