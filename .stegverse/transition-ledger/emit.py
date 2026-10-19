@@ -146,4 +146,4 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     }
     if target.append_transaction(ledger_store.receipt_key(digest), receipt, previous_head, new_head):
         return receipt
-    raise RuntimeError("ledger_append_lost_comparison")
+    raise ledger_store.LedgerWriteFault("ledger_append_lost_comparison")

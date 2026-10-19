@@ -168,4 +168,4 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
             ledger_store.receipt_key(digest), receipt,
             head if isinstance(head, dict) else None, new_head):
         return receipt
-    raise RuntimeError("ledger_append_lost_comparison")
+    raise ledger_store.LedgerWriteFault("ledger_append_lost_comparison")

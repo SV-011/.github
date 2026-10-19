@@ -46,6 +46,15 @@ def source_key(digest: str) -> str:
     return SOURCE_PREFIX + hex_digest + ".json"
 
 
+class LedgerWriteFault(RuntimeError):
+    """A fault in writing this store: a lost comparison, exhausted contention, or a failed git write.
+
+    It is the writer's fault, never the content's. ``ledger_write_fault`` lets a
+    caller holding another copy of this module match it without the class.
+    """
+    ledger_write_fault = True
+
+
 class LedgerLocatorInvalid(ValueError):
     """A supplied ledger location that names no store. Nothing is opened or written."""
 
@@ -280,7 +289,7 @@ class GitLedgerStore:
             ["git", *args], input=stdin, capture_output=True, env=env or self._env(git_dir))
         if check and completed.returncode != 0:
             detail = completed.stderr.decode(errors="replace").strip()
-            raise RuntimeError("git " + args[0] + " failed: " + detail)
+            raise LedgerWriteFault("git " + args[0] + " failed: " + detail)
         return completed
 
     def _tip(self) -> str | None:
@@ -350,7 +359,7 @@ class GitLedgerStore:
         stderr = completed.stderr.decode(errors="replace")
         if self._tip() != expected or "File exists" in stderr:
             return False
-        raise RuntimeError("git update-ref failed: " + stderr.strip())
+        raise LedgerWriteFault("git update-ref failed: " + stderr.strip())
 
     def _refuse_replacing_immutable(self, current: bytes | None, key: str, value: Any) -> None:
         if key.startswith(self._IMMUTABLE_PREFIXES) and current is not None and json.loads(current) != value:
@@ -397,7 +406,7 @@ class GitLedgerStore:
             new = self._commit(tip, {key: encoded}, "ledger put " + key)
             if new == tip or self._publish(new, tip):
                 return
-        raise RuntimeError("LEDGER_STORE_PUT_CONTENTION_EXHAUSTED")
+        raise LedgerWriteFault("LEDGER_STORE_PUT_CONTENTION_EXHAUSTED")
 
     def list_prefix(self, prefix: str) -> set[str]:
         tip = self._tip()
@@ -453,4 +462,4 @@ class GitLedgerStore:
                 new = self._commit(tip, writes, "ledger append " + receipt_key_name)
                 if self._publish(new, tip):
                     return True
-        raise RuntimeError("LEDGER_STORE_APPEND_CONTENTION_EXHAUSTED")
+        raise LedgerWriteFault("LEDGER_STORE_APPEND_CONTENTION_EXHAUSTED")

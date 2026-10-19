@@ -692,17 +692,24 @@ def frame_refusal(code: str, exc: BaseException) -> dict[str, Any]:
 
 
 FRAME_DISPATCH_IO_FAILED = "FRAME_DISPATCH_IO_FAILED"
+FRAME_DISPATCH_WRITE_FAILED = "FRAME_DISPATCH_WRITE_FAILED"
 FRAME_CYCLE_ENTRYPOINT = "org-kernel/kernel.py::consume_addressed_frames"
 
 
-def dispatch_io_refusal(exc: OSError) -> dict[str, Any]:
-    """The six-field FAIL_CLOSED for an I/O fault on this repository's own state during dispatch.
+def is_own_state_fault(exc: BaseException) -> bool:
+    """An OSError, or a ledger store's LedgerWriteFault (matched by its marker: each writer loads its own copy)."""
+    return isinstance(exc, OSError) or getattr(exc, "ledger_write_fault", False) is True
+
+
+def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
+    """The six-field FAIL_CLOSED for a fault writing this repository's own state during dispatch.
 
     The fault is ours, not the frame's: no seen or quarantine marker is written,
     so the frame stays pending. The writers are idempotent, so the next cycle
     resumes a partial write without a duplicate. No clock is read.
     """
-    return {"disposition": "FAIL_CLOSED", "failure_code": FRAME_DISPATCH_IO_FAILED,
+    code = FRAME_DISPATCH_IO_FAILED if isinstance(exc, OSError) else FRAME_DISPATCH_WRITE_FAILED
+    return {"disposition": "FAIL_CLOSED", "failure_code": code,
             "failed_predicate": "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:" + type(exc).__name__,
             "detail": type(exc).__name__ + ": " + str(exc),
             "required_evidence_or_repair": "this repository's ledger, receipt and outbox stores accept writes",
@@ -763,12 +770,12 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
         else:
             try:
                 result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
-            except OSError as fault:
-                # An I/O fault on our own state is not the frame's defect: no marker, not seen, pending.
-                results.append({"path": item["path"], "result": dispatch_io_refusal(fault),
-                                "organization_record": None})
-                continue
             except Exception as refused:
+                if is_own_state_fault(refused):
+                    # A fault writing our own state is not the frame's defect: no marker, not seen, pending.
+                    results.append({"path": item["path"], "result": dispatch_io_refusal(refused),
+                                    "organization_record": None})
+                    continue
                 # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
                 # The guard is total (F-TYPE): no exception from one frame aborts the batch.
                 # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;

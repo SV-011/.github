@@ -1136,6 +1136,73 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
                 self.assertEqual(len(bound), 1, "a duplicate organization receipt was written")
 
+    def test_a_lost_comparison_on_our_ledger_leaves_the_frame_pending_and_resumes_once(self):
+        """V-P11 F-TRANSIENT-RT: a writer's lost compare-and-swap is LedgerWriteFault, FRAME_DISPATCH_WRITE_FAILED,
+        non-terminal: no marker, not seen. The next cycle consumes the frame once: 1 repository receipt,
+        1 organization receipt, no orphan."""
+        import importlib.machinery
+        real_exec = importlib.machinery.SourceFileLoader.exec_module
+        for fail_at in (1, 2):  # 1: the repository append; 2: the organization append, after the repository receipt
+            with self.subTest(fail_at=fail_at):
+                for directory in ("frames.d", "quarantine.d"):
+                    if (self.mesh / directory).is_dir():
+                        for path in (self.mesh / directory).glob("*.json"):
+                            path.unlink()
+                good = self.frame("lost-cas-%d" % fail_at, epoch=4096)
+                kernel.publish_frame(good, root=self.mesh)
+                appends = []
+
+                def exec_module(loader, module, _real=real_exec):
+                    # Each writer loads its own ledger_store copy; lose the comparison on the fail_at-th append.
+                    _real(loader, module)
+                    if module.__name__ == "ledger_store":
+                        original = module.Store.append_transaction
+
+                        def append_transaction(store, *args, _original=original, **kwargs):
+                            appends.append(store.root)
+                            if len(appends) == fail_at:
+                                return False
+                            return _original(store, *args, **kwargs)
+                        module.Store.append_transaction = append_transaction
+                seen = set()
+                importlib.machinery.SourceFileLoader.exec_module = exec_module
+                try:
+                    faulted = self.consume(seen)
+                finally:
+                    importlib.machinery.SourceFileLoader.exec_module = real_exec
+                self.assertEqual(len(appends), fail_at)
+                [row] = faulted
+                refusal = row["result"]
+                self.assertEqual(refusal["failure_code"], "FRAME_DISPATCH_WRITE_FAILED")
+                self.assertEqual(refusal["failed_predicate"], "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:LedgerWriteFault")
+                self.assertIn("ledger_append_lost_comparison", refusal["detail"])
+                self.assertIs(refusal["terminal"], False)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+                self.assertEqual(seen, set())
+                self.assertFalse((self.mesh / "quarantine.d" / self.name(good)).exists())
+                [again] = self.consume(set())
+                self.assertEqual(again["result"]["status"], "CONSUMED")
+                operation = again["result"]["execution_result"]["application_result"]["receiving_operation_result"]
+                self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+                receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+                ids = [r["transition_id"] for r in receipts
+                       if "transition_id" in r and "lost-cas-%d" % fail_at in r["transition_id"]]
+                self.assertEqual(len(ids), 1)
+                [repository] = [r for r in receipts if r.get("transition_id") in ids]
+                bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
+                self.assertEqual(len(bound), 1, "the repository receipt is orphaned or bound twice")
+
+    def test_every_ledger_store_write_fault_is_a_ledger_write_fault(self):
+        import ast
+        for relative in ("resident-runtime/ledger_store.py", ".stegverse/transition-ledger/emit.py",
+                         "resident-runtime/aggregate_repo_transition.py"):
+            tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+                    name = ast.unparse(node.exc.func)
+                    self.assertNotEqual(name, "RuntimeError", relative + ":" + str(node.lineno))
+
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real
         import sys
