@@ -181,9 +181,16 @@ class Store:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def put(self, key: str, document: Any) -> None:
+        """Write one document atomically: staged beside it and renamed, so a fault leaves the old or the new."""
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_document_bytes(document))
+        staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+        try:
+            staged.write_bytes(_document_bytes(document))
+            os.replace(staged, path)
+        finally:
+            if staged.exists():
+                staged.unlink()
 
     def list_prefix(self, prefix: str) -> set[str]:
         directory = self._path(prefix.rstrip("/"))

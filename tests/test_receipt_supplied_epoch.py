@@ -1202,20 +1202,23 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         real_write = Path.write_bytes
         # 1: the repository receipt; 2: its HEAD; 3: the organization receipt, after the repository chain
         # landed; 4: the organization HEAD, after its content-addressed receipt landed.
-        for fail_at in (1, 2, 3, 4):
-            with self.subTest(fail_at=fail_at):
+        # torn (B-P36q): part of the document reaches the disk before the fault.
+        for fail_at, torn in [(step, torn) for torn in (False, True) for step in (1, 2, 3, 4)]:
+            with self.subTest(fail_at=fail_at, torn=torn):
                 for directory in ("frames.d", "quarantine.d"):
                     if (self.mesh / directory).is_dir():
                         for path in (self.mesh / directory).glob("*.json"):
                             path.unlink()
-                good = self.frame("io-fault-%d" % fail_at, epoch=4096)
+                good = self.frame("io-fault-%d-%s" % (fail_at, torn), epoch=4096)
                 kernel.publish_frame(good, root=self.mesh)
                 writes = []
 
-                def failing(path, data, _real=real_write):
+                def failing(path, data, _real=real_write, _torn=torn):
                     if any(root in Path(path).resolve().parents for root in roots):
                         writes.append(path)
                         if len(writes) == fail_at:
+                            if _torn:
+                                _real(path, data[: len(data) // 2])
                             raise OSError(28, "No space left on device")
                     return _real(path, data)
                 seen = set()
@@ -1242,7 +1245,8 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 self.consume(set())  # one more cycle writes nothing new
                 self.assertEqual(sorted(str(p) for p in self.written()), after)
                 receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
-                ids = [r["transition_id"] for r in receipts if "transition_id" in r and "io-fault-%d" % fail_at in r["transition_id"]]
+                ids = [r["transition_id"] for r in receipts
+                       if "transition_id" in r and r["transition_id"].endswith("io-fault-%d-%s" % (fail_at, torn))]
                 self.assertEqual(len(ids), len(set(ids)), "a duplicate repository receipt was written")
                 self.assertEqual(len(ids), 1)
                 [repository] = [r for r in receipts if r.get("transition_id") in ids]
@@ -1250,7 +1254,7 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 self.assertEqual(len(bound), 1, "a duplicate organization receipt was written")
                 # torn write (09:29Z): HEAD is consistent and every receipt is on the chain; a later frame is unaffected
                 self.assertConsistentChains()
-                later = self.frame("io-fault-later-%d" % fail_at, epoch=4096)
+                later = self.frame("io-fault-later-%d-%s" % (fail_at, torn), epoch=4096)
                 kernel.publish_frame(later, root=self.mesh)
                 consumed = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
                 self.assertEqual(consumed[self.name(later)]["status"], "CONSUMED")
@@ -1270,6 +1274,32 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 walked.add(digest)
                 digest = receipt.get("previous_receipt_sha256")
             self.assertEqual(walked, {r["receipt_sha256"] for r in files.values()}, name + ": an orphan receipt")
+
+    def test_a_torn_frame_publish_leaves_no_partial_frame_and_republishes_once(self):
+        """B-P36q: publish_frame is staged and renamed. A fault mid-write leaves no frame, so the re-publish
+        completes once instead of raising federation_frame_write_once_collision forever."""
+        real_write = Path.write_text
+        frame = self.frame("torn-publish", epoch=4096)
+        frames = (self.mesh / "frames.d").resolve()
+
+        def torn(path, data, *args, _real=real_write, **kwargs):
+            if Path(path).resolve().parent == frames:
+                _real(path, data[: len(data) // 2], *args, **kwargs)
+                raise OSError(28, "No space left on device")
+            return _real(path, data, *args, **kwargs)
+        Path.write_text = torn
+        try:
+            with self.assertRaises(OSError):
+                kernel.publish_frame(frame, root=self.mesh)
+        finally:
+            Path.write_text = real_write
+        self.assertEqual(sorted(p.name for p in frames.iterdir()), [])  # no partial frame, no staged file
+        path = kernel.publish_frame(frame, root=self.mesh)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), frame)
+        self.assertEqual(kernel.publish_frame(frame, root=self.mesh), path)  # write-once replay
+        self.assertEqual(len(list(frames.glob("*.json"))), 1)
+        [row] = self.consume(set())
+        self.assertEqual(row["result"]["status"], "CONSUMED")
 
     def test_an_io_fault_on_the_quarantine_marker_does_not_abort_the_batch(self):
         """F-REPUB scope (V-P11): the consume path publishes nothing, so no response can be re-published. A fault

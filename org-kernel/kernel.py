@@ -397,7 +397,14 @@ def publish_frame(frame: dict[str, Any], *, root: Path | None = None) -> Path:
         if path.read_text(encoding="utf-8") != rendered:
             raise ValueError("federation_frame_write_once_collision")
         return path
-    path.write_text(rendered, encoding="utf-8")
+    # Staged and renamed (B-P36q): a fault mid-write leaves no partial frame to collide with its own re-publish.
+    staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+    try:
+        staged.write_text(rendered, encoding="utf-8")
+        os.replace(staged, path)
+    finally:
+        if staged.exists():
+            staged.unlink()
     return path
 
 
@@ -806,9 +813,13 @@ def quarantine_frame(item: dict[str, Any], refusal: dict[str, Any], *, mesh_root
     rendered = json.dumps(marker, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     if not path.is_file():
         # Written aside and renamed, so a fault mid-write leaves no partial marker for the scan to skip on.
-        staged = path.with_name("." + path.name + ".partial")
-        staged.write_text(rendered, encoding="utf-8")
-        os.replace(staged, path)
+        staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+        try:
+            staged.write_text(rendered, encoding="utf-8")
+            os.replace(staged, path)
+        finally:
+            if staged.exists():
+                staged.unlink()
     return marker
 
 
