@@ -243,6 +243,59 @@ class Refusals(unittest.TestCase):
         finally:
             ledger.close()
 
+    def test_a_ledger_write_fault_is_six_fields_not_a_traceback(self):
+        """V-P11 F-MT-TRACE: a lost comparison or store collision on either append is MERGE_TRANSFER_WRITE_FAILED,
+        non-terminal; the next run appends once."""
+        from unittest import mock
+        writers = (mt.ingress.repository_ledger.ledger_store, mt.ingress.organization_ledger.ledger_store)
+        for fault in ("lost_comparison", "store_collision"):
+            for fail_at in (1, 2):
+                with self.subTest(fault=fault, fail_at=fail_at):
+                    ledger = Ledger(self.fixture)
+                    try:
+                        calls = []
+                        patches = []
+                        for module in writers:
+                            for cls in (module.Store, module.GitLedgerStore):
+                                original = cls.append_transaction
+
+                                def append_transaction(store, *args, _original=original, _module=module, **kwargs):
+                                    calls.append(1)
+                                    if len(calls) == fail_at:
+                                        if fault == "store_collision":
+                                            raise _module.LedgerStoreCollision("ledger_receipt_collision")
+                                        return False
+                                    return _original(store, *args, **kwargs)
+                                patches.append(mock.patch.object(cls, "append_transaction", append_transaction))
+                        for patch in patches:
+                            patch.start()
+                        try:
+                            failed = mt.append_merge_transfer(self.fixture["commit"])
+                        finally:
+                            for patch in patches:
+                                patch.stop()
+                        self._six(failed, mt.WRITE_FAILED)
+                        self.assertIs(failed["terminal"], False)
+                        self.assertEqual(failed["retry_entrypoint"], "resident-runtime/merge_transfer.py append")
+                        self.assertEqual(failed["next_attempt"], "the next push or dispatch of the merge-transfer transition")
+                        again = mt.append_merge_transfer(self.fixture["commit"])
+                        self.assertEqual(again["disposition"], "ALLOW", again)
+                        once = ledger.files()
+                        self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                        self.assertEqual(ledger.files(), once)
+                        verified = mt.verify_merge_transfer(self.repo, self.merge)
+                        self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                    finally:
+                        ledger.close()
+
+    def test_the_cli_exits_non_zero_on_a_write_fault(self):
+        from unittest import mock
+        failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)
+        with mock.patch.object(mt, "append_merge_transfer", return_value=failed), \
+                mock.patch.object(mt, "commit_facts", return_value={}), \
+                mock.patch("builtins.print"):
+            self.assertEqual(mt.main(["append", "--commit", self.merge]), 1)
+
     def _appended(self, ledger):
         result = mt.append_merge_transfer(self.fixture["commit"])
         key = mt.store_module().receipt_key

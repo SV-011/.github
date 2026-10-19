@@ -71,6 +71,8 @@ EPOCH_UNOBSERVED = "HB_EPOCH_SOURCE_UNOBSERVED"
 FACTS_INVALID = "MERGE_COMMIT_FACTS_INVALID"
 COLLISION = "MERGE_TRANSFER_RECEIPT_COLLISION"
 WRITER_REFUSED = "LEDGER_WRITER_REFUSED"
+WRITE_FAILED = "MERGE_TRANSFER_WRITE_FAILED"
+APPEND_ENTRYPOINT = "resident-runtime/merge_transfer.py append"
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_SUBJECT = re.compile(r"Merge pull request #([0-9]+) from \S+")
@@ -333,7 +335,17 @@ def append_merge_transfer(facts: Mapping[str, Any]) -> dict[str, Any]:
             TRANSITION_CLASS, facts["merge_commit"], evidence, epoch, operation=OPERATION, profile_id=PROFILE_ID,
             boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]},
             hb_provenance=provenance)
-    except ValueError as exc:
+    except Exception as exc:
+        if getattr(exc, "ledger_write_fault", False) is True:
+            # A fault writing our own ledger (lost comparison, contention, store collision): six fields, not a
+            # traceback, and not terminal. The writers are idempotent, so the next run resumes without a duplicate.
+            return refusal(WRITE_FAILED, "MERGE_TRANSFER_WRITES_THIS_REPOSITORYS_LEDGER:" + type(exc).__name__,
+                           "the organization ledger store accepts the append",
+                           "the next push or dispatch of the merge-transfer transition", repository=repo,
+                           merge_commit=facts["merge_commit"], retry_entrypoint=APPEND_ENTRYPOINT,
+                           terminal=False, detail=type(exc).__name__ + ": " + str(exc))
+        if not isinstance(exc, ValueError):
+            raise
         code = COLLISION if str(exc) == "ledger_receipt_collision" else WRITER_REFUSED
         return refusal(code, "ONE_MERGE_COMMIT_BINDS_ONE_TRANSFER_RECEIPT",
                        "the ledger already binds this merge commit to different evidence, or the writer refused: " + str(exc),
