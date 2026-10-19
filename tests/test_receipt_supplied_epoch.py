@@ -483,5 +483,77 @@ class SecondWriterTakesTheSuppliedEpoch(Redirected):
         self.assertEqual(self.written(), [])
 
 
+class NoUnmarkedClockOnAnyRoute(Redirected):
+    """B-P36g rows 4 and 6: a route that writes nothing reads no clock, and every clock value is marked.
+
+    The kernel's clock is fixed (not raised) so that a route which does read it
+    shows what it writes: a clock-derived reference must say derived_from_clock
+    true and carry sampled_unix_ns. No ledger receipt is written without an epoch.
+    """
+
+    FIXED_NS = kernel.HB_ANCHOR_UNIX_NS + 11 * kernel.HB_PERIOD_NS
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        fixed, calls = self.FIXED_NS, self.calls
+
+        class Fixed:
+            @staticmethod
+            def now(*_a, **_k):
+                from datetime import datetime, timezone
+                calls.append("now")
+                return datetime.fromtimestamp(fixed / 1e9, timezone.utc)
+        for module in (kernel, ingress.repository_ledger, ingress.organization_ledger,
+                       egress, egress.repository_ledger, egress.organization_ledger):
+            saved = module.kernel.datetime if hasattr(module, "kernel") else module.datetime
+            target = module.kernel if hasattr(module, "kernel") else module
+            target.datetime = Fixed
+            self.addCleanup(setattr, target, "datetime", saved)
+
+    def frame_to(self, destination_org, service, epoch=37):
+        packet = kernel.build_packet(
+            origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
+            destination_org=destination_org, destination_service=service,
+            payload=diagnostic("route-" + service), standing=GENESIS,
+            transition_reference="intr:transition:route", authority_effect="NONE",
+            packet_id="route-" + service)
+        return kernel.carrier_frame(packet, epoch=epoch)
+
+    def test_routes_that_write_nothing_read_no_clock(self):
+        ignored = kernel.ingest_frame(ROOT, self.frame_to("Some-Other-Org", "some-other-org.intr-destination"),
+                                      mesh_root=self.mesh)
+        self.assertEqual(ignored["status"], "IGNORED_NOT_ADDRESSED")
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, self.frame_to("SV-011", "sv-011.boundary-diagnostic"), mesh_root=self.mesh)
+        self.assertIn("endpoint_adapter_not_installed", str(refused.exception))
+        for absent in (lambda: ingress.receive(diagnostic("r"), registry=REGISTRY, packet_id="r"),
+                       lambda: egress.emit("StegVerse-org", diagnostic("e"), standing=GENESIS,
+                                           capability="intr-destination", mesh_root=self.mesh)):
+            with self.assertRaises(ValueError):
+                absent()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.written(), [])
+
+    def test_the_only_clock_value_is_a_marked_frame_reference(self):
+        packet = kernel.build_packet(
+            origin_org="SV-011", origin_service="sv-011.intr-destination",
+            destination_org="StegVerse-org", destination_service="stegverse-org.intr-destination",
+            payload=diagnostic("frame-only"), standing=GENESIS,
+            transition_reference="intr:transition:frame-only", authority_effect="NONE", packet_id="frame-only")
+        reference = kernel.publish_packet(packet, root=self.mesh)["frame"]["heartbeat_reference"]
+        self.assertEqual(self.calls, ["now"])
+        self.assertIs(reference["derived_from_clock"], True)
+        self.assertLess(abs(reference["sampled_unix_ns"] - self.FIXED_NS), 1000)  # float clock sample
+        # the frame-only default writes no receipt, and its clock frame is refused at ingest
+        self.assertEqual(self.written(), [])
+        frame = self.frame_to("SV-011", ADDRESS)
+        clocked = kernel.carrier_frame(kernel.recover_packet(frame), now_ns=self.FIXED_NS)
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, clocked, mesh_root=self.mesh)
+        self.assertEqual(refused.exception.refusal["failure_code"], "HB_EPOCH_INVALID")
+        self.assertEqual(self.written(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
