@@ -999,6 +999,33 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                     self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
+    def test_an_unreadable_frame_file_alone_writes_nothing_and_reads_no_clock(self):
+        import datetime as real
+        import sys
+        import types
+        calls = []
+
+        class Raising(real.datetime):
+            @classmethod
+            def now(cls, *_a, **_k):
+                calls.append("now")
+                raise AssertionError("read the clock")
+        shim = types.ModuleType("datetime")
+        shim.__dict__.update({n: getattr(real, n) for n in dir(real) if not n.startswith("__")})
+        shim.datetime = Raising
+        (self.mesh / "frames.d").mkdir(parents=True, exist_ok=True)
+        (self.mesh / "frames.d" / "00000000.json").write_text("{not json", encoding="utf-8")
+        before = self.written()
+        sys.modules["datetime"] = shim
+        try:
+            results = self.consume(set())
+        finally:
+            sys.modules["datetime"] = real
+        self.assertEqual(calls, [])
+        self.assertEqual(self.written(), before)
+        self.assertEqual(results[0]["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertEqual(self.consume(), [])
+
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real
         import sys
