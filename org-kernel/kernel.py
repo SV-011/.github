@@ -214,6 +214,54 @@ def with_epoch_provenance(reference: dict[str, Any], provenance: Any) -> dict[st
     return {**reference, **provenance}
 
 
+CARRIED_PROVENANCE_UNVERIFIED = "CARRIED_PROVENANCE_UNVERIFIED"
+
+
+def carried_provenance_refusal(provenance: Any, reference: dict[str, Any], head_store: Any,
+                               receipt_key: Any, head_key: str, *, retry_entrypoint: str) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED when a CARRIED provenance does not verify, or None.
+
+    A writer given a carried epoch checks it against ``head_store``, the
+    organization ledger: ``head_receipt_sha`` must be its current head, that
+    receipt's seal must verify, its epoch must pass the shared rule with
+    derived_from_clock exactly false, and it must equal the epoch being written.
+    """
+    if provenance is None:
+        return None
+    claimed = provenance.get("head_receipt_sha") if isinstance(provenance, dict) else None
+    head = head_store.get(head_key) if head_store is not None else None
+    current = head.get("receipt_sha256") if isinstance(head, dict) else None
+    detail = None
+    if head_store is None:
+        detail = "no organization ledger to verify the carried head against"
+    elif not claimed or claimed != current:
+        detail = "head_receipt_sha " + repr(claimed) + " is not the organization ledger head " + repr(current)
+    else:
+        receipt = head_store.get(receipt_key(current))
+        body = {k: v for k, v in receipt.items() if k != "receipt_sha256"} if isinstance(receipt, dict) else None
+        carried = receipt.get("hb_reference") if isinstance(receipt, dict) else None
+        epoch = carried.get("epoch") if isinstance(carried, dict) else None
+        if body is None or receipt.get("receipt_sha256") != current or sha(body) != current:
+            detail = "the organization ledger head receipt " + current + " is absent or its seal does not verify"
+        elif not isinstance(carried, dict) or carried.get("derived_from_clock") is not False \
+                or type(epoch) is not int or supplied_epoch_failure(epoch, carried) is not None:
+            detail = "the head receipt's hb_reference " + repr(carried) + " is not a supplied-rule, non-clock epoch"
+        elif epoch != reference.get("epoch"):
+            detail = "the carried epoch " + repr(reference.get("epoch")) + " is not the head epoch " + repr(epoch)
+    if detail is None:
+        return None
+    return {"disposition": "FAIL_CLOSED", "failure_code": CARRIED_PROVENANCE_UNVERIFIED,
+            "failed_predicate": "CARRIED_EPOCH_IS_THE_VERIFIED_ORGANIZATION_LEDGER_HEAD_EPOCH",
+            "detail": detail,
+            "required_evidence_or_repair": ("head_receipt_sha names the current organization ledger head, whose "
+                                            "sealed receipt carries a supplied-rule epoch with derived_from_clock "
+                                            "false equal to the carried epoch"),
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "read the current head and carry its epoch; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
+
+
 def carrier_frame(packet: dict[str, Any], *, now_ns: int | None = None,
                   epoch: int | None = None) -> dict[str, Any]:
     raw = canon(packet)

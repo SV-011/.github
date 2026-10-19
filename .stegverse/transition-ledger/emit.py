@@ -72,6 +72,12 @@ def recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
 
 
 EPOCH_RETRY_ENTRYPOINT = ".stegverse/transition-ledger/emit.py::append (hb_epoch=)"
+
+
+def _organization_store():
+    """The organization ledger a CARRIED head is verified against, or None when none is located."""
+    configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
+    return ledger_store.open_store(ledger_store.parse_locator(configured)) if configured else None
 RepoLedgerEpochRefused = kernel.SuppliedEpochRefused
 
 
@@ -110,6 +116,12 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
                 or any(theirs.get(key, _ABSENT) != mine.get(key, _ABSENT) for key in idempotent_on)):
             raise ValueError("ledger_receipt_collision")
         return prior
+    if hb_provenance is not None:
+        refused = kernel.carried_provenance_refusal(
+            hb_provenance, hb, _organization_store(), ledger_store.receipt_key, ledger_store.HEAD_KEY,
+            retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+        if refused is not None:
+            raise RepoLedgerEpochRefused(refused)
     body = {
         "schema": "stegverse.repo-transition-receipt/v1",
         "repository": C["repository"],

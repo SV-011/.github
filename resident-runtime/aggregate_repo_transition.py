@@ -136,6 +136,11 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
     refused = source_refusal(source_receipt)
     if refused is not None:
         raise kernel.SuppliedEpochRefused(refused)
+    refused = kernel.carried_provenance_refusal(
+        hb_provenance, hb, target, ledger_store.receipt_key, ledger_store.HEAD_KEY,
+        retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+    if refused is not None:
+        raise kernel.SuppliedEpochRefused(refused)
     body = {
         "schema": "stegverse.organization-transition-receipt/v1",
         "organization": C["organization"],

@@ -542,6 +542,81 @@ class SecondWriterTakesTheSuppliedEpoch(Redirected):
         self.assertEqual(self.written(), [])
 
 
+class CarriedProvenanceIsVerified(Redirected):
+    """A writer given CARRIED provenance verifies it against the organization ledger head.
+
+    head_receipt_sha must be the current head, the head's seal must verify, and its
+    epoch must be supplied-rule, non-clock and equal to the carried epoch. Anything
+    else is six-field CARRIED_PROVENANCE_UNVERIFIED with nothing written.
+    """
+
+    SOURCE = {"receipt_sha256": "sha256:" + "4" * 64,
+              "hb_reference": {"epoch": 40, "derived_from_clock": False}}
+
+    def seed_head(self):
+        return aggregate.append(self.SOURCE, "REPO_STATE_PROPAGATION", "sha256:a", "sha256:b", {}, "NONE",
+                                hb_epoch=40)
+
+    def provenance(self, head_sha):
+        return {"source": "ORGANIZATION_LEDGER_HEAD", "head_receipt_sha": head_sha}
+
+    def assertUnverified(self, refused, before):
+        refusal = refused.exception.refusal
+        self.assertEqual(refusal["failure_code"], "CARRIED_PROVENANCE_UNVERIFIED")
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+        self.assertEqual(sorted(self.written()), before)
+
+    def test_an_invented_head_sha_is_refused_by_both_writers(self):
+        self.seed_head()
+        before = sorted(self.written())
+        invented = self.provenance("sha256:" + "9" * 64)
+        with self.assertRaises(ValueError) as refused:
+            emit.append("t:invented", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch="4096",
+                        hb_provenance=invented)
+        self.assertUnverified(refused, before)
+        source = {"receipt_sha256": "sha256:" + "5" * 64,
+                  "hb_reference": {"epoch": 4096, "derived_from_clock": False}}
+        with self.assertRaises(ValueError) as refused:
+            aggregate.append(source, "REPO_STATE_PROPAGATION", "sha256:a", "sha256:b", {}, "NONE",
+                             hb_epoch="4096", hb_provenance=invented)
+        self.assertUnverified(refused, before)
+
+    def test_a_carried_epoch_other_than_the_head_epoch_is_refused(self):
+        head = self.seed_head()
+        before = sorted(self.written())
+        with self.assertRaises(ValueError) as refused:
+            emit.append("t:mismatch", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=41,
+                        hb_provenance=self.provenance(head["receipt_sha256"]))
+        self.assertUnverified(refused, before)
+
+    def test_a_tampered_head_receipt_is_refused(self):
+        head = self.seed_head()
+        path, = [p for p in Path(os.environ["STEGVERSE_ORG_LEDGER_ROOT"]).rglob("*.json")
+                 if head["receipt_sha256"][7:] in p.name]
+        tampered = json.loads(path.read_text(encoding="utf-8"))
+        tampered["evidence"] = {"tampered": True}
+        path.write_text(json.dumps(tampered), encoding="utf-8")
+        before = sorted(self.written())
+        with self.assertRaises(ValueError) as refused:
+            emit.append("t:tampered", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=40,
+                        hb_provenance=self.provenance(head["receipt_sha256"]))
+        self.assertUnverified(refused, before)
+
+    def test_the_real_head_is_carried_by_both_writers(self):
+        head = self.seed_head()
+        carried = self.provenance(head["receipt_sha256"])
+        repository = emit.append("t:carried", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=40,
+                                 hb_provenance=carried)
+        organization = aggregate.append(repository, "REPO_STATE_PROPAGATION", "sha256:a", "sha256:b", {},
+                                        "NONE", hb_epoch=40, hb_provenance=carried)
+        for receipt in (repository, organization):
+            self.assertEqual(receipt["hb_reference"]["source"], "ORGANIZATION_LEDGER_HEAD")
+            self.assertEqual(receipt["hb_reference"]["head_receipt_sha"], head["receipt_sha256"])
+            self.assertEqual(receipt["hb_reference"]["epoch"], 40)
+            self.assertIs(receipt["hb_reference"]["derived_from_clock"], False)
+
+
 class NoUnmarkedClockOnAnyRoute(Redirected):
     """B-P36g rows 4 and 6: a route that writes nothing reads no clock, and every clock value is marked.
 
