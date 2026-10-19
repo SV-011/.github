@@ -39,14 +39,26 @@
                 "from": "carrier_frame",
                 "via": "org-kernel/kernel.py::ingest_frame",
                 "field": "heartbeat_reference.epoch",
-                "passes_as": "hb_epoch"
+                "passes_as": "hb_epoch",
+                "dispatch": {
+                  "kind": "LIBRARY_API",
+                  "entrypoint": false,
+                  "api": "org-kernel/kernel.py::consume_addressed_frames",
+                  "in_tree_callers": [],
+                  "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml"
+                }
               },
               {
                 "from": "dispatch_input",
                 "dispatcher": ".github/workflows/organization-ledger-transition-writer.yml",
                 "input": "hb_epoch",
                 "env": "STEGVERSE_HB_EPOCH",
-                "entrypoint": "resident-runtime/intr_destination_ingress.py --self-closure"
+                "entrypoint": "resident-runtime/intr_destination_ingress.py --self-closure",
+                "dispatch": {
+                  "kind": "IN_TREE_DISPATCHER",
+                  "entrypoint": true,
+                  "trigger": "workflow_dispatch"
+                }
               }
             ]
           },
@@ -115,7 +127,13 @@
             ]
           }
         ],
-        "in_tree_dispatcher": null
+        "dispatch": {
+          "kind": "LIBRARY_API",
+          "entrypoint": false,
+          "api": "resident-runtime/organization_egress_boundary.py",
+          "in_tree_callers": [],
+          "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml"
+        }
       },
       "receipt_append": "resident-runtime/aggregate_repo_transition.py::append",
       "emits": "stegverse.organization-transition-receipt/v1",

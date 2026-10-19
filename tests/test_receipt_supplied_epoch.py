@@ -414,6 +414,24 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertEqual(files, ["frames.d/" + name, "quarantine.d/" + name])
         self.assertEqual(kernel.consume_addressed_frames(ROOT, mesh_root=self.mesh), [])
 
+    def test_an_inconsistent_heartbeat_reference_is_checked_at_ingest(self):
+        """B-P36o (08:35Z): recover_packet always runs validate_hb_reference, so a reference whose
+        generation, heartbeat_id, frequency or progression disagrees with its epoch is HB_REFERENCE_INVALID."""
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        for key, value in (("generation", 4097), ("generation", "4097"), ("heartbeat_id", "HB:4097"),
+                           ("frequency_hz", 99), ("progression_dependency", "CLOCK")):
+            frame = self.digit_string_frame("4096")
+            frame["heartbeat_reference"]["epoch"] = 4096
+            frame["heartbeat_reference"]["generation"] = 4096
+            frame["heartbeat_reference"][key] = value
+            frame["frame_sha256"] = kernel.sha({k: v for k, v in frame.items() if k != "frame_sha256"})
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError) as refused:
+                kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
+            self.assertEqual(refused.exception.refusal["failure_code"], "HB_REFERENCE_INVALID")
+            for field in SIX_FIELDS:
+                self.assertTrue(refused.exception.refusal.get(field), field)
+        self.assertEqual(self.written(), [])
+
     def test_ingest_takes_a_digit_string_carrier_epoch(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         result = kernel.ingest_frame(ROOT, self.digit_string_frame("4096"), mesh_root=self.mesh)
@@ -1130,6 +1148,57 @@ class ManifestEpochBindings(unittest.TestCase):
                     module = _module("manifest_" + name, path)
                     with self.subTest(entrypoint=entrypoint):
                         self.assertIn(source["parameter"], inspect.signature(getattr(module, name)).parameters)
+
+    def dispatches(self):
+        for operation in self.operations():
+            binding = operation["hb_epoch_binding"]
+            if "dispatch" in binding:
+                yield operation["operation_id"], binding["dispatch"], binding
+            for source in binding["sources"]:
+                if "dispatch" in source:
+                    yield operation["operation_id"], source["dispatch"], source
+
+    def non_test_sources(self):
+        import subprocess
+        names = subprocess.run(["git", "-C", str(ROOT), "ls-files", "*.py", "*.yml", "*.yaml"],
+                               capture_output=True, text=True, check=True).stdout.split()
+        return {name: (ROOT / name).read_text(encoding="utf-8") for name in names if not name.startswith("tests/")}
+
+    def test_every_epoch_source_has_an_in_tree_dispatcher_or_is_a_library_api(self):
+        """B-P36n (08:32Z): no null dispatcher. A declared dispatcher is a workflow_dispatch in the tree;
+        a LIBRARY_API is not an entrypoint and nothing outside tests calls it."""
+        operations = {operation["operation_id"]: operation for operation in self.operations()}
+        for operation_id, operation in operations.items():
+            binding = operation["hb_epoch_binding"]
+            self.assertNotIn("in_tree_dispatcher", binding)
+            for source in binding["sources"]:
+                self.assertTrue("dispatch" in source or "dispatch" in binding, operation_id)
+        sources = self.non_test_sources()
+        for operation_id, dispatch, owner in self.dispatches():
+            with self.subTest(operation=operation_id, kind=dispatch["kind"]):
+                self.assertIn(dispatch["kind"], ("IN_TREE_DISPATCHER", "LIBRARY_API"))
+                if dispatch["kind"] == "IN_TREE_DISPATCHER":
+                    self.assertIs(dispatch["entrypoint"], True)
+                    workflow = (ROOT / owner["dispatcher"]).read_text(encoding="utf-8")
+                    self.assertIn("\non:\n  " + dispatch["trigger"] + ":", workflow)
+                    continue
+                self.assertIs(dispatch["entrypoint"], False)
+                self.assertEqual(dispatch["in_tree_callers"], [])
+                api = dispatch["api"]
+                module_path, _, function = api.partition("::")
+                callers = []
+                for name, text in sources.items():
+                    if name == module_path:
+                        continue
+                    if name.endswith((".yml", ".yaml")):
+                        invoked = "python3 " + module_path in text  # a paths: filter is not a caller
+                    elif function:
+                        invoked = function + "(" in text
+                    else:
+                        invoked = '"' + module_path + '"' in text or "import " + Path(module_path).stem in text
+                    if invoked:
+                        callers.append(name)
+                self.assertEqual(callers, [], api + " is called in tree; declare that caller as its dispatcher")
 
     def test_each_carrier_frame_source_is_the_ingest_path(self):
         for operation in self.operations():
