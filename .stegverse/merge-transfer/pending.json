@@ -1,0 +1,12 @@
+{
+  "schema": "stegverse.main-merge-transfer-pending/v1",
+  "repository": "SV-011/.github",
+  "rule": "Merges that landed on main before .github/workflows/organization-ledger-merge-transfer.yml existed. Every push to main appends each listed merge (idempotent: a ledgered merge is answered from the ledger) before the pushed range. Listing a merge here is the only way one enters without being pushed.",
+  "merges": [
+    {
+      "merge_commit": "d7beaf593a15c8e170540cbbf9ee3273003e645a",
+      "pull_request": 14,
+      "observed_state": "FAIL_CLOSED MERGE_TRANSFER_RECEIPT_NOT_LEDGERED at ledger tip 2cc58cec07117909750a760933641725b86a204b"
+    }
+  ]
+}
