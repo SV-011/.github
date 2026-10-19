@@ -311,6 +311,8 @@ def receive(payload: Any, *, registry: Mapping[str, Any], standing: Mapping[str,
     return _recorded(ALLOW, payload, packet_id, hb_epoch)
 
 
+INGRESS_WRITE_FAILED = "INTR_INGRESS_WRITE_FAILED"
+CLI_ENTRYPOINT = "resident-runtime/intr_destination_ingress.py (--self-closure | --payload) --hb-epoch <same>"
 CLI_EPOCH_RETRY_ENTRYPOINT = ("resident-runtime/intr_destination_ingress.py --hb-epoch <digits >= 32> "
                               "(or STEGVERSE_HB_EPOCH)")
 
@@ -346,19 +348,28 @@ def main() -> int:
     if refusal is not None:
         print(json.dumps(refusal, sort_keys=True))
         return 2
-    if args.self_closure:
-        if not args.communication_id or not args.packet_id:
-            parser.error("--self-closure requires communication_id and packet_id")
-        result = self_closure(args.communication_id, registry=registry,
-                              packet_id=args.packet_id, hb_epoch=hb_epoch)
-    else:
-        if args.payload is None:
-            parser.error("--payload is required")
-        result = receive(
-            json.loads(args.payload.read_text(encoding="utf-8")),
-            registry=registry,
-            packet_id=args.packet_id or "organization-intr-destination",
-            hb_epoch=hb_epoch)
+    if args.self_closure and (not args.communication_id or not args.packet_id):
+        parser.error("--self-closure requires communication_id and packet_id")
+    if not args.self_closure and args.payload is None:
+        parser.error("--payload is required")
+    try:
+        if args.self_closure:
+            result = self_closure(args.communication_id, registry=registry,
+                                  packet_id=args.packet_id, hb_epoch=hb_epoch)
+        else:
+            result = receive(
+                json.loads(args.payload.read_text(encoding="utf-8")),
+                registry=registry,
+                packet_id=args.packet_id or "organization-intr-destination",
+                hb_epoch=hb_epoch)
+    except Exception as exc:
+        # F-WRITER-TRACE: a fault writing our own ledger is six fields and non-zero, never a traceback.
+        if not repository_ledger.kernel.is_own_state_fault(exc):
+            raise
+        print(json.dumps(repository_ledger.kernel.own_state_write_refusal(
+            exc, INGRESS_WRITE_FAILED, CLI_ENTRYPOINT, "re-run the same invocation with the same hb_epoch"),
+            sort_keys=True))
+        return 3
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

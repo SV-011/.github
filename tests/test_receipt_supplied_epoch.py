@@ -308,6 +308,95 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertEqual(refused["failure_code"], "EMIT_PACKET_ID_COLLISION")
         self.assertEqual(self.frames(), frames)
 
+    def test_a_torn_write_in_egress_emit_is_six_fields_and_resumes_once(self):
+        """V-P11 F-WRITER-TRACE: tearing the frame publish or any of the 4 ledger puts in emit() is a six-field
+        EMIT_WRITE_FAILED, terminal false, not a traceback; the same emission retried completes once."""
+        self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
+        roots = [Path(os.environ[name]).resolve() for name in self.ROOTS]
+        frames_dir = (self.mesh / "frames.d")
+        real_bytes, real_text = Path.write_bytes, Path.write_text
+        for step in range(5):  # 0: the frame publish; 1-4: repo receipt, repo HEAD, org receipt, org HEAD
+            with self.subTest(step=step):
+                identifier = "egress-torn-%d" % step
+                writes = []
+
+                def tear(path, data, _real, *args, **kwargs):
+                    target = Path(path).resolve()
+                    ledger = any(root in target.parents for root in roots)
+                    frame = target.parent == frames_dir.resolve()
+                    if (step == 0 and frame) or (step and ledger and len(writes) + 1 == step):
+                        _real(path, data[: len(data) // 2], *args, **kwargs)
+                        raise OSError(28, "No space left on device")
+                    if ledger:
+                        writes.append(path)
+                    return _real(path, data, *args, **kwargs)
+                Path.write_bytes = lambda path, data, _r=real_bytes: tear(path, data, _r)
+                Path.write_text = lambda path, data, *a, _r=real_text, **k: tear(path, data, _r, *a, **k)
+                try:
+                    failed = self.emit(4096, identifier)
+                finally:
+                    Path.write_bytes, Path.write_text = real_bytes, real_text
+                self.assertEqual(failed["failure_code"], "EMIT_WRITE_FAILED")
+                self.assertEqual(failed["disposition"], "FAIL_CLOSED")
+                self.assertIs(failed["terminal"], False)
+                self.assertIs(failed["emitted"], False)
+                for field in SIX_FIELDS:
+                    self.assertTrue(failed.get(field), field)
+                again = self.emit(4096, identifier)
+                self.assertEqual(again["disposition"], "ALLOW", again.get("detail"))
+                ours = [f for f in self.frames()
+                        if json.loads(f.read_text(encoding="utf-8"))["packet_id"] == again["packet_id"]]
+                self.assertEqual(len(ours), 1)
+                receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+                emitted = [r for r in receipts if r.get("transition_id") == "ORGANIZATION_EGRESS_EMITTED:"
+                           + again["packet_id"]]
+                self.assertEqual(len(emitted), 1)
+                bound = [r for r in receipts if r.get("repo_receipt_sha256") == emitted[0]["receipt_sha256"]]
+                self.assertEqual(len(bound), 1)
+
+    def test_a_torn_ledger_put_in_the_ingress_cli_is_six_fields_and_resumes_once(self):
+        """V-P11 F-WRITER-TRACE: the workflow CLI (--self-closure --hb-epoch) tearing any of the 4 ledger puts
+        prints a six-field INTR_INGRESS_WRITE_FAILED and exits non-zero without a traceback; re-run completes once."""
+        driver = (
+            "import os, pathlib, runpy, sys\n"
+            "roots = [pathlib.Path(os.environ[n]).resolve() for n in ('STEGVERSE_REPO_LEDGER_ROOT',"
+            " 'STEGVERSE_ORG_LEDGER_ROOT')]\n"
+            "step = int(os.environ['TEAR_AT']); seen = []; real = pathlib.Path.write_bytes\n"
+            "def tear(path, data):\n"
+            "    if any(r in pathlib.Path(path).resolve().parents for r in roots):\n"
+            "        seen.append(path)\n"
+            "        if len(seen) == step:\n"
+            "            real(path, data[: len(data) // 2]); raise OSError(28, 'No space left on device')\n"
+            "    return real(path, data)\n"
+            "pathlib.Path.write_bytes = tear\n"
+            "sys.argv = sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        for step in (1, 2, 3, 4):
+            with self.subTest(step=step):
+                identifier = "cli-torn-%d" % step
+                command = [str(ROOT / "resident-runtime/intr_destination_ingress.py"), "--self-closure",
+                           "--communication-id", identifier, "--packet-id", identifier,
+                           "--registry", str(ROOT / "org-boundary/registry/services.json"), "--hb-epoch", "4096"]
+                environment = {k: v for k, v in os.environ.items() if k != "STEGVERSE_HB_EPOCH"}
+                torn = subprocess.run([sys.executable, "-c", driver, *command], capture_output=True, text=True,
+                                      env={**environment, "TEAR_AT": str(step)}, cwd=ROOT)
+                self.assertEqual(torn.returncode, 3, torn.stderr)
+                self.assertNotIn("Traceback", torn.stderr)
+                refusal = json.loads(torn.stdout.strip().splitlines()[-1])
+                self.assertEqual(refusal["failure_code"], "INTR_INGRESS_WRITE_FAILED")
+                self.assertEqual(refusal["failed_predicate"], "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:OSError")
+                self.assertIs(refusal["terminal"], False)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+                rerun = subprocess.run([sys.executable, *command], capture_output=True, text=True,
+                                       env=environment, cwd=ROOT)
+                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+                receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+                ours = [r for r in receipts if str(r.get("transition_id", "")).endswith(":" + identifier)]
+                self.assertEqual(len(ours), 1)
+                bound = [r for r in receipts if r.get("repo_receipt_sha256") == ours[0]["receipt_sha256"]]
+                self.assertEqual(len(bound), 1)
+
     def test_egress_takes_a_supplied_digit_string_epoch(self):
         self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
         emitted = self.emit("4096", "egress-4096")

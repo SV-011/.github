@@ -776,13 +776,24 @@ def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
     resumes a partial write without a duplicate. No clock is read.
     """
     code = FRAME_DISPATCH_IO_FAILED if isinstance(exc, OSError) else FRAME_DISPATCH_WRITE_FAILED
-    return {"disposition": "FAIL_CLOSED", "failure_code": code,
+    return own_state_write_refusal(exc, code, FRAME_CYCLE_ENTRYPOINT,
+                                   "the next manifest-bound cycle; the frame stays pending")
+
+
+def own_state_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str,
+                            next_attempt: str) -> dict[str, Any]:
+    """The non-terminal six-field FAIL_CLOSED for a fault writing this repository's own state.
+
+    The writers are idempotent and their writes atomic, so the retry resumes
+    without a duplicate. No clock is read.
+    """
+    return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
             "failed_predicate": "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:" + type(exc).__name__,
             "detail": type(exc).__name__ + ": " + str(exc),
             "required_evidence_or_repair": "this repository's ledger, receipt and outbox stores accept writes",
-            "retry_entrypoint": FRAME_CYCLE_ENTRYPOINT,
+            "retry_entrypoint": retry_entrypoint,
             "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
-            "next_attempt": "the next manifest-bound cycle; the frame stays pending",
+            "next_attempt": next_attempt,
             "status": "PENDING", "terminal": False,
             "derived_from_clock": False, "consequence_committed": False}
 

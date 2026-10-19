@@ -371,11 +371,37 @@ def emission_collision(packet: Mapping[str, Any], frame: Mapping[str, Any],
     }
 
 
+EMIT_WRITE_FAILED = "EMIT_WRITE_FAILED"
+
+
 def emit(destination_organization: Any, payload: Mapping[str, Any], *,
          standing: Mapping[str, Any], capability: str | None = None,
          transition_reference: str = "ecosystem.transition.interorg.v1",
          root: Path | None = None, mesh_root: Path | None = None,
          hb_epoch: int | None = None) -> dict[str, Any]:
+    """Emit, or answer a fault writing our own frame or ledger with six fields (F-WRITER-TRACE), not a traceback.
+
+    The fault is not terminal: the frame publish is atomic and write-once and
+    the appends are idempotent, so the same emission retried completes once.
+    """
+    try:
+        return _emit(destination_organization, payload, standing=standing, capability=capability,
+                     transition_reference=transition_reference, root=root, mesh_root=mesh_root,
+                     hb_epoch=hb_epoch)
+    except Exception as exc:
+        if not kernel.is_own_state_fault(exc):
+            raise
+        return {"schema": RESULT_SCHEMA, "operation": OPERATION_ID, "disposition_is_transition_evidence": True,
+                "emitted": False,
+                **kernel.own_state_write_refusal(exc, EMIT_WRITE_FAILED, EMIT_EPOCH_RETRY_ENTRYPOINT,
+                                                 "the same emission retried with the same hb_epoch")}
+
+
+def _emit(destination_organization: Any, payload: Mapping[str, Any], *,
+          standing: Mapping[str, Any], capability: str | None = None,
+          transition_reference: str = "ecosystem.transition.interorg.v1",
+          root: Path | None = None, mesh_root: Path | None = None,
+          hb_epoch: int | None = None) -> dict[str, Any]:
     """Emit an outbound crossing to a declared peer and record the disposition.
 
     ``hb_epoch`` is checked first: an absent or invalid one is
