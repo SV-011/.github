@@ -71,6 +71,21 @@ def process(envelope: dict) -> dict:
     if p.returncode == WRITE_FAULT_EXIT:
         return {"decision":"FAIL_CLOSED","fault":write_fault(reason)}
     denied = {"decision":"DENY","denial_receipt":denial_receipt(envelope, reason)}
+    if p.returncode != INPUT_FAULT_EXIT:
+        # Any other exit (1 with a bare "missing:..." / "unknown-service" string from the pinned canonical copy, or
+        # an unexpected crash): a terminal six-field refusal, never a bare string. The canonical copy should exit
+        # 65 for these; that is open as PROCESS_BOUNDARY_CONTENT_FAULT_EXIT_NOT_65.
+        denied["terminal_record"] = {
+            "disposition": "FAIL_CLOSED", "failure_code": "FRAME_INGEST_FAILED",
+            "boundary_failure_code": "PROCESS_BOUNDARY_REFUSED_EXIT_" + str(p.returncode),
+            "failed_predicate": "ENVELOPE_IS_ADMISSIBLE_AT_THE_BOUNDARY", "detail": reason,
+            "required_evidence_or_repair": "an envelope with every required field, addressed to this organization "
+                                           "and to a registered BOUNDARY_LOCAL_DIAGNOSTIC service",
+            "retry_entrypoint": "org-boundary/runtime/denial_adapter.py::process (a corrected envelope)",
+            "owning_existing_goal": "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
+            "next_attempt": "none for this envelope; a corrected envelope is a new request",
+            "terminal": True, "derived_from_clock": False, "consequence_committed": False}
+        return denied
     if p.returncode == INPUT_FAULT_EXIT:
         try:
             emitted = json.loads(reason)

@@ -573,6 +573,18 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertIs(denied["terminal_record"]["terminal"], True)
         for field in SIX_FIELDS:
             self.assertTrue(denied["terminal_record"].get(field), field)
+        # any other exit (the canonical copy's exit 1 with a bare string): a terminal six-field refusal
+        for mutate in (lambda e: e.pop("evidence"), lambda e: e["destination"].__setitem__("org", "Elsewhere"),
+                       lambda e: e["destination"].__setitem__("service", "no-such-service")):
+            other = json.loads(json.dumps(envelope))
+            mutate(other)
+            refused = adapter.process(other)
+            self.assertEqual(refused["decision"], "DENY")
+            record = refused["terminal_record"]
+            self.assertEqual(record["boundary_failure_code"], "PROCESS_BOUNDARY_REFUSED_EXIT_1")
+            self.assertIs(record["terminal"], True)
+            for field in SIX_FIELDS:
+                self.assertTrue(record.get(field), field)
         # through the probe: 75 writes no evidence and exits 75; the next run writes the evidence once
         evidence = self.mesh / "evidence"
         argv = ["run_phase5_probe.py", "--request", str(ROOT / "resident-runtime/requests/phase5-allow.json"),
