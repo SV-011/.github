@@ -467,7 +467,8 @@ class EgressAndIngestRefuseFirst(Redirected):
         and prints no traceback."""
         self.mesh.mkdir(parents=True, exist_ok=True)
         bad = {"missing": self.mesh / "absent.json", "directory": Path(tempfile.mkdtemp(dir=self.mesh))}
-        for name, content in (("not-json", b"{not json"), ("not-utf8", b"\xff\xfe{}"), ("list", b"[1, 2]")):
+        for name, content in (("not-json", b"{not json"), ("not-utf8", b"\xff\xfe{}"), ("list", b"[1, 2]"),
+                              ("deep", b'{"a":' + b"[" * 200000)):  # F-SCAN-RECURSION
             bad[name] = self.mesh / (name + ".json")
             bad[name].write_bytes(content)
         registry = str(ROOT / "org-boundary/registry/services.json")
@@ -493,7 +494,7 @@ class EgressAndIngestRefuseFirst(Redirected):
             for kind, path in bad.items():
                 if kind in ("list",) and argument in ("payload", "commits-file", "verify commits-file"):
                     continue  # a list payload is a recorded diagnostic refusal; a commits file is plain text
-                if kind in ("not-json", "list") and argument in ("commits-file", "verify commits-file"):
+                if kind in ("not-json", "list", "deep") and argument in ("commits-file", "verify commits-file"):
                     continue
                 with self.subTest(argument=argument, kind=kind):
                     before = sorted(str(p) for p in self.written())
@@ -517,7 +518,8 @@ class EgressAndIngestRefuseFirst(Redirected):
         readback_cli = str(ROOT / "resident-runtime/organization_ledger_readback.py")
         for command in ([readback_cli, "--designated-locators", str(bad["missing"])],
                         [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["not-json"])],
-                        [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["list"])]):
+                        [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["list"])],
+                        [readback_cli, "--location", str(self.mesh), "--ingress-result", str(bad["deep"])]):
             with self.subTest(readback=command[1:]):
                 ran = subprocess.run([sys.executable, *command], capture_output=True, text=True, env=environment,
                                      cwd=ROOT)
@@ -573,6 +575,16 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertIs(denied["terminal_record"]["terminal"], True)
         for field in SIX_FIELDS:
             self.assertTrue(denied["terminal_record"].get(field), field)
+        # a too-deep envelope (F-SCAN-RECURSION): a terminal six-field refusal, not a RecursionError
+        deep = []
+        for _ in range(200000):
+            deep = [deep]
+        refused = adapter.process({**envelope, "payload": deep})
+        self.assertEqual(refused["decision"], "DENY")
+        self.assertEqual(refused["terminal_record"]["boundary_failure_code"], "PROCESS_BOUNDARY_INPUT_FAULT")
+        self.assertIs(refused["terminal_record"]["terminal"], True)
+        for field in SIX_FIELDS:
+            self.assertTrue(refused["terminal_record"].get(field), field)
         # any other exit (the canonical copy's exit 1 with a bare string): a terminal six-field refusal
         for mutate in (lambda e: e.pop("evidence"), lambda e: e["destination"].__setitem__("org", "Elsewhere"),
                        lambda e: e["destination"].__setitem__("service", "no-such-service")):
@@ -1392,7 +1404,8 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         oversized = '{"pad": "' + "x" * kernel.FRAME_MAX_BYTES + '"}'
         for content, exception in (("{not json", "JSONDecodeError"), ("[1,2,3]", "TypeError"), ('"x"', "TypeError"),
                                    (b"\xff\xfe{}", "UnicodeDecodeError"), (oversized, "FrameOversized"),
-                                   (None, "IsADirectoryError")):
+                                   (None, "IsADirectoryError"),
+                                   ('{"a":' + "[" * 200000, "RecursionError")):  # F-SCAN-RECURSION, under the cap
             for refused_first in (True, False):
                 with self.subTest(content=content, refused_first=refused_first):
                     for directory in ("frames.d", "quarantine.d"):
@@ -1486,6 +1499,26 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                                 self.assertTrue(marker.get(key), key)
                         self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
                         self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
+    def test_a_deep_packet_inside_a_sealed_frame_is_quarantined(self):
+        """F-SCAN-RECURSION: a frame whose hashes verify but whose packet is nested too deep to parse is a
+        terminal FRAME_INGEST_FAILED:RecursionError quarantine; the valid frame is consumed once."""
+        import base64
+        raw = b'{"a":' + b"[" * 200000
+        bad = self.frame("deep-packet", epoch=4096)
+        bad["packet_base64"] = base64.b64encode(raw).decode("ascii")
+        bad["packet_sha256"] = kernel.sha(raw)
+        bad["frame_sha256"] = kernel.sha({k: v for k, v in bad.items() if k != "frame_sha256"})
+        good = self.frame("deep-packet-good", epoch=4096)
+        for frame in (bad, good):
+            kernel.publish_frame(frame, root=self.mesh)
+        by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
+        marker = by_name[self.name(bad)]
+        self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(marker["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertEqual(marker["failed_predicate"], "FRAME_INGESTS_WITHOUT_ERROR:RecursionError")
+        self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+        self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
     def test_recover_packet_type_checks_before_decoding(self):
         frame = self.frame("typed", epoch=4096)

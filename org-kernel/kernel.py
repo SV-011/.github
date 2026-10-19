@@ -409,6 +409,9 @@ def publish_frame(frame: dict[str, Any], *, root: Path | None = None) -> Path:
 
 
 FRAME_MAX_BYTES = 1 << 20
+# json.loads raises RecursionError on deeply nested input under the size cap (F-SCAN-RECURSION); neither is a
+# ValueError, so every parse of a peer- or caller-supplied file names them too.
+DEEP_PARSE_FAULTS = (RecursionError, MemoryError)
 
 
 class FrameOversized(ValueError):
@@ -434,7 +437,7 @@ def scan_addressed_frames(organization: str, *, root: Path | None = None,
             frame = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(frame, dict):
                 raise TypeError("frame_is_not_an_object: " + type(frame).__name__)
-        except (ValueError, TypeError, OSError) as unreadable:
+        except (ValueError, TypeError, OSError, *DEEP_PARSE_FAULTS) as unreadable:
             # A read error, non-UTF-8, non-JSON, non-object or oversized file names no destination; it is offered once with its six-field refusal
             # so the consumer quarantines it by name and the batch goes on (B-P36o F-SCAN).
             found.append({"path": str(path), "name": path.name, "frame": {},
@@ -498,7 +501,7 @@ def frames_for_packet(packet_id: str, *, root: Path | None = None) -> list[dict[
     for path in sorted((resolved / MESH_FRAME_PREFIX).glob("*.json")):
         try:
             frame = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+        except (ValueError, OSError, *DEEP_PARSE_FAULTS):
             continue
         if isinstance(frame, dict) and frame.get("packet_id") == packet_id:
             found.append(frame)
@@ -568,7 +571,10 @@ def collect_ecosystem_responses(origin_org: str, communication_id: str, *,
     for item in scan_addressed_frames(origin_org, root=mesh_root):
         if "refusal" in item:
             continue
-        packet = recover_packet(item["frame"])
+        try:
+            packet = recover_packet(item["frame"])
+        except Exception:
+            continue  # a peer frame that does not recover is not a response; collection goes on
         payload = packet.get("payload") or {}
         if payload.get("communication_id") != communication_id:
             continue
@@ -780,7 +786,7 @@ def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
                                    "the next manifest-bound cycle; the frame stays pending")
 
 
-INPUT_FAULTS = (OSError, ValueError)  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+INPUT_FAULTS = (OSError, ValueError, *DEEP_PARSE_FAULTS)  # JSONDecodeError and UnicodeDecodeError are ValueErrors
 
 
 def input_refusal(cli: str, argument: str, exc: BaseException, retry_entrypoint: str) -> dict[str, Any]:

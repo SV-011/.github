@@ -39,7 +39,7 @@ def main():
         req["payload"],req["carrier_reference"],req["transition_reference"],req.get("authority_effect","NONE"),req["request_id"]
       )
       intr.validate_org_crossing(envelope,"INGRESS")
-    except (OSError,ValueError,KeyError,TypeError,AttributeError) as exc:
+    except (OSError,ValueError,KeyError,TypeError,AttributeError,RecursionError,MemoryError) as exc:
       print(json.dumps(input_refusal(exc),sort_keys=True))
       return 1
     result=adapter.process(envelope)

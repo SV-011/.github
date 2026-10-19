@@ -277,7 +277,7 @@ def main() -> int:
                 ingress = json.loads(args.ingress_result.read_text(encoding="utf-8"))
             result, code = readback(args.location, ingress, args.repository_namespace), 0
     except (ReadbackRefused, ValueError, RuntimeError, FileNotFoundError, OSError, KeyError, TypeError,
-            AttributeError) as exc:
+            AttributeError, MemoryError) as exc:
         result, code = _refusal(location, exc), 1
     text = json.dumps(result, indent=2, sort_keys=True)
     print(text)

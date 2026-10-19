@@ -51,14 +51,34 @@ def write_fault(detail: str) -> dict:
         "terminal": False, "derived_from_clock": False, "consequence_committed": False,
     }
 
+def _terminal(reason: str) -> dict:
+    """The terminal six-field record for an envelope the boundary refuses."""
+    return {
+        "disposition": "FAIL_CLOSED", "failure_code": "FRAME_INGEST_FAILED",
+        "failed_predicate": "ENVELOPE_IS_ADMISSIBLE_AT_THE_BOUNDARY", "detail": reason,
+        "required_evidence_or_repair": "an envelope with every required field, addressed to this organization "
+                                       "and to a registered BOUNDARY_LOCAL_DIAGNOSTIC service",
+        "retry_entrypoint": "org-boundary/runtime/denial_adapter.py::process (a corrected envelope)",
+        "owning_existing_goal": "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
+        "next_attempt": "none for this envelope; a corrected envelope is a new request",
+        "terminal": True, "derived_from_clock": False, "consequence_committed": False}
+
 def process(envelope: dict) -> dict:
     """0 is ALLOW; 65 (input fault) and the processor's other refusals are a terminal DENY with its receipt;
     75, or an OSError of our own, is a non-terminal WRITE_FAULT with no receipt."""
     try:
+        rendered = json.dumps(envelope)
+    except (TypeError, ValueError, RecursionError) as exc:
+        # The envelope itself is not serializable (too deep, or not JSON data): a terminal input refusal.
+        reason = "envelope-not-serializable:" + type(exc).__name__
+        return {"decision":"DENY","denial_receipt":denial_receipt(envelope, reason),
+                "terminal_record":{**_terminal(reason), "boundary_failure_code":"PROCESS_BOUNDARY_INPUT_FAULT",
+                                   "failed_predicate":"ENVELOPE_IS_A_SERIALIZABLE_JSON_OBJECT"}}
+    try:
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
             inp, out = td / "in.json", td / "out.json"
-            inp.write_text(json.dumps(envelope), encoding="utf-8")
+            inp.write_text(rendered, encoding="utf-8")
             p = subprocess.run(
                 [sys.executable, str(PROCESS), "--envelope", str(inp), "--registry", str(REGISTRY), "--out", str(out)],
                 cwd=ROOT, capture_output=True, text=True
@@ -75,16 +95,8 @@ def process(envelope: dict) -> dict:
         # Any other exit (1 with a bare "missing:..." / "unknown-service" string from the pinned canonical copy, or
         # an unexpected crash): a terminal six-field refusal, never a bare string. The canonical copy should exit
         # 65 for these; that is open as PROCESS_BOUNDARY_CONTENT_FAULT_EXIT_NOT_65.
-        denied["terminal_record"] = {
-            "disposition": "FAIL_CLOSED", "failure_code": "FRAME_INGEST_FAILED",
-            "boundary_failure_code": "PROCESS_BOUNDARY_REFUSED_EXIT_" + str(p.returncode),
-            "failed_predicate": "ENVELOPE_IS_ADMISSIBLE_AT_THE_BOUNDARY", "detail": reason,
-            "required_evidence_or_repair": "an envelope with every required field, addressed to this organization "
-                                           "and to a registered BOUNDARY_LOCAL_DIAGNOSTIC service",
-            "retry_entrypoint": "org-boundary/runtime/denial_adapter.py::process (a corrected envelope)",
-            "owning_existing_goal": "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001",
-            "next_attempt": "none for this envelope; a corrected envelope is a new request",
-            "terminal": True, "derived_from_clock": False, "consequence_committed": False}
+        denied["terminal_record"] = {**_terminal(reason),
+                                     "boundary_failure_code": "PROCESS_BOUNDARY_REFUSED_EXIT_" + str(p.returncode)}
         return denied
     if p.returncode == INPUT_FAULT_EXIT:
         try:
