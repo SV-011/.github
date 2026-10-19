@@ -18,6 +18,7 @@ on:
       - 'resident-runtime/organization_ledger_readback.py'
       - 'tests/test_intr_destination_capability.py'
       - 'tests/test_organization_ledger_publication.py'
+      - 'tests/test_receipt_supplied_epoch.py'
       - 'docs/INTR_DESTINATION_CAPABILITY_MIRROR_HANDOFF.md'
       - '.github/workflows/intr-destination-capability-validation.yml'
   push:
@@ -37,6 +38,7 @@ on:
       - 'resident-runtime/organization_ledger_readback.py'
       - 'tests/test_intr_destination_capability.py'
       - 'tests/test_organization_ledger_publication.py'
+      - 'tests/test_receipt_supplied_epoch.py'
       - 'docs/INTR_DESTINATION_CAPABILITY_MIRROR_HANDOFF.md'
       - '.github/workflows/intr-destination-capability-validation.yml'
   workflow_dispatch:
@@ -75,4 +77,4 @@ jobs:
         env:
           STEGVERSE_REPO_LEDGER_ROOT: ${{ runner.temp }}/repo-ledger
           STEGVERSE_ORG_LEDGER_ROOT: ${{ runner.temp }}/org-ledger
-        run: python3 -m unittest tests.test_intr_destination_capability tests.test_organization_ledger_publication -v
+        run: python3 -m unittest tests.test_intr_destination_capability tests.test_organization_ledger_publication tests.test_receipt_supplied_epoch -v

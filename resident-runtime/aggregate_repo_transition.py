@@ -67,12 +67,18 @@ def _recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
     return None
 
 
+EPOCH_RETRY_ENTRYPOINT = "resident-runtime/aggregate_repo_transition.py::append (hb_epoch=)"
+OrgLedgerEpochRefused = kernel.SuppliedEpochRefused
+
+
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
            predecessor_state: str, successor_state: str, boundary_evidence: Mapping[str, Any],
            authority_constraint: str, hb_epoch: int | None = None,
            store: ledger_store.Store | None = None, idempotent: bool = False) -> dict[str, Any]:
     if not isinstance(source_receipt, Mapping) or not isinstance(source_receipt.get("receipt_sha256"), str):
         raise ValueError("source_receipt_required")
+    # An absent or invalid epoch is FAIL_CLOSED before the store opens; no clock is read.
+    hb = kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
     target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
@@ -98,7 +104,7 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         "time_constraint": "HEARTBEAT_EPOCH",
         "disposition_is_transition_evidence": True,
         "production_receipt_claimed": False,
-        "hb_reference": kernel.hb_reference(epoch=hb_epoch) if hb_epoch is not None else kernel.hb_reference(),
+        "hb_reference": hb,
         "previous_receipt_sha256": previous,
     }
     digest = sha(body)

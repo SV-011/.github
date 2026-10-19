@@ -104,6 +104,53 @@ def hb_reference(now_ns: int | None = None, *, epoch: int | None = None) -> dict
     })
 
 
+HB_EPOCH_NOT_SUPPLIED = "HB_EPOCH_NOT_SUPPLIED"
+HB_EPOCH_INVALID = "HB_EPOCH_INVALID"
+HB_EPOCH_PREDICATE = "RECEIPT_REFERENCES_A_SUPPLIED_HEARTBEAT_EPOCH"
+HB_EPOCH_OWNING_EXISTING_GOAL = ("StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 "
+                                 "P0-runtime-and-custody")
+
+
+class SuppliedEpochRefused(ValueError):
+    """A receipt writer's refusal of an absent or invalid supplied epoch.
+
+    ``refusal`` is the six-field FAIL_CLOSED from ``writer_epoch_refusal``. It is
+    raised before a store is opened; no clock is read to stand in for the epoch.
+    """
+
+    def __init__(self, refusal: dict[str, Any]) -> None:
+        super().__init__(refusal["failure_code"] + ": " + refusal["detail"])
+        self.disposition = refusal["disposition"]
+        self.failed_predicate = refusal["failed_predicate"]
+        self.refusal = dict(refusal)
+
+
+def writer_epoch_refusal(hb_epoch: Any, *, retry_entrypoint: str) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED of a receipt writer's epoch, or None when it is supplied."""
+    if hb_epoch is None:
+        code, detail = HB_EPOCH_NOT_SUPPLIED, "no hb_epoch was supplied to the receipt writer"
+    elif not isinstance(hb_epoch, int) or isinstance(hb_epoch, bool) or hb_epoch < HB_ANCHOR_EPOCH:
+        code, detail = HB_EPOCH_INVALID, repr(hb_epoch) + " is not an int >= " + str(HB_ANCHOR_EPOCH)
+    else:
+        return None
+    return {"disposition": "FAIL_CLOSED", "failure_code": code, "failed_predicate": HB_EPOCH_PREDICATE,
+            "detail": detail,
+            "required_evidence_or_repair": ("the caller supplies hb_epoch= (or --hb-epoch): an int >= "
+                                            + str(HB_ANCHOR_EPOCH) + "; it is never derived from a clock"),
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "call again with the supplied epoch; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
+
+
+def supplied_hb_reference(hb_epoch: Any, *, retry_entrypoint: str) -> dict[str, Any]:
+    """The heartbeat reference of a supplied epoch, or SuppliedEpochRefused. No clock is read."""
+    refusal = writer_epoch_refusal(hb_epoch, retry_entrypoint=retry_entrypoint)
+    if refusal is not None:
+        raise SuppliedEpochRefused(refusal)
+    return hb_reference(epoch=hb_epoch)
+
+
 def derive_channel(payload_hash: str) -> dict[str, Any]:
     if not isinstance(payload_hash, str) or not payload_hash.startswith("sha256:") or len(payload_hash) != 71:
         raise ValueError("payload_hash_invalid")
@@ -374,7 +421,7 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
     the submission is raised, not recorded as a consumed crossing: the receiving
     operation records its own refusal when it is the one that saw the payload.
     """
-    del node_state, epoch
+    del node_state
     registry = load_registry(root)
     if packet["destination"]["org"] != registry["organization"]:
         raise ValueError("wrong_destination_org")
@@ -398,7 +445,7 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
         previous = item["receipt_id"]
     try:
         application_result = capability_ingress(root).receive(
-            root, service, packet, registry=registry, mesh_root=mesh_root)
+            root, service, packet, registry=registry, mesh_root=mesh_root, hb_epoch=epoch)
     except SystemExit as refused:
         raise ValueError("capability_ingress_refused:" + str(refused)) from None
     constraint = (packet.get("transition") or {}).get("authority_effect")
