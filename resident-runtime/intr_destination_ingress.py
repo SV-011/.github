@@ -312,7 +312,8 @@ def main() -> int:
     args = parser.parse_args()
     registry = json.loads(args.registry.read_text(encoding="utf-8"))
     hb_epoch = args.hb_epoch
-    if hb_epoch is None and os.environ.get("STEGVERSE_HB_EPOCH"):
+    if hb_epoch is None and "STEGVERSE_HB_EPOCH" in os.environ:
+        # A set variable is a supplied value, "" included; only an unset one is absent.
         hb_epoch = os.environ["STEGVERSE_HB_EPOCH"]
     refusal = repository_ledger.kernel.writer_epoch_refusal(
         hb_epoch, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)

@@ -338,13 +338,15 @@ class EgressAndIngestRefuseFirst(Redirected):
 class CliEpochIsTheSharedRule(Redirected):
     """``--hb-epoch`` is text checked by the shared rule, not argparse ``int()``."""
 
-    def run_cli(self, epoch):
+    def run_cli(self, epoch, env_epoch=None):
         command = [sys.executable, str(ROOT / "resident-runtime/intr_destination_ingress.py"),
                    "--self-closure", "--communication-id", "cli-epoch", "--packet-id", "cli-epoch",
                    "--registry", str(ROOT / "org-boundary/registry/services.json")]
         if epoch is not None:
             command += ["--hb-epoch", epoch]
         environment = {key: value for key, value in os.environ.items() if key != "STEGVERSE_HB_EPOCH"}
+        if env_epoch is not None:
+            environment["STEGVERSE_HB_EPOCH"] = env_epoch
         return subprocess.run(command, capture_output=True, text=True, env=environment, cwd=ROOT)
 
     def test_a_coerced_or_absent_cli_epoch_refuses_with_six_fields_and_writes_nothing(self):
@@ -362,6 +364,17 @@ class CliEpochIsTheSharedRule(Redirected):
                 for field in SIX_FIELDS:
                     self.assertTrue(refusal.get(field), field)
                 self.assertIn("intr_destination_ingress.py --hb-epoch", refusal["retry_entrypoint"])
+        self.assertEqual(self.written(), [])
+
+    def test_an_empty_environment_epoch_is_supplied_and_invalid(self):
+        for argument, env_epoch in ((None, ""), ("", None)):
+            with self.subTest(argument=argument, env_epoch=env_epoch):
+                ran = self.run_cli(argument, env_epoch=env_epoch)
+                self.assertNotEqual(ran.returncode, 0)
+                refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                self.assertEqual(refusal["failure_code"], "HB_EPOCH_INVALID")
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
         self.assertEqual(self.written(), [])
 
     def test_a_digit_string_cli_epoch_is_accepted(self):
