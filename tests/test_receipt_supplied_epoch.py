@@ -283,6 +283,23 @@ class EgressAndIngestRefuseFirst(Redirected):
             self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
 
+    def test_publish_packet_checks_a_supplied_epoch_before_it_publishes(self):
+        packet = kernel.build_packet(
+            origin_org="SV-011", origin_service="sv-011.intr-destination",
+            destination_org="StegVerse-org", destination_service="stegverse-org.intr-destination",
+            payload=diagnostic("publish-epoch"), standing=GENESIS,
+            transition_reference="intr:transition:publish-epoch",
+            authority_effect="NONE", packet_id="publish-epoch")
+        for epoch in ("33.0", True, 31, "+33", " 33", "\uff13\uff13", "abc", 32.0, "3_3"):
+            with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
+                kernel.publish_packet(packet, root=self.mesh, epoch=epoch)
+            self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "kernel.py::publish_packet")
+        self.assertEqual(self.frames(), [])
+        published = kernel.publish_packet(packet, root=self.mesh, epoch="4096")
+        self.assertEqual(published["frame"]["heartbeat_reference"]["epoch"], 4096)
+        self.assertIs(published["frame"]["heartbeat_reference"]["derived_from_clock"], False)
+        self.assertEqual(len(self.frames()), 1)
+
     def digit_string_frame(self, text):
         packet = kernel.build_packet(
             origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",

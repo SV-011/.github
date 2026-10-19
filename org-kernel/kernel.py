@@ -381,8 +381,23 @@ def build_packet(*, origin_org: str, origin_service: str, destination_org: str,
     }
 
 
+PUBLISH_EPOCH_RETRY_ENTRYPOINT = "org-kernel/kernel.py::publish_packet (epoch=<digits >= 32>)"
+
+
 def publish_packet(packet: dict[str, Any], *, root: Path | None = None,
                    now_ns: int | None = None, epoch: int | None = None) -> dict[str, Any]:
+    """Publish a packet in a carrier frame.
+
+    A supplied ``epoch`` is checked by the shared rule: ASCII digits >= 32 are
+    taken as their integer; anything else is ``SuppliedEpochRefused`` (six
+    fields) before a frame is built or published. ``epoch=None`` still derives
+    one from the clock (WU-B13); no epoch-taking writer calls it that way.
+    """
+    if epoch is not None:
+        refusal = writer_epoch_refusal(epoch, retry_entrypoint=PUBLISH_EPOCH_RETRY_ENTRYPOINT)
+        if refusal is not None:
+            raise SuppliedEpochRefused(refusal)
+        epoch = int(str(epoch))
     frame = carrier_frame(packet, now_ns=now_ns, epoch=epoch)
     path = publish_frame(frame, root=root)
     return {"packet": packet, "frame": frame, "path": str(path)}

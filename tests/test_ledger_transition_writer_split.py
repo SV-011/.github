@@ -15,6 +15,7 @@ only.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -125,13 +126,21 @@ class WriterSplit(unittest.TestCase):
                  if "Append the intr-destination diagnostic self-closure" in s]
         check = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0])
         for epoch, accepted in (("4096", True), ("32", True), ("+33", False), (" 33", False),
-                                ("\uff13\uff13", False), ("33.7", False), ("31", False), ("abc", False)):
+                                ("\uff13\uff13", False), ("33.7", False), ("33.0", False), ("True", False), ("31", False), ("abc", False)):
             with self.subTest(epoch=epoch):
                 environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p",
                                    STEGVERSE_HB_EPOCH=epoch)
                 ran = subprocess.run([sys.executable, "-c", check], cwd=ROOT, env=environment,
                                      capture_output=True, text=True)
                 self.assertEqual(ran.returncode == 0, accepted, ran.stdout + ran.stderr)
+                if not accepted:
+                    self.assertNotIn("Traceback", ran.stderr)
+                    if epoch.isascii() and epoch.isprintable():
+                        refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                        self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
+                        for field in ("failure_code", "required_evidence_or_repair", "retry_entrypoint",
+                                      "owning_existing_goal", "next_attempt"):
+                            self.assertTrue(refusal.get(field), field)
 
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
