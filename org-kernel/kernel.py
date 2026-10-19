@@ -691,6 +691,28 @@ def frame_refusal(code: str, exc: BaseException) -> dict[str, Any]:
             "derived_from_clock": False, "consequence_committed": False}
 
 
+FRAME_DISPATCH_IO_FAILED = "FRAME_DISPATCH_IO_FAILED"
+FRAME_CYCLE_ENTRYPOINT = "org-kernel/kernel.py::consume_addressed_frames"
+
+
+def dispatch_io_refusal(exc: OSError) -> dict[str, Any]:
+    """The six-field FAIL_CLOSED for an I/O fault on this repository's own state during dispatch.
+
+    The fault is ours, not the frame's: no seen or quarantine marker is written,
+    so the frame stays pending. The writers are idempotent, so the next cycle
+    resumes a partial write without a duplicate. No clock is read.
+    """
+    return {"disposition": "FAIL_CLOSED", "failure_code": FRAME_DISPATCH_IO_FAILED,
+            "failed_predicate": "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:" + type(exc).__name__,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "this repository's ledger, receipt and outbox stores accept writes",
+            "retry_entrypoint": FRAME_CYCLE_ENTRYPOINT,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "the next manifest-bound cycle; the frame stays pending",
+            "status": "PENDING", "terminal": False,
+            "derived_from_clock": False, "consequence_committed": False}
+
+
 QUARANTINE_DIRECTORY = "quarantine.d"
 FRAME_REFUSED_QUARANTINED = "FRAME_REFUSED_QUARANTINED"
 
@@ -741,6 +763,11 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
         else:
             try:
                 result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+            except OSError as fault:
+                # An I/O fault on our own state is not the frame's defect: no marker, not seen, pending.
+                results.append({"path": item["path"], "result": dispatch_io_refusal(fault),
+                                "organization_record": None})
+                continue
             except Exception as refused:
                 # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
                 # The guard is total (F-TYPE): no exception from one frame aborts the batch.

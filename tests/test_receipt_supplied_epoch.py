@@ -1081,6 +1081,61 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 with self.assertRaises(TypeError):
                     kernel.recover_packet(bad)
 
+    def test_an_io_fault_on_our_ledger_leaves_the_frame_pending_and_resumes_once(self):
+        """V-P11 (OSError ruling): an OSError writing this repository's ledger is FRAME_DISPATCH_IO_FAILED,
+        non-terminal: no marker, not seen, nothing consumed. The next cycle consumes the frame once,
+        resuming a partial write without a duplicate receipt."""
+        roots = [Path(os.environ[name]).resolve() for name in self.ROOTS]
+        real_write = Path.write_bytes
+        # 1: the repository receipt; 2: its HEAD; 3: the organization receipt, after the repository chain
+        # landed; 4: the organization HEAD, after its content-addressed receipt landed.
+        for fail_at in (1, 2, 3, 4):
+            with self.subTest(fail_at=fail_at):
+                for directory in ("frames.d", "quarantine.d"):
+                    if (self.mesh / directory).is_dir():
+                        for path in (self.mesh / directory).glob("*.json"):
+                            path.unlink()
+                good = self.frame("io-fault-%d" % fail_at, epoch=4096)
+                kernel.publish_frame(good, root=self.mesh)
+                writes = []
+
+                def failing(path, data, _real=real_write):
+                    if any(root in Path(path).resolve().parents for root in roots):
+                        writes.append(path)
+                        if len(writes) == fail_at:
+                            raise OSError(28, "No space left on device")
+                    return _real(path, data)
+                seen = set()
+                Path.write_bytes = failing
+                try:
+                    faulted = self.consume(seen)
+                finally:
+                    Path.write_bytes = real_write
+                self.assertEqual(len(writes), fail_at)
+                [row] = faulted
+                refusal = row["result"]
+                self.assertEqual(refusal["failure_code"], "FRAME_DISPATCH_IO_FAILED")
+                self.assertEqual(refusal["failed_predicate"], "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:OSError")
+                self.assertIs(refusal["terminal"], False)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+                self.assertEqual(seen, set())
+                self.assertFalse((self.mesh / "quarantine.d" / self.name(good)).exists())
+                [again] = self.consume(set())
+                self.assertEqual(again["result"]["status"], "CONSUMED")
+                operation = again["result"]["execution_result"]["application_result"]["receiving_operation_result"]
+                self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+                after = sorted(str(p) for p in self.written())
+                self.consume(set())  # one more cycle writes nothing new
+                self.assertEqual(sorted(str(p) for p in self.written()), after)
+                receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
+                ids = [r["transition_id"] for r in receipts if "transition_id" in r and "io-fault-%d" % fail_at in r["transition_id"]]
+                self.assertEqual(len(ids), len(set(ids)), "a duplicate repository receipt was written")
+                self.assertEqual(len(ids), 1)
+                [repository] = [r for r in receipts if r.get("transition_id") in ids]
+                bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
+                self.assertEqual(len(bound), 1, "a duplicate organization receipt was written")
+
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real
         import sys
