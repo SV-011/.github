@@ -33,8 +33,8 @@ MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
 #: sha256 of the writer's steps (each step right-stripped, joined by newline): the dispatch job's
 #: steps at main d7beaf59 (digest a632cbb0..., job-level and step-level dispatch conditions
 #: removed) with the hb_epoch pre-check changed from int() and the printable-token gate to the
-#: shared epoch rule alone (B-P36b).
-MAIN_DISPATCH_STEPS_SHA256 = "c8e2d68220d744bf6d39bce11e9c89874456c3dd89291ad923cf1518585c209f"
+#: shared epoch rule alone, with a dispatch "" read as absent (B-P36b).
+MAIN_DISPATCH_STEPS_SHA256 = "9388314bfb116e92ef9cc50d538e8c7c80dbacfb1f61272d3de17a4248b898d1"
 MAIN_DISPATCH_BLOCK = """  workflow_dispatch:
     inputs:
       communication_id:
@@ -131,7 +131,7 @@ class WriterSplit(unittest.TestCase):
                  ("\u0663\u0663", False, "HB_EPOCH_INVALID"), ("33.7", False, "HB_EPOCH_INVALID"),
                  ("33.0", False, "HB_EPOCH_INVALID"), ("True", False, "HB_EPOCH_INVALID"),
                  ("31", False, "HB_EPOCH_INVALID"), ("abc", False, "HB_EPOCH_INVALID"),
-                 ("", False, "HB_EPOCH_INVALID"), (None, False, "HB_EPOCH_NOT_SUPPLIED"))
+                 ("", False, "HB_EPOCH_NOT_SUPPLIED"), (None, False, "HB_EPOCH_NOT_SUPPLIED"))
         for epoch, accepted, code in cases:
             with self.subTest(epoch=epoch):
                 environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p")
