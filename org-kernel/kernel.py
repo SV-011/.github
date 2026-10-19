@@ -210,6 +210,21 @@ def carrier_frame(packet: dict[str, Any], *, now_ns: int | None = None,
     return {**body, "frame_sha256": sha(body)}
 
 
+def _supplied_epoch_as_int(reference: Any) -> Any:
+    """Read a carrier epoch the shared rule accepts (ASCII digits >= 32) as its integer.
+
+    A digit-string ``epoch`` / ``generation`` is a supplied epoch, not an invalid
+    one; anything else is left for ``validate_hb_reference`` to refuse.
+    """
+    if not isinstance(reference, dict) or supplied_epoch_failure(reference.get("epoch")) is not None:
+        return reference
+    normalized = dict(reference, epoch=int(str(reference["epoch"])))
+    generation = reference.get("generation")
+    if isinstance(generation, str) and generation.isascii() and generation.isdigit():
+        normalized["generation"] = int(generation)
+    return normalized
+
+
 def recover_packet(frame: dict[str, Any]) -> dict[str, Any]:
     body = dict(frame)
     claimed = body.pop("frame_sha256", None)
@@ -218,7 +233,7 @@ def recover_packet(frame: dict[str, Any]) -> dict[str, Any]:
     raw = base64.b64decode(frame["packet_base64"].encode("ascii"), validate=True)
     if sha(raw) != frame["packet_sha256"]:
         raise ValueError("packet_hash_mismatch")
-    validate_hb_reference(frame.get("heartbeat_reference"))
+    validate_hb_reference(_supplied_epoch_as_int(frame.get("heartbeat_reference")))
     packet = json.loads(raw)
     if packet["packet_id"] != frame["packet_id"]:
         raise ValueError("packet_id_mismatch")
@@ -514,7 +529,7 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     registry = load_registry(root)
     if frame["destination_org"] != registry["organization"]:
         return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
-    result = dispatch(root, packet, mesh_root=mesh_root, epoch=epoch)
+    result = dispatch(root, packet, mesh_root=mesh_root, epoch=int(str(epoch)))
     return {"status": "CONSUMED", "packet": packet, "execution_result": result}
 
 

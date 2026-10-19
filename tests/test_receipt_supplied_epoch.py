@@ -283,6 +283,40 @@ class EgressAndIngestRefuseFirst(Redirected):
             self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
 
+    def digit_string_frame(self, text):
+        packet = kernel.build_packet(
+            origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
+            destination_org="SV-011", destination_service=ADDRESS,
+            payload=diagnostic("string-epoch-" + text), standing=GENESIS,
+            transition_reference="intr:transition:string-epoch",
+            authority_effect="NONE", packet_id="string-epoch-" + text)
+        frame = kernel.carrier_frame(packet, epoch=4096)
+        frame["heartbeat_reference"]["epoch"] = text
+        frame["heartbeat_reference"]["generation"] = text
+        body = {key: value for key, value in frame.items() if key != "frame_sha256"}
+        frame["frame_sha256"] = kernel.sha(body)
+        return frame
+
+    def test_ingest_takes_a_digit_string_carrier_epoch(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        result = kernel.ingest_frame(ROOT, self.digit_string_frame("4096"), mesh_root=self.mesh)
+        operation = result["execution_result"]["application_result"]["receiving_operation_result"]
+        self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
+        receipts = [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]
+        referenced = [item["hb_reference"] for item in receipts if "hb_reference" in item]
+        self.assertEqual(len(referenced), 2)
+        for reference in referenced:
+            self.assertEqual(reference["epoch"], 4096)
+            self.assertIs(reference["derived_from_clock"], False)
+
+    def test_ingest_refuses_a_coerced_string_carrier_epoch_with_six_fields(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        for text in ("+4096", " 4096", "4096.0", "\uff14\uff10\uff19\uff16"):
+            with self.subTest(epoch=text), self.assertRaises(ValueError) as refused:
+                kernel.ingest_frame(ROOT, self.digit_string_frame(text), mesh_root=self.mesh)
+            self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "kernel.py::ingest_frame")
+        self.assertEqual(self.written(), [])
+
 
 class CliEpochIsTheSharedRule(Redirected):
     """``--hb-epoch`` is text checked by the shared rule, not argparse ``int()``."""

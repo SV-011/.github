@@ -5,15 +5,21 @@ and push its `validate` and `transition` jobs run with contents: read; the
 transition job verifies a temporary copy of the published ledger and never
 appends or pushes. The workflow_dispatch self-closure writer is
 organization-ledger-transition-writer.yml: dispatch only, job-scoped
-contents: write, the shared organization-ledger lock, and steps byte-identical
-to the dispatch job at main d7beaf59 (pinned by digest, so a shallow CI
-checkout needs no history). No workflow with a pull_request trigger holds
-contents: write. Stdlib only.
+contents: write, the shared organization-ledger lock, and the steps of the
+dispatch job at main d7beaf59 with one change, the hb_epoch pre-check (pinned
+by digest, so a shallow CI checkout needs no history). The pre-check applies
+the kernel's shared epoch rule instead of int(), which admitted "+33" and
+" 33". No workflow with a pull_request trigger holds contents: write. Stdlib
+only.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import subprocess
+import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -23,9 +29,10 @@ PR_FACING = WORKFLOWS / "organization-ledger-transition.yml"
 WRITER = WORKFLOWS / "organization-ledger-transition-writer.yml"
 MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
 
-#: sha256 of the dispatch job's steps at main d7beaf59 (each step right-stripped, joined by newline,
-#: the job-level and step-level dispatch conditions removed).
-MAIN_DISPATCH_STEPS_SHA256 = "a632cbb00fe774dff6e278fc9676b62b0e79e0dd582f48e5ae38e97bb70771a6"
+#: sha256 of the writer's steps (each step right-stripped, joined by newline): the dispatch job's
+#: steps at main d7beaf59 (digest a632cbb0..., job-level and step-level dispatch conditions
+#: removed) with the hb_epoch pre-check changed from int() to the shared epoch rule (B-P36b).
+MAIN_DISPATCH_STEPS_SHA256 = "81b77744ac1e80d0044e4af62615120d407ebd7dec7ae93963481a81c9b1cbb8"
 MAIN_DISPATCH_BLOCK = """  workflow_dispatch:
     inputs:
       communication_id:
@@ -112,6 +119,19 @@ class WriterSplit(unittest.TestCase):
     def test_the_writer_steps_are_the_dispatch_steps_of_main(self):
         now = [s.rstrip() for s in steps(jobs(self.writer)["transition"])]
         self.assertEqual(hashlib.sha256("\n".join(now).encode()).hexdigest(), MAIN_DISPATCH_STEPS_SHA256)
+
+    def test_the_writer_epoch_precheck_is_the_shared_rule(self):
+        step, = [s for s in steps(jobs(self.writer)["transition"])
+                 if "Append the intr-destination diagnostic self-closure" in s]
+        check = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0])
+        for epoch, accepted in (("4096", True), ("32", True), ("+33", False), (" 33", False),
+                                ("\uff13\uff13", False), ("33.7", False), ("31", False), ("abc", False)):
+            with self.subTest(epoch=epoch):
+                environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p",
+                                   STEGVERSE_HB_EPOCH=epoch)
+                ran = subprocess.run([sys.executable, "-c", check], cwd=ROOT, env=environment,
+                                     capture_output=True, text=True)
+                self.assertEqual(ran.returncode == 0, accepted, ran.stdout + ran.stderr)
 
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
