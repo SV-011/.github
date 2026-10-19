@@ -140,6 +140,9 @@ def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, s
         return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
     if int(text) < 32:
         return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
+    if reference is not None and "derived_from_clock" not in reference \
+            and not (reference.get("source") and reference.get("head_receipt_sha")):
+        return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference has no derived_from_clock and no CARRIED provenance"
     if reference is not None and "derived_from_clock" in reference \
             and reference["derived_from_clock"] is not False:
         return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "

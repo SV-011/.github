@@ -330,6 +330,25 @@ class EgressAndIngestRefuseFirst(Redirected):
         frame["frame_sha256"] = kernel.sha(body)
         return frame
 
+    def test_ingest_refuses_a_carrier_reference_without_a_clock_marker(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        frame = self.digit_string_frame("4096")
+        del frame["heartbeat_reference"]["derived_from_clock"]
+        body = {key: value for key, value in frame.items() if key != "frame_sha256"}
+        frame["frame_sha256"] = kernel.sha(body)
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
+        self.assertSixFieldRefusal(refused, "HB_EPOCH_PROVENANCE_UNMARKED", "kernel.py::ingest_frame")
+        self.assertEqual(self.written(), [])
+
+    def test_the_shared_rule_refuses_an_unmarked_reference_unless_carried(self):
+        self.assertEqual(kernel.supplied_epoch_failure(40, {"epoch": 40})[0], "HB_EPOCH_PROVENANCE_UNMARKED")
+        self.assertIsNone(kernel.supplied_epoch_failure(40, {"epoch": 40, "derived_from_clock": False}))
+        self.assertIsNone(kernel.supplied_epoch_failure(
+            40, {"epoch": 40, "source": "ORGANIZATION_LEDGER_HEAD", "head_receipt_sha": "sha256:1"}))
+        self.assertEqual(kernel.supplied_epoch_failure(40, {"epoch": 40, "derived_from_clock": True})[0],
+                         "HB_EPOCH_INVALID")
+
     def test_ingest_takes_a_digit_string_carrier_epoch(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         result = kernel.ingest_frame(ROOT, self.digit_string_frame("4096"), mesh_root=self.mesh)
@@ -406,19 +425,23 @@ class CliEpochIsTheSharedRule(Redirected):
 
 
 class SecondWriterTakesTheSuppliedEpoch(Redirected):
-    """An organization receipt references the supplied epoch, not one read back from a receipt.
+    """The organization receipt references the supplied epoch, never one read back from a receipt.
 
-    A repository receipt is seeded with a clock-derived reference (as one written
-    before this rule may carry) and no organization receipt. The replay supplies
-    4096: the organization receipt must reference 4096 with derived_from_clock
-    false, never the seeded clock epoch relabelled as supplied.
+    A repository receipt is seeded with no organization receipt, as an
+    interrupted run leaves it, then the call is replayed with "4096".
+    - Seeded at a different supplied epoch (40): the organization receipt
+      references 4096, not the read-back 40.
+    - Seeded with a clock-derived reference: the organization writer refuses
+      SOURCE_RECEIPT_IS_CLOCK_PROVENANCE with six fields and writes nothing; a
+      clock epoch is never relabelled derived_from_clock false.
     """
 
     FIXED_NS = kernel.HB_ANCHOR_UNIX_NS + 7 * kernel.HB_PERIOD_NS
+    ORG_SCHEMA = "stegverse.organization-transition-receipt/v1"
 
-    def seed_clock_repository_receipt(self, writer, organization_ledger, call):
+    def seed_repository_receipt(self, writer, organization_ledger, call, reference):
         honest = writer.kernel.supplied_hb_reference
-        writer.kernel.supplied_hb_reference = lambda *_a, **_k: writer.kernel.hb_reference(self.FIXED_NS)
+        writer.kernel.supplied_hb_reference = lambda *_a, **_k: reference(writer.kernel)
         appended = organization_ledger.append
 
         def interrupted(*_a, **_k):
@@ -434,37 +457,73 @@ class SecondWriterTakesTheSuppliedEpoch(Redirected):
     def receipts(self):
         return [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]
 
-    def assertNothingLaundered(self):
+    def organization_receipts(self):
+        return [r for r in self.receipts() if r.get("schema") == self.ORG_SCHEMA]
+
+    def assertForwardsTheSuppliedEpoch(self):
+        organization, = self.organization_receipts()
+        self.assertEqual(organization["hb_reference"]["epoch"], 4096)
+        self.assertIs(organization["hb_reference"]["derived_from_clock"], False)
+
+    def assertClockSourceRefused(self, refused):
+        refusal = refused.exception.refusal
+        self.assertEqual(refusal["failure_code"], "SOURCE_RECEIPT_IS_CLOCK_PROVENANCE")
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+        self.assertIn("CARRIED:LEGACY_CLOCK_RECEIPT", refusal["required_evidence_or_repair"])
+        self.assertEqual(self.organization_receipts(), [])
         for receipt in self.receipts():
             reference = receipt.get("hb_reference")
-            if reference is None:
-                continue
-            if reference["derived_from_clock"] is False:
-                self.assertEqual(reference["epoch"], 4096, receipt.get("schema"))
-        organization = [r for r in self.receipts()
-                        if r.get("schema") == "stegverse.organization-transition-receipt/v1"]
-        self.assertEqual(len(organization), 1)
-        self.assertEqual(organization[0]["hb_reference"]["epoch"], 4096)
-        self.assertIs(organization[0]["hb_reference"]["derived_from_clock"], False)
+            if reference is not None and reference.get("derived_from_clock") is False:
+                self.fail("a receipt claims a supplied epoch it was not given: " + repr(reference))
 
-    def test_ingress_replay_does_not_forward_a_read_back_clock_epoch(self):
-        call = lambda: ingress.receive(diagnostic("laundered"), registry=REGISTRY,
+    def ingress_call(self):
+        return lambda: ingress.receive(diagnostic("laundered"), registry=REGISTRY,
                                        packet_id="laundered", hb_epoch="4096")
-        self.seed_clock_repository_receipt(ingress.repository_ledger, ingress.organization_ledger, call)
-        seeded, = [r for r in self.receipts() if "hb_reference" in r]
-        self.assertIs(seeded["hb_reference"]["derived_from_clock"], True)
-        result = call()
-        self.assertEqual(result["disposition"], "ALLOW", result.get("detail"))
-        self.assertNothingLaundered()
 
-    def test_egress_record_replay_does_not_forward_a_read_back_clock_epoch(self):
+    def egress_call(self):
         record = {"intended_action": "EMIT", "disposition": "ALLOW", "crossed_an_organization_boundary": True,
                   "frame_sha256": "sha256:" + "1" * 64, "payload_sha256": "sha256:" + "2" * 64}
-        call = lambda: egress._record("EGRESS:laundered", egress.EMITTED_CLASS, record["payload_sha256"],
+        return lambda: egress._record("EGRESS:laundered", egress.EMITTED_CLASS, record["payload_sha256"],
                                       kernel.sha(record), record, 4096)
-        self.seed_clock_repository_receipt(egress.repository_ledger, egress.organization_ledger, call)
+
+    def test_ingress_replay_forwards_the_supplied_epoch_not_a_read_back_one(self):
+        call = self.ingress_call()
+        self.seed_repository_receipt(ingress.repository_ledger, ingress.organization_ledger, call,
+                                     lambda k: k.hb_reference(epoch=40))
+        self.assertEqual(call()["disposition"], "ALLOW")
+        self.assertForwardsTheSuppliedEpoch()
+
+    def test_egress_record_replay_forwards_the_supplied_epoch_not_a_read_back_one(self):
+        call = self.egress_call()
+        self.seed_repository_receipt(egress.repository_ledger, egress.organization_ledger, call,
+                                     lambda k: k.hb_reference(epoch=40))
         call()
-        self.assertNothingLaundered()
+        self.assertForwardsTheSuppliedEpoch()
+
+    def test_ingress_refuses_to_bind_a_clock_provenance_source(self):
+        call = self.ingress_call()
+        self.seed_repository_receipt(ingress.repository_ledger, ingress.organization_ledger, call,
+                                     lambda k: k.hb_reference(self.FIXED_NS))
+        with self.assertRaises(ValueError) as refused:
+            call()
+        self.assertClockSourceRefused(refused)
+
+    def test_egress_record_refuses_to_bind_a_clock_provenance_source(self):
+        call = self.egress_call()
+        self.seed_repository_receipt(egress.repository_ledger, egress.organization_ledger, call,
+                                     lambda k: k.hb_reference(self.FIXED_NS))
+        with self.assertRaises(ValueError) as refused:
+            call()
+        self.assertClockSourceRefused(refused)
+
+    def test_the_organization_writer_refuses_an_unmarked_source(self):
+        guard_free = {"receipt_sha256": "sha256:" + "3" * 64, "hb_reference": {"epoch": 40}}
+        with self.assertRaises(ValueError) as refused:
+            aggregate.append(guard_free, "REPO_STATE_PROPAGATION", "sha256:a", "sha256:b", {}, "NONE",
+                             hb_epoch=4096)
+        self.assertEqual(refused.exception.refusal["failure_code"], "SOURCE_RECEIPT_IS_CLOCK_PROVENANCE")
+        self.assertEqual(self.organization_receipts(), [])
 
     def test_an_absent_epoch_writes_nothing_even_with_a_fixed_clock(self):
         fixed = self.FIXED_NS

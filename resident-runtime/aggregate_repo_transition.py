@@ -84,6 +84,32 @@ def require_supplied_epoch(hb_epoch: Any) -> dict[str, Any]:
     return kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
 
 
+SOURCE_RECEIPT_IS_CLOCK_PROVENANCE = "SOURCE_RECEIPT_IS_CLOCK_PROVENANCE"
+SOURCE_RETRY_ENTRYPOINT = "resident-runtime/aggregate_repo_transition.py::append (source_receipt=)"
+
+
+def source_refusal(source_receipt: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED for a source repository receipt of clock provenance, or None.
+
+    A source receipt is admissible when its hb_reference says derived_from_clock
+    exactly false. A clock-derived or unmarked one is never rebound here.
+    """
+    reference = source_receipt.get("hb_reference")
+    if isinstance(reference, Mapping) and reference.get("derived_from_clock") is False:
+        return None
+    return {"disposition": "FAIL_CLOSED", "failure_code": SOURCE_RECEIPT_IS_CLOCK_PROVENANCE,
+            "failed_predicate": "SOURCE_REPOSITORY_RECEIPT_REFERENCES_A_SUPPLIED_OR_CARRIED_EPOCH",
+            "detail": "source repository receipt " + str(source_receipt.get("receipt_sha256"))
+                      + " has hb_reference " + repr(reference),
+            "required_evidence_or_repair": ("a WU-B13 migration transition that rebinds the legacy repo receipt "
+                                            "under a supplied epoch with provenance CARRIED:LEGACY_CLOCK_RECEIPT "
+                                            "+ source sha; existing receipts are never mutated"),
+            "retry_entrypoint": SOURCE_RETRY_ENTRYPOINT,
+            "owning_existing_goal": kernel.HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "after the WU-B13 migration transition; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
+
+
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
            predecessor_state: str, successor_state: str, boundary_evidence: Mapping[str, Any],
            authority_constraint: str, hb_epoch: int | None = None,
@@ -106,6 +132,10 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
             if prior.get("org_transition_class") != org_transition_class:
                 raise ValueError("ledger_receipt_collision")
             return prior
+    # A recorded binding is answered above; a new one never binds a clock-provenance source.
+    refused = source_refusal(source_receipt)
+    if refused is not None:
+        raise kernel.SuppliedEpochRefused(refused)
     body = {
         "schema": "stegverse.organization-transition-receipt/v1",
         "organization": C["organization"],
