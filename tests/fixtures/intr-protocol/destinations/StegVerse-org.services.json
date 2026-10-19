@@ -1,0 +1,241 @@
+{
+  "schema_version": "stegverse-org.service-registry.v1",
+  "organization": "StegVerse-org",
+  "services": [
+    {
+      "service_id": "stegverse-org.org-control",
+      "repository": "StegVerse-org/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-org.boundary-diagnostic",
+      "repository": "StegVerse-org/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-org.sdk-manifest-ingress",
+      "repository": "StegVerse-org/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "sdk-manifest-ingress",
+      "capability_binding_authority": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "stegverse.sdk-manifest-crossing-payload/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "address_grants_admission_authority": false,
+      "selects_processing_at_this_address": false,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.intr-destination",
+      "repository": "StegVerse-org/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_authority": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "address_grants_admission_authority": false,
+      "selects_processing_at_this_address": false,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.tvc",
+      "repository": "StegVerse-org/TVC",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.demo-sandbox",
+      "repository": "StegVerse-org/demo-sandbox",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.stegverse-sdk",
+      "repository": "StegVerse-org/StegVerse-SDK",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/sdk_self_characterization_response.py",
+      "accepts": [
+        "stegverse.org-endpoint-response/v1"
+      ],
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "NODE_STATE_WRITE_ONCE"
+    },
+    {
+      "service_id": "stegverse-org.workspace-resource-consumer",
+      "repository": "StegVerse-org/StegVerse-SDK",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/workspace_resource_consumer_adapter.py",
+      "accepts": [
+        "stegverse.workspace-resource-request.v1"
+      ],
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE"
+    },
+    {
+      "service_id": "stegverse-org.stegverse-demo-suite",
+      "repository": "StegVerse-org/stegverse-demo-suite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.demo-suite-runner",
+      "repository": "StegVerse-org/demo-suite-runner",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.manifests",
+      "repository": "StegVerse-org/manifests",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.trust-kernel",
+      "repository": "StegVerse-org/trust-kernel",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.telemetry",
+      "repository": "StegVerse-org/telemetry",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.discovery",
+      "repository": "StegVerse-org/discovery",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.stegverse-admission",
+      "repository": "StegVerse-org/StegVerse-admission",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.universal-transition-table-test-path",
+      "repository": "StegVerse-org/universal-transition-table-test-path",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.stegverse-gsl",
+      "repository": "StegVerse-org/stegverse-gsl",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.core-node-runtime-demo",
+      "repository": "StegVerse-org/core-node-runtime-demo",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.tv",
+      "repository": "StegVerse-org/TV",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.llm-adapter",
+      "repository": "StegVerse-org/LLM-adapter",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/task_registry_disclosure_endpoint.py",
+      "admits_processing": [
+        {
+          "capability": "ecosystem_diagnostic",
+          "route_id": "stegverse.route.ecosystem-diagnostic.v1"
+        }
+      ],
+      "accepts": [
+        "stegverse.task-registry-disclosure-request/v1"
+      ],
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE"
+    },
+    {
+      "service_id": "stegverse-org.hps-runtime",
+      "repository": "StegVerse-org/HPS-runtime",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.demo-ingest-engine",
+      "repository": "StegVerse-org/demo_ingest_engine",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-org.governance",
+      "repository": "StegVerse-org/.github",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/governance_endpoint.py",
+      "admits_processing": [
+        {
+          "capability": "governance",
+          "route_id": "stegverse.route.canonical-governed.v1"
+        }
+      ],
+      "accepts": [
+        "stegverse.sdk-manifest-crossing-payload/v1"
+      ],
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE"
+    }
+  ],
+  "boundary_rule": "All organization-crossing communication is generated by this .github boundary using Interlock/InTr; endpoint authority remains transition-governed."
+}

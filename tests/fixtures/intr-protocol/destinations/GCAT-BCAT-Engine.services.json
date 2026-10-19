@@ -1,0 +1,155 @@
+{
+  "schema_version": "gcat-bcat-engine.service-registry.v1",
+  "organization": "GCAT-BCAT-Engine",
+  "services": [
+    {
+      "service_id": "gcat-bcat-engine.org-control",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "gcat-bcat-engine.intr-destination",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    },
+    {
+      "service_id": "gcat-bcat-engine.boundary-diagnostic",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "gcat-bcat-engine.organization-role-conformance",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONFORMANCE",
+      "profile_status": "ACTIVE_SOURCE_ONLY_RUNTIME_OBSERVATION_PENDING",
+      "accepts": [
+        "organization-role.conformance"
+      ],
+      "runtime_required_for_consumption": false,
+      "handler": "org-boundary/runtime/organization_role_conformance.py",
+      "transition_authority": "Interlock/InTr",
+      "runtime_reality_authority": "Organization",
+      "direct_repository_mutation": false
+    },
+    {
+      "service_id": "gcat-bcat-engine.documentation",
+      "repository": "GCAT-BCAT-Engine/Documentation",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.core-master",
+      "repository": "GCAT-BCAT-Engine/core-master",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.triage",
+      "repository": "GCAT-BCAT-Engine/Triage",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.core-addons",
+      "repository": "GCAT-BCAT-Engine/core-addons",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.workflows",
+      "repository": "GCAT-BCAT-Engine/workflows",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.publisher",
+      "repository": "GCAT-BCAT-Engine/Publisher",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.core-full",
+      "repository": "GCAT-BCAT-Engine/core-full",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.gemstone-iv",
+      "repository": "GCAT-BCAT-Engine/Gemstone_IV",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.core-lite-prod",
+      "repository": "GCAT-BCAT-Engine/core-lite-prod",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.wz",
+      "repository": "GCAT-BCAT-Engine/WZ",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.core-lite",
+      "repository": "GCAT-BCAT-Engine/core-lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.marketplace",
+      "repository": "GCAT-BCAT-Engine/Marketplace",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.stegsim",
+      "repository": "GCAT-BCAT-Engine/StegSim",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "gcat-bcat-engine.telemetry",
+      "repository": "GCAT-BCAT-Engine/telemetry",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    }
+  ],
+  "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed."
+}

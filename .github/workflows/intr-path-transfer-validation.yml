@@ -1,0 +1,105 @@
+name: Validate InTr Mesh Path Transfer
+
+# PR-facing checks for the path-transfer writer (intr-path-transfer.yml).
+# Read-only: the published ledger ref is fetched, copied to a scratch ref, and
+# the writer's own commands run against that copy. Nothing is pushed. Receipts
+# written to the scratch ref are not ledgered and not authentic.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-path-transfer.yml'
+      - '.github/workflows/intr-path-ingress.yml'
+      - '.github/workflows/intr-path-transfer-validation.yml'
+      - '.stegverse/intr-path-transfer/**'
+      - 'resident-runtime/intr_path_transfer.py'
+      - 'resident-runtime/intr_path_ingress.py'
+      - 'resident-runtime/merge_transfer.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'org-runtime/intr_protocol.py'
+      - 'data/intr-protocol/v1/protocol.json'
+      - 'tests/fixtures/intr-protocol/destinations/**'
+      - 'tests/test_intr_path_transfer.py'
+      - 'tests/test_intr_path_ingress.py'
+      - 'tests/fixtures/intr-path-ingress/**'
+      - 'tests/fixtures/intr-path-transfer/**'
+      - 'docs/INTR_PATH_TRANSFER_V1.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-path-transfer.yml'
+      - '.github/workflows/intr-path-ingress.yml'
+      - '.github/workflows/intr-path-transfer-validation.yml'
+      - '.stegverse/intr-path-transfer/**'
+      - 'resident-runtime/intr_path_transfer.py'
+      - 'resident-runtime/intr_path_ingress.py'
+      - 'tests/test_intr_path_transfer.py'
+      - 'tests/test_intr_path_ingress.py'
+      - 'tests/fixtures/intr-path-ingress/**'
+      - 'tests/fixtures/intr-path-transfer/**'
+
+permissions:
+  contents: read
+
+env:
+  LEDGER_REF: refs/stegverse/organization-ledger
+  DRY_RUN_REF: refs/dry-run/organization-ledger
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout organization boundary (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the ledger ref read-only (the fixtures pin a commit on it)
+        run: git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+
+      - name: Declared paths, append, two-half verify, refusals (temp ledgers from the pinned tip)
+        run: python3 -m unittest tests.test_intr_path_transfer -v
+
+      - name: Destination carrier, ingress append, link and end-to-end checks (synthetic source receipts, temp ledgers)
+        run: python3 -m unittest tests.test_intr_path_ingress -v
+
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout organization boundary (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy the published ledger to a scratch ref
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+$LEDGER_REF:$DRY_RUN_REF"
+          echo "published ledger tip: $(git rev-parse "$DRY_RUN_REF")"
+          namespace=$(python3 -c 'import json; print(json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]["namespace"])')
+          echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/results"
+
+      - name: "Real state, read-only: every declared path is FAIL_CLOSED (no path receipt)"
+        run: |
+          set -euo pipefail
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF:$REPO_LEDGER_NAMESPACE"
+          python3 resident-runtime/intr_path_transfer.py verify --expect-source FAIL_CLOSED --out "$RUNNER_TEMP/results/real-state.json" > /dev/null
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["counts"]["ALLOW"] == 0, r["counts"]; print("INTR_PATH_REAL_STATE", json.dumps(r["counts"]))' "$RUNNER_TEMP/results/real-state.json"
+
+      - name: The writer's append on the scratch ref, linked to the last ledgered main merge
+        run: |
+          set -euo pipefail
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF:$REPO_LEDGER_NAMESPACE"
+          # a main merge whose main-merge transfer receipt is on the ledger (pinned in the expected real state)
+          base=$(python3 -c 'import json; print(json.load(open("tests/fixtures/intr-path-transfer/expected-real-state.json"))["verified_transfer_commit"])')
+          python3 resident-runtime/intr_path_transfer.py append --transfer-commit "$base" --out "$RUNNER_TEMP/results/append.json" > /dev/null
+          python3 resident-runtime/intr_path_transfer.py verify --expect-source ALLOW --out "$RUNNER_TEMP/results/verify.json" > /dev/null
+          tip=$(git rev-parse "$DRY_RUN_REF")
+          python3 resident-runtime/intr_path_transfer.py append --transfer-commit "$base" --out "$RUNNER_TEMP/results/replay.json" > /dev/null
+          test "$(git rev-parse "$DRY_RUN_REF")" = "$tip"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert all(x.get("replayed") is True for x in r), r' "$RUNNER_TEMP/results/replay.json"
+          test "$(git rev-parse "$DRY_RUN_REF")" != "$(git ls-remote origin "$LEDGER_REF" | cut -f1)"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("INTR_PATH_DRY_RUN", json.dumps(r["counts"]))' "$RUNNER_TEMP/results/verify.json"

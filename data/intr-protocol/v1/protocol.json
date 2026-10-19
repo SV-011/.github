@@ -1,0 +1,163 @@
+{
+  "schema": "stegverse.intr-protocol-contract/v1",
+  "protocol": "stegverse.intr-protocol/v1",
+  "protocol_version": 1,
+  "owner_repository": "StegVerse-org/.github",
+  "owning_existing_goal": "StegVerse-org/.github#162",
+  "validator": "org-runtime/intr_protocol.py",
+  "retry_entrypoint": "python org-runtime/intr_protocol.py conform --org <ORG> --interlock <interlock-intr.json> --services <services.json>",
+  "authority_effect": "NONE_CONFORMANCE_EVIDENCE_ONLY",
+  "dispositions": ["ALLOW", "DENY", "FAIL_CLOSED"],
+  "non_allow_fields": ["failure_code", "failed_predicate", "required_evidence_or_repair", "retry_entrypoint", "owning_existing_goal", "next_attempt"],
+  "disposition_rule": {
+    "ALLOW": "every predicate observed and equal to the contract",
+    "DENY": "an observed value differs from the contract",
+    "FAIL_CLOSED": "a required document, field or version is absent or unknown, so the predicate is unobserved"
+  },
+  "message": {
+    "schema_ref": "stegverse.intr-message/v1",
+    "message_class": "ecosystem.communication",
+    "required": {
+      "message_class": "EQUALS:ecosystem.communication",
+      "communication_id": "NON_EMPTY_PRINTABLE_TOKEN",
+      "body": "OBJECT",
+      "body.schema": "EQUALS_DESTINATION_PAYLOAD_SCHEMA"
+    }
+  },
+  "route": {
+    "schema_ref": "stegverse.intr-route/v1",
+    "address_form": "ORGANIZATION_SLUG_DOT_CAPABILITY_PROFILE_ID",
+    "slug_derivation": "org-kernel/kernel.py::organization_slug",
+    "transport": "INTERLOCK_INTR",
+    "host_required": false,
+    "environment_url_required": false,
+    "credential_authority": "TV/TVC",
+    "github_token_runtime_authority": "NONE",
+    "route_is_routing_authority": false
+  },
+  "destination_capability": {
+    "schema_ref": "stegverse.intr-destination-capability/v1",
+    "profile_id": "intr-destination",
+    "interlock_document": "org-runtime/interlock-intr.json",
+    "service_registry_document": "org-boundary/registry/services.json",
+    "interlock_schema": "stegverse.organization-interlock-intr-boundary/v1",
+    "interlock_predicates": [
+      {"id": "INTERLOCK_SCHEMA_IS_V1", "path": "schema", "equals": "stegverse.organization-interlock-intr-boundary/v1", "unknown": "FAIL_CLOSED"},
+      {"id": "INTERLOCK_IS_THIS_ORGANIZATION", "path": "organization", "equals": "$ORG"},
+      {"id": "INTERLOCK_CREDENTIAL_AUTHORITY_IS_TV_TVC", "path": "credential_authority", "equals": "TV/TVC"},
+      {"id": "INTERLOCK_GITHUB_TOKEN_HAS_NO_RUNTIME_AUTHORITY", "path": "github_token_runtime_authority", "equals": "NONE"},
+      {"id": "INGRESS_REQUIRES_INTERLOCK", "path": "ingress.interlock_required", "equals": true},
+      {"id": "INGRESS_REQUIRES_INTR", "path": "ingress.intr_required", "equals": true},
+      {"id": "EGRESS_REQUIRES_INTERLOCK", "path": "egress.interlock_required", "equals": true},
+      {"id": "EGRESS_REQUIRES_INTR", "path": "egress.intr_required", "equals": true},
+      {"id": "PEER_ADDRESS_FORM_IS_SLUG_DOT_PROFILE", "path": "egress.peer_capability_resolution.address_form", "equals": "ORGANIZATION_SLUG_DOT_CAPABILITY_PROFILE_ID"}
+    ],
+    "binding_predicates": [
+      {"id": "BINDING_PROFILE_NAME", "path": "profile_name", "equals": "InTr:Destination"},
+      {"id": "BINDING_OPERATION", "path": "operation", "equals": "DIAGNOSTIC_CROSSING"},
+      {"id": "BINDING_PAYLOAD_SCHEMA", "path": "payload_schema", "equals": "stegverse.org-intr-destination-diagnostic/v1"},
+      {"id": "BINDING_DECLARED_BY_THIS_ORGANIZATION", "path": "capability_declaration_owner", "equals": "$REPO"},
+      {"id": "BINDING_OWNED_BY_THIS_ORGANIZATION", "path": "capability_binding_owner", "equals": "$REPO"},
+      {"id": "BINDING_AUTHORITY_EFFECT_IS_NONE", "path": "authority_effect", "equals": "NONE_BINDING_ONLY"},
+      {"id": "BINDING_INGRESS_IS_NOT_ENVIRONMENT_SELECTED", "path": "environment_selected_ingress", "equals": false},
+      {"id": "RECEIVER_OWNED_BY_THIS_ORGANIZATION", "path": "receiving_operation.owner_repository", "equals": "$REPO"},
+      {"id": "RECEIVER_OPERATION_ID", "path": "receiving_operation.operation_id", "equals": "ORGANIZATION_INTR_DESTINATION_INGRESS"},
+      {"id": "RECEIVER_OPERATION_PATH", "path": "receiving_operation.operation", "equals": "resident-runtime/intr_destination_ingress.py"},
+      {"id": "RECEIVER_ADDRESS_DERIVES_FROM_ORGANIZATION", "path": "receiving_operation.addressed_service", "equals": "$ADDRESS"},
+      {"id": "RECEIVER_ADDRESS_RESOLVES_FROM_REGISTRY", "path": "receiving_operation.address_is_resolvable_from_the_service_registry", "equals": true},
+      {"id": "RECEIVER_ADDRESS_DOES_NOT_SELECT_PROCESSING", "path": "receiving_operation.selects_processing_at_the_capability_address", "equals": false},
+      {"id": "RECEIVER_TRANSPORT_IS_INTERLOCK_INTR", "path": "receiving_operation.transport", "equals": "INTERLOCK_INTR"},
+      {"id": "RECEIVER_ADDRESS_IS_NOT_HOST_OR_URL", "path": "receiving_operation.address_form", "equals": "REPOSITORY_OWNED_OPERATION_NOT_HOST_OR_URL"},
+      {"id": "RECEIVER_NEEDS_NO_HOST", "path": "receiving_operation.host_required", "equals": false},
+      {"id": "RECEIVER_NEEDS_NO_ENVIRONMENT_URL", "path": "receiving_operation.environment_url_required", "equals": false},
+      {"id": "RECEIVER_CREDENTIAL_AUTHORITY_IS_TV_TVC", "path": "receiving_operation.credential_authority", "equals": "TV/TVC"},
+      {"id": "RECEIVER_GITHUB_TOKEN_HAS_NO_RUNTIME_AUTHORITY", "path": "receiving_operation.github_token_runtime_authority", "equals": "NONE"},
+      {"id": "RECEIVER_EMITS_TRANSITION_RECEIPT", "path": "receiving_operation.emits", "equals": "stegverse.organization-transition-receipt/v1"}
+    ],
+    "service_predicates": [
+      {"id": "SERVICE_REGISTRY_IS_THIS_ORGANIZATION", "path": "organization", "equals": "$ORG"},
+      {"id": "SERVICE_REPOSITORY_IS_THIS_ORGANIZATION", "row_path": "repository", "equals": "$REPO"},
+      {"id": "SERVICE_PROFILE_IS_INTR_DESTINATION", "row_path": "capability_profile_id", "equals": "intr-destination"},
+      {"id": "SERVICE_ROLE_IS_BOUNDARY_LOCAL_INGRESS", "row_path": "boundary_role", "equals": "BOUNDARY_LOCAL_CAPABILITY_INGRESS"},
+      {"id": "SERVICE_ACCEPTS_ECOSYSTEM_COMMUNICATION", "row_path": "accepts", "contains": "ecosystem.communication"},
+      {"id": "SERVICE_ACCEPTS_DESTINATION_PAYLOAD", "row_path": "accepts", "contains": "stegverse.org-intr-destination-diagnostic/v1"},
+      {"id": "SERVICE_DOES_NOT_SELECT_PROCESSING", "row_path": "selects_processing_at_this_address", "equals": false}
+    ]
+  },
+  "main_merge_transfer": {
+    "schema_ref": "stegverse.main-merge-transfer-evidence/v1",
+    "readback_schema": "stegverse.intr-main-merge-transfer-readback/v1",
+    "result_dimension": "merge_transfer",
+    "dimension_rule": "reported beside destination conformance; it never changes a destination conformance disposition",
+    "operation": "ORGANIZATION_MAIN_MERGE_TRANSFER",
+    "profile_id": "main-merge-transfer",
+    "ref": "refs/heads/main",
+    "organization_receipt_schema": "stegverse.organization-transition-receipt/v1",
+    "repository_receipt_schema": "stegverse.repo-transition-receipt/v1",
+    "retry_entrypoint": ".github/workflows/organization-ledger-merge-transfer.yml (push to main)",
+    "verifier": {
+      "path": "resident-runtime/merge_transfer.py",
+      "command": "python resident-runtime/merge_transfer.py verify --commit <MERGE_COMMIT>",
+      "sha256": "sha256:032ed727358d56f33369b35e6cc50d65f6af5dc0035f0b69fe7cddb3f4f4e20e",
+      "landed_at": [
+        {"repository": "StegVerse-org/.github", "pull_request": "StegVerse-org/.github#202", "head": "b590fb0adf9a2212501b2807a43e4aea24631f03", "merge_commit": "41035e9e4bca6d4114f2f6a181b03dda2de85481", "sha256": "sha256:032ed727358d56f33369b35e6cc50d65f6af5dc0035f0b69fe7cddb3f4f4e20e"},
+        {"repository": "SV-011/.github", "pull_request": "SV-011/.github#15", "head": "8c02f276d6e27a9388ee6d7b0991ff365a1dc390", "merge_commit": "a636fafca237a0f928fa0eccfe4585866bfecf9d", "sha256": "sha256:032ed727358d56f33369b35e6cc50d65f6af5dc0035f0b69fe7cddb3f4f4e20e"}
+      ]
+    },
+    "destination_predicates": [
+      {
+        "id": "MAIN_MERGE_TRANSFER_RECEIPT_LEDGERED",
+        "operation": "ORGANIZATION_MAIN_MERGE_TRANSFER",
+        "evidence_schema": "stegverse.main-merge-transfer-evidence/v1",
+        "checked_by": "resident-runtime/merge_transfer.py verify",
+        "verified_when": "a sealed organization receipt whose boundary_evidence names this operation, repository and merge_commit, and whose repo_receipt_sha256 is the seal of a sealed repository receipt whose evidence carries the same merge_commit and repository on refs/heads/main with the payload_sha256 it claims",
+        "unobserved": "FAIL_CLOSED",
+        "unobserved_failure_code": "MERGE_TRANSFER_RECEIPT_NOT_LEDGERED",
+        "contradicted": "DENY",
+        "contradicted_failure_code": "MERGE_TRANSFER_RECEIPT_LINK_UNVERIFIED"
+      }
+    ],
+    "evidence_predicates": [
+      {"id": "READBACK_NAMES_THE_MERGE", "disposition": "FAIL_CLOSED", "failure_code": "MERGE_TRANSFER_SUBJECT_UNOBSERVED", "when": "the readback is not an object of readback_schema, or does not name repository <ORG>/.github and a 40-hex merge_commit"},
+      {"id": "MAIN_MERGE_HAS_AN_ORGANIZATION_LEDGER_RECEIPT", "disposition": "FAIL_CLOSED", "failure_code": "MERGE_TRANSFER_RECEIPT_NOT_LEDGERED", "when": "the organization receipt or the repository receipt is absent or unsealed, or the organization receipt's boundary_evidence does not name this operation, repository and merge_commit"},
+      {"id": "ORGANIZATION_RECEIPT_LINKS_TO_THE_MERGE_COMMIT", "disposition": "DENY", "failure_code": "MERGE_TRANSFER_RECEIPT_LINK_UNVERIFIED", "when": "present, sealed evidence contradicts the merge: the organization receipt names another repository or links a different repository receipt, or the repository receipt evidence names another schema, merge_commit, repository or ref, or does not carry the payload_sha256 it claims"}
+    ]
+  },
+  "mesh_path_transfer": {
+    "evidence_schema": "stegverse.intr-path-transfer-evidence/v1",
+    "declaration_schema": "stegverse.intr-path-transfer-declaration/v1",
+    "destination_readback_schema": "stegverse.intr-path-ledger-readback/v1",
+    "operation": "INTR_MESH_PATH_TRANSFER",
+    "capability": "intr-destination",
+    "declared_paths": "every ordered pair of distinct organizations whose destination documents conform in tests/fixtures/intr-protocol/destinations/manifest.json; path_id <SOURCE>-><DESTINATION>:intr-destination",
+    "transition": "a row of .stegverse/intr-path-transfer/transfers.json landing on main; .github/workflows/intr-path-transfer.yml appends after the push's main-merge transfer is ledgered (workflow_run, no dispatch)",
+    "verifier": "resident-runtime/intr_path_transfer.py verify",
+    "allow_when": "source half (sealed INTR_MESH_PATH_TRANSFER organization receipt linked to its sealed repository receipt and to the transfer commit's sealed main-merge transfer receipt) and destination half (the destination ledger's sealed ORGANIZATION_INTR_DESTINATION_INGRESS receipt for the same path_id and communication_id whose boundary_evidence and repository evidence carry the source organization and repository receipt seals) both verify, each read back from its own ledger",
+    "failure_codes": {
+      "INTR_PATH_RECEIPT_NOT_LEDGERED": "FAIL_CLOSED",
+      "INTR_PATH_RECEIPT_LINK_UNVERIFIED": "DENY",
+      "INTR_PATH_TRANSFER_COMMIT_NOT_LEDGERED": "FAIL_CLOSED",
+      "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED": "FAIL_CLOSED",
+      "INTR_PATH_DESTINATION_RECEIPT_NOT_LEDGERED": "FAIL_CLOSED",
+      "INTR_PATH_DESTINATION_RECEIPT_LINK_UNVERIFIED": "DENY"
+    },
+    "destination_carrier": {
+      "consumer": "resident-runtime/intr_path_ingress.py consume",
+      "inbound": ".stegverse/intr-path-transfer/inbound.json (schema stegverse.intr-path-inbound/v1): rows of path_id, communication_id and carried copies of the source organization and repository receipts",
+      "transition": "an inbound row landing on the destination's main; .github/workflows/intr-path-ingress.yml appends after that push's main-merge transfer is ledgered (workflow_run, no dispatch), through resident-runtime/intr_destination_ingress.py _append",
+      "evidence_schema": "stegverse.intr-path-ingress-evidence/v1",
+      "transition_class": "INTR_MESH_PATH_INGRESS",
+      "operation": "ORGANIZATION_INTR_DESTINATION_INGRESS",
+      "end_to_end_verifier": "resident-runtime/intr_path_ingress.py end-to-end --source-readback --destination-readback",
+      "failure_codes": {
+        "INTR_PATH_SOURCE_RECEIPT_NOT_CARRIED": "FAIL_CLOSED",
+        "INTR_PATH_CARRIED_RECEIPT_CONTRADICTED": "DENY",
+        "INTR_PATH_DESTINATION_RECEIPT_NOT_LEDGERED": "FAIL_CLOSED",
+        "INTR_PATH_DESTINATION_RECEIPT_LINK_UNVERIFIED": "DENY",
+        "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED": "FAIL_CLOSED"
+      },
+      "cross_org_read": "the carried copies are checked for seal, link and shape; their inclusion in the source ledger is not observable with GITHUB_TOKEN (repository-scoped; repositories are internal). It is recorded FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED (class B, retry: StegVerse-Labs/TVC least-privilege issuance) and the end-to-end ALLOW needs both ledgers read back"
+    },
+    "class_b": "the destination half needs a TV/TVC-issued least-privilege read credential for the destination's ledger ref (INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED) and the inbound row landing in the destination; paths sourced in another organization need the transition installed there"
+  }
+}
