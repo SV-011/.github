@@ -389,18 +389,59 @@ class EgressAndIngestRefuseFirst(Redirected):
         frame["frame_sha256"] = kernel.sha(body)
         return frame
 
+    def assertCarriedNotAccepted(self, refused):
+        refusal = refused.exception.refusal
+        self.assertEqual(refusal["disposition"], "FAIL_CLOSED")
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+        self.assertEqual(refusal["failure_code"], "CARRIED_NOT_ACCEPTED_BY_DESTINATION")
+        self.assertEqual(refusal["failed_predicate"], "DESTINATION_ACCEPTS_CARRIED_CROSSINGS")
+        self.assertEqual(refusal["required_evidence_or_repair"], "re-send with the SUPPLIED epoch")
+        self.assertIn("the sender's hop", refusal["retry_entrypoint"])
+        self.assertNotIn("CARRIED_PROVENANCE_UNVERIFIED", json.dumps(refusal))  # not judged forged
+        self.assertIs(refusal["derived_from_clock"], False)
+        self.assertIs(refusal["consequence_committed"], False)
+
     def test_a_carrier_cannot_self_assert_carried_provenance(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
         for marker, code in (({}, "HB_EPOCH_PROVENANCE_UNMARKED"),
-                             # bare-sampled is CLOCK (08:10Z), but its CARRIED claim is still refused
-                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "CARRIED_PROVENANCE_UNVERIFIED"),
+                             # bare-sampled is CLOCK (08:10Z); its CARRIED claim is still not accepted here
+                             ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS}, "CARRIED_NOT_ACCEPTED_BY_DESTINATION"),
                              ({"sampled_unix_ns": kernel.HB_ANCHOR_UNIX_NS, "derived_from_clock": False},
                               "HB_EPOCH_INVALID"),
-                             ({"derived_from_clock": False}, "CARRIED_PROVENANCE_UNVERIFIED")):
+                             ({"derived_from_clock": False}, "CARRIED_NOT_ACCEPTED_BY_DESTINATION")):
             with self.subTest(marker=marker), self.assertRaises(ValueError) as refused:
                 kernel.ingest_frame(ROOT, self.fabricated_carried_frame(**marker), mesh_root=self.mesh)
-            self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
+            if code == "CARRIED_NOT_ACCEPTED_BY_DESTINATION":
+                self.assertCarriedNotAccepted(refused)
+            else:
+                self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
+
+    def test_a_real_carried_frame_is_not_accepted_and_is_not_called_forged(self):
+        """09:03Z option (1): the manifest declares accepts_carried_crossings false for inbound frames. A frame
+        whose CARRIED claim names this organization's real ledger head is CARRIED_NOT_ACCEPTED_BY_DESTINATION
+        (re-send SUPPLIED), never CARRIED_PROVENANCE_UNVERIFIED; nothing is written."""
+        manifest = json.loads((ROOT / "org-runtime/interlock-intr.json").read_text(encoding="utf-8"))
+        sources = [source for operation in manifest["ingress"]["capability_endpoint_bindings"]
+                   for source in operation["receiving_operation"]["hb_epoch_binding"]["sources"]
+                   if source["from"] == "carrier_frame"]
+        self.assertTrue(sources)
+        for source in sources:
+            self.assertIs(source["accepts_carried_crossings"], False)
+            self.assertEqual(source["carried_refusal"], "CARRIED_NOT_ACCEPTED_BY_DESTINATION")
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        ingress._recorded("ALLOW", {"communication_id": "head", "body": 1}, "head-seed", 4096)
+        head = json.loads((Path(os.environ["STEGVERSE_ORG_LEDGER_ROOT"]) / "HEAD.json").read_text(encoding="utf-8"))
+        before = sorted(str(p) for p in self.written())
+        frame = self.digit_string_frame("4096")
+        frame["heartbeat_reference"].update(derived_from_clock=False, source="ORGANIZATION_LEDGER_HEAD",
+                                            head_receipt_sha=head["receipt_sha256"])
+        frame["frame_sha256"] = kernel.sha({k: v for k, v in frame.items() if k != "frame_sha256"})
+        with self.assertRaises(ValueError) as refused:
+            kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
+        self.assertCarriedNotAccepted(refused)
+        self.assertEqual(sorted(str(p) for p in self.written()), before)
 
     def test_a_forged_carried_frame_writes_nothing_on_the_consume_route(self):
         """B-P36k: a forged CARRIED claim is never stripped and accepted as SUPPLIED on any route."""
@@ -409,7 +450,7 @@ class EgressAndIngestRefuseFirst(Redirected):
         name = kernel.publish_frame(forged, root=self.mesh).name
         result, = kernel.consume_addressed_frames(ROOT, mesh_root=self.mesh)
         self.assertEqual(result["result"]["failure_code"], "FRAME_REFUSED_QUARANTINED")
-        self.assertEqual(result["result"]["refusal_failure_code"], "CARRIED_PROVENANCE_UNVERIFIED")
+        self.assertEqual(result["result"]["refusal_failure_code"], "CARRIED_NOT_ACCEPTED_BY_DESTINATION")
         self.assertEqual(self.written(), [])  # no receipt at either ledger level
         files = sorted(str(p.relative_to(self.mesh)) for p in self.mesh.rglob("*") if p.is_file())
         self.assertEqual(files, ["frames.d/" + name, "quarantine.d/" + name])

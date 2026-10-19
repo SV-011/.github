@@ -40,6 +40,8 @@
                 "via": "org-kernel/kernel.py::ingest_frame",
                 "field": "heartbeat_reference.epoch",
                 "passes_as": "hb_epoch",
+                "accepts_carried_crossings": false,
+                "carried_refusal": "CARRIED_NOT_ACCEPTED_BY_DESTINATION",
                 "dispatch": {
                   "kind": "LIBRARY_API",
                   "entrypoint": false,

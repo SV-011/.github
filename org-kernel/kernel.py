@@ -218,6 +218,9 @@ def with_epoch_provenance(reference: dict[str, Any], provenance: Any) -> dict[st
 
 
 CARRIED_PROVENANCE_UNVERIFIED = "CARRIED_PROVENANCE_UNVERIFIED"
+CARRIED_NOT_ACCEPTED_BY_DESTINATION = "CARRIED_NOT_ACCEPTED_BY_DESTINATION"
+CARRIED_RESEND_ENTRYPOINT = ("the sender's hop: org-kernel/kernel.py::carrier_frame(packet, epoch=<SUPPLIED>) "
+                             "then publish_frame")
 
 
 def carried_provenance_refusal(provenance: Any, reference: dict[str, Any], head_store: Any,
@@ -643,14 +646,22 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
     # A clock-flagged frame lends no epoch, but its epoch must still be well-formed (the rule's
     # digit and anchor check, without the reference), so a bad one is refused with six fields.
     failure = supplied_epoch_failure(epoch) if clock_flagged else supplied_epoch_failure(epoch, reference)
-    if failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS):
-        # A carrier cannot assert CARRIED: only a writer verifying the ledger head records it.
-        failure = (CARRIED_PROVENANCE_UNVERIFIED, "a carrier frame asserts CARRIED provenance "
+    carried = failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS)
+    if carried:
+        # The manifest declares accepts_carried_crossings: false for inbound frames (09:03Z, option 1). The
+        # claim is not judged forged: this destination takes a SUPPLIED epoch, and the sender re-sends one.
+        failure = (CARRIED_NOT_ACCEPTED_BY_DESTINATION, "a carrier frame asserts CARRIED provenance "
                    + repr({key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}))
     if failure is not None:
         # The writer's six-field shape, with the carrier's own failure code and detail.
         refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
         refusal["failure_code"], refusal["detail"] = failure
+        if carried:
+            refusal.update(failed_predicate="DESTINATION_ACCEPTS_CARRIED_CROSSINGS",
+                           required_evidence_or_repair="re-send with the SUPPLIED epoch",
+                           retry_entrypoint=CARRIED_RESEND_ENTRYPOINT,
+                           next_attempt="the sender re-sends the packet in a frame whose heartbeat reference is "
+                                        "SUPPLIED (derived_from_clock false, no source or head_receipt_sha)")
         raise SuppliedEpochRefused(refusal)
     try:
         packet = recover_packet(frame)
