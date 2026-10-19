@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import os, sys
-          for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID", "STEGVERSE_HB_EPOCH"):
+          for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID"):
               value = os.environ.get(name, "")
               if not value.strip() or any(ord(character) < 32 or ord(character) > 126 for character in value):
                   print("FAIL_CLOSED: " + name + "_NOT_A_PRINTABLE_TOKEN")
@@ -86,7 +86,7 @@ jobs:
           kernel = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(kernel)
           refusal = kernel.writer_epoch_refusal(
-              os.environ["STEGVERSE_HB_EPOCH"],
+              os.environ.get("STEGVERSE_HB_EPOCH"),
               retry_entrypoint=".github/workflows/organization-ledger-transition-writer.yml (input hb_epoch)")
           if refusal is not None:
               print(json.dumps(refusal, sort_keys=True))

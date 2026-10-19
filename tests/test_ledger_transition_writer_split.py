@@ -32,8 +32,9 @@ MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
 
 #: sha256 of the writer's steps (each step right-stripped, joined by newline): the dispatch job's
 #: steps at main d7beaf59 (digest a632cbb0..., job-level and step-level dispatch conditions
-#: removed) with the hb_epoch pre-check changed from int() to the shared epoch rule (B-P36b).
-MAIN_DISPATCH_STEPS_SHA256 = "81b77744ac1e80d0044e4af62615120d407ebd7dec7ae93963481a81c9b1cbb8"
+#: removed) with the hb_epoch pre-check changed from int() and the printable-token gate to the
+#: shared epoch rule alone (B-P36b).
+MAIN_DISPATCH_STEPS_SHA256 = "c8e2d68220d744bf6d39bce11e9c89874456c3dd89291ad923cf1518585c209f"
 MAIN_DISPATCH_BLOCK = """  workflow_dispatch:
     inputs:
       communication_id:
@@ -125,22 +126,29 @@ class WriterSplit(unittest.TestCase):
         step, = [s for s in steps(jobs(self.writer)["transition"])
                  if "Append the intr-destination diagnostic self-closure" in s]
         check = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0])
-        for epoch, accepted in (("4096", True), ("32", True), ("+33", False), (" 33", False),
-                                ("\uff13\uff13", False), ("33.7", False), ("33.0", False), ("True", False), ("31", False), ("abc", False)):
+        cases = (("4096", True, None), ("32", True, None), ("+33", False, "HB_EPOCH_INVALID"),
+                 (" 33", False, "HB_EPOCH_INVALID"), ("\uff13\uff13", False, "HB_EPOCH_INVALID"),
+                 ("\u0663\u0663", False, "HB_EPOCH_INVALID"), ("33.7", False, "HB_EPOCH_INVALID"),
+                 ("33.0", False, "HB_EPOCH_INVALID"), ("True", False, "HB_EPOCH_INVALID"),
+                 ("31", False, "HB_EPOCH_INVALID"), ("abc", False, "HB_EPOCH_INVALID"),
+                 ("", False, "HB_EPOCH_INVALID"), (None, False, "HB_EPOCH_NOT_SUPPLIED"))
+        for epoch, accepted, code in cases:
             with self.subTest(epoch=epoch):
-                environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p",
-                                   STEGVERSE_HB_EPOCH=epoch)
+                environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p")
+                environment.pop("STEGVERSE_HB_EPOCH", None)
+                if epoch is not None:
+                    environment["STEGVERSE_HB_EPOCH"] = epoch
                 ran = subprocess.run([sys.executable, "-c", check], cwd=ROOT, env=environment,
                                      capture_output=True, text=True)
                 self.assertEqual(ran.returncode == 0, accepted, ran.stdout + ran.stderr)
                 if not accepted:
                     self.assertNotIn("Traceback", ran.stderr)
-                    if epoch.isascii() and epoch.isprintable():
-                        refusal = json.loads(ran.stdout.strip().splitlines()[-1])
-                        self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
-                        for field in ("failure_code", "required_evidence_or_repair", "retry_entrypoint",
-                                      "owning_existing_goal", "next_attempt"):
-                            self.assertTrue(refusal.get(field), field)
+                    refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                    self.assertEqual(refusal["failure_code"], code)
+                    self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
+                    for field in ("required_evidence_or_repair", "retry_entrypoint",
+                                  "owning_existing_goal", "next_attempt"):
+                        self.assertTrue(refusal.get(field), field)
 
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
