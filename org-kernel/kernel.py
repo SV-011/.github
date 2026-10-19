@@ -391,6 +391,13 @@ def publish_frame(frame: dict[str, Any], *, root: Path | None = None) -> Path:
     return path
 
 
+FRAME_MAX_BYTES = 1 << 20
+
+
+class FrameOversized(ValueError):
+    """A frames.d file larger than FRAME_MAX_BYTES; it is not read."""
+
+
 def scan_addressed_frames(organization: str, *, root: Path | None = None,
                           seen: set[str] | None = None) -> list[dict[str, Any]]:
     resolved, _provenance = resolve_federation_root(root)
@@ -404,11 +411,14 @@ def scan_addressed_frames(organization: str, *, root: Path | None = None,
         if path.name in consumed or (quarantined / path.name).is_file():
             continue
         try:
+            size = path.stat().st_size
+            if size > FRAME_MAX_BYTES:
+                raise FrameOversized("frame_exceeds_%d_bytes: %d" % (FRAME_MAX_BYTES, size))
             frame = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(frame, dict):
                 raise TypeError("frame_is_not_an_object: " + type(frame).__name__)
         except (ValueError, TypeError, OSError) as unreadable:
-            # An unreadable file names no destination; it is offered once with its six-field refusal
+            # A read error, non-UTF-8, non-JSON, non-object or oversized file names no destination; it is offered once with its six-field refusal
             # so the consumer quarantines it by name and the batch goes on (B-P36o F-SCAN).
             found.append({"path": str(path), "name": path.name, "frame": {},
                           "refusal": frame_refusal(FRAME_INGEST_FAILED, unreadable)})

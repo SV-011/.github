@@ -971,20 +971,30 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
     def test_an_unreadable_frame_file_is_quarantined_in_either_order(self):
-        """F-SCAN: a frames.d file that is not JSON, or not an object, is quarantined by name with a six-field
+        """F-SCAN / B-P36p: a frames.d entry that cannot be read, is not UTF-8, is not JSON, is not an object, or
+        exceeds FRAME_MAX_BYTES is quarantined by name with a six-field
         FRAME_INGEST_FAILED naming the exception class; the valid frame is consumed whichever sorts first."""
-        for content, exception in (("{not json", "JSONDecodeError"), ("[1,2,3]", "TypeError"), ('"x"', "TypeError")):
+        oversized = '{"pad": "' + "x" * kernel.FRAME_MAX_BYTES + '"}'
+        for content, exception in (("{not json", "JSONDecodeError"), ("[1,2,3]", "TypeError"), ('"x"', "TypeError"),
+                                   (b"\xff\xfe{}", "UnicodeDecodeError"), (oversized, "FrameOversized"),
+                                   (None, "IsADirectoryError")):
             for refused_first in (True, False):
                 with self.subTest(content=content, refused_first=refused_first):
                     for directory in ("frames.d", "quarantine.d"):
                         if (self.mesh / directory).is_dir():
                             for path in (self.mesh / directory).glob("*.json"):
-                                path.unlink()
+                                path.rmdir() if path.is_dir() else path.unlink()
                     good = self.frame("unreadable-good-%s" % refused_first, epoch=4096)
                     kernel.publish_frame(good, root=self.mesh)
                     name = ("0" if refused_first else "z") * 8 + ".json"
                     self.assertEqual(name < self.name(good), refused_first)
-                    (self.mesh / "frames.d" / name).write_text(content, encoding="utf-8")
+                    entry = self.mesh / "frames.d" / name
+                    if content is None:
+                        entry.mkdir()  # an entry named *.json that cannot be read as a file
+                    elif isinstance(content, bytes):
+                        entry.write_bytes(content)
+                    else:
+                        entry.write_text(content, encoding="utf-8")
                     results = self.consume(set())
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in results], sorted([name, self.name(good)]))
                     by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
