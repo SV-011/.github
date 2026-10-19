@@ -1,0 +1,57 @@
+name: Validate InTr Mesh Path Ingress
+
+# PR-facing checks for the path-ingress writer (intr-path-ingress.yml).
+# Read-only: the published ledger ref is fetched and archived into temporary
+# directories; destination receipts are written only there. Source receipts in
+# the tests are synthetic. Nothing is pushed; nothing is ledgered or authentic.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-path-ingress.yml'
+      - '.github/workflows/intr-path-ingress-validation.yml'
+      - '.stegverse/intr-path-transfer/**'
+      - 'resident-runtime/intr_path_ingress.py'
+      - 'resident-runtime/merge_transfer.py'
+      - 'resident-runtime/intr_destination_ingress.py'
+      - 'tests/test_intr_path_ingress.py'
+      - 'tests/fixtures/intr-path-ingress/**'
+      - 'docs/INTR_PATH_INGRESS_V1.md'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/intr-path-ingress.yml'
+      - '.github/workflows/intr-path-ingress-validation.yml'
+      - '.stegverse/intr-path-transfer/**'
+      - 'resident-runtime/intr_path_ingress.py'
+      - 'tests/test_intr_path_ingress.py'
+
+permissions:
+  contents: read
+
+env:
+  LEDGER_REF: refs/stegverse/organization-ledger
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout organization boundary (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the ledger ref read-only (the test pins a commit on it)
+        run: git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+
+      - name: Carrier consumption, ingress append, source-seal link, end-to-end (synthetic source receipts, temp ledgers)
+        run: python3 -m unittest tests.test_intr_path_ingress -v
+
+      - name: "Real state, read-only: inbound rows on this commit verify against the published ledger"
+        run: |
+          set -euo pipefail
+          namespace=$(python3 -c 'import json; print(json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]["namespace"])')
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF:$namespace"
+          python3 resident-runtime/intr_path_ingress.py verify > "$RUNNER_TEMP/real-state.json" || true
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("INTR_PATH_INGRESS_REAL_STATE", len(r), "rows", [(x["disposition"], x.get("failure_code")) for x in r])' "$RUNNER_TEMP/real-state.json"
