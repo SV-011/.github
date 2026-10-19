@@ -45,7 +45,11 @@
                   "entrypoint": false,
                   "api": "org-kernel/kernel.py::consume_addressed_frames",
                   "in_tree_callers": [],
-                  "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml"
+                  "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml",
+                  "dispatcher": {
+                    "status": "PENDING_IN_TREE",
+                    "pending": "SV-011#11"
+                  }
                 }
               },
               {
@@ -132,7 +136,11 @@
           "entrypoint": false,
           "api": "resident-runtime/organization_egress_boundary.py",
           "in_tree_callers": [],
-          "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml"
+          "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml",
+          "dispatcher": {
+            "status": "PENDING_IN_TREE",
+            "pending": "SV-011#11"
+          }
         }
       },
       "receipt_append": "resident-runtime/aggregate_repo_transition.py::append",

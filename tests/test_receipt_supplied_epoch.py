@@ -970,6 +970,35 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                     self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
+    def test_an_unreadable_frame_file_is_quarantined_in_either_order(self):
+        """F-SCAN: a frames.d file that is not JSON, or not an object, is quarantined by name with a six-field
+        FRAME_INGEST_FAILED naming the exception class; the valid frame is consumed whichever sorts first."""
+        for content, exception in (("{not json", "JSONDecodeError"), ("[1,2,3]", "TypeError"), ('"x"', "TypeError")):
+            for refused_first in (True, False):
+                with self.subTest(content=content, refused_first=refused_first):
+                    for directory in ("frames.d", "quarantine.d"):
+                        if (self.mesh / directory).is_dir():
+                            for path in (self.mesh / directory).glob("*.json"):
+                                path.unlink()
+                    good = self.frame("unreadable-good-%s" % refused_first, epoch=4096)
+                    kernel.publish_frame(good, root=self.mesh)
+                    name = ("0" if refused_first else "z") * 8 + ".json"
+                    self.assertEqual(name < self.name(good), refused_first)
+                    (self.mesh / "frames.d" / name).write_text(content, encoding="utf-8")
+                    results = self.consume(set())
+                    self.assertEqual([r["path"].rsplit("/", 1)[1] for r in results], sorted([name, self.name(good)]))
+                    by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
+                    marker = by_name[name]
+                    self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                    self.assertEqual(marker["refusal_failure_code"], "FRAME_INGEST_FAILED")
+                    self.assertEqual(marker["failed_predicate"], "FRAME_INGESTS_WITHOUT_ERROR:" + exception)
+                    self.assertIs(marker["is_a_receipt"], False)
+                    for field in SIX_FIELDS:
+                        self.assertTrue(marker.get(field), field)
+                    self.assertTrue((self.mesh / "quarantine.d" / name).is_file())
+                    self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                    self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real
         import sys
@@ -1184,6 +1213,9 @@ class ManifestEpochBindings(unittest.TestCase):
                     continue
                 self.assertIs(dispatch["entrypoint"], False)
                 self.assertEqual(dispatch["in_tree_callers"], [])
+                # 08:45Z: a library API without an in-tree dispatcher carries the explicit pending finding
+                self.assertEqual(dispatch["dispatcher"], {"status": "PENDING_IN_TREE", "pending": "SV-011#11"})
+                self.assertTrue(dispatch["dispatcher_pending"].startswith("SV-011/.github#11 "))
                 api = dispatch["api"]
                 module_path, _, function = api.partition("::")
                 callers = []

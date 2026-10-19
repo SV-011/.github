@@ -403,7 +403,16 @@ def scan_addressed_frames(organization: str, *, root: Path | None = None,
     for path in sorted(directory.glob("*.json")):
         if path.name in consumed or (quarantined / path.name).is_file():
             continue
-        frame = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            frame = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(frame, dict):
+                raise TypeError("frame_is_not_an_object: " + type(frame).__name__)
+        except (ValueError, TypeError, OSError) as unreadable:
+            # An unreadable file names no destination; it is offered once with its six-field refusal
+            # so the consumer quarantines it by name and the batch goes on (B-P36o F-SCAN).
+            found.append({"path": str(path), "name": path.name, "frame": {},
+                          "refusal": frame_refusal(FRAME_INGEST_FAILED, unreadable)})
+            continue
         if frame.get("destination_org") == organization:
             found.append({"path": str(path), "name": path.name, "frame": frame})
     return found
@@ -516,6 +525,8 @@ def collect_ecosystem_responses(origin_org: str, communication_id: str, *,
                                 mesh_root: Path | None = None) -> dict[str, Any]:
     responses = []
     for item in scan_addressed_frames(origin_org, root=mesh_root):
+        if "refusal" in item:
+            continue
         packet = recover_packet(item["frame"])
         payload = packet.get("payload") or {}
         if payload.get("communication_id") != communication_id:
@@ -709,16 +720,19 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     seen = seen if seen is not None else set()
     results = []
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
-        try:
-            result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
-        except (ValueError, KeyError, TypeError) as refused:
-            # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
-            # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;
-            # any other adapter error is FRAME_INGEST_FAILED, naming the exception class (B-P36o).
-            refusal = getattr(refused, "refusal", None)
-            if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
-                refusal = frame_refusal(FRAME_INGEST_FAILED, refused)
-            result = quarantine_frame(item, refusal, mesh_root=mesh_root)
+        if "refusal" in item:
+            result = quarantine_frame(item, item["refusal"], mesh_root=mesh_root)
+        else:
+            try:
+                result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+            except (ValueError, KeyError, TypeError) as refused:
+                # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
+                # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;
+                # any other adapter error is FRAME_INGEST_FAILED, naming the exception class (B-P36o).
+                refusal = getattr(refused, "refusal", None)
+                if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
+                    refusal = frame_refusal(FRAME_INGEST_FAILED, refused)
+                result = quarantine_frame(item, refusal, mesh_root=mesh_root)
         seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})
     return results
