@@ -130,7 +130,7 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         prior = _recorded(target, head, source_sha)
         if prior is not None:
             if prior.get("org_transition_class") != org_transition_class:
-                raise ValueError("ledger_receipt_collision")
+                raise ledger_store.LedgerStoreCollision("ledger_receipt_collision")
             return prior
     # A recorded binding is answered above; a new one never binds a clock-provenance source.
     refused = source_refusal(source_receipt)

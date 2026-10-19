@@ -55,6 +55,14 @@ class LedgerWriteFault(RuntimeError):
     ledger_write_fault = True
 
 
+class LedgerStoreCollision(LedgerWriteFault, ValueError):
+    """A content-addressed key already holds a different document: the store's state, not the content, is at fault.
+
+    It is still ``ledger_receipt_collision`` and still a ValueError, so callers
+    that name the collision keep working; ``ledger_write_fault`` marks it ours.
+    """
+
+
 class LedgerLocatorInvalid(ValueError):
     """A supplied ledger location that names no store. Nothing is opened or written."""
 
@@ -219,7 +227,7 @@ class Store:
             for key, value in documents.items():
                 existing = self.get(key)
                 if existing is not None and existing != value:
-                    raise ValueError("ledger_receipt_collision")
+                    raise LedgerStoreCollision("ledger_receipt_collision")
                 if existing is None:
                     missing.append(key)
             for key in missing:
@@ -363,7 +371,7 @@ class GitLedgerStore:
 
     def _refuse_replacing_immutable(self, current: bytes | None, key: str, value: Any) -> None:
         if key.startswith(self._IMMUTABLE_PREFIXES) and current is not None and json.loads(current) != value:
-            raise ValueError("ledger_receipt_collision")
+            raise LedgerStoreCollision("ledger_receipt_collision")
 
     def initialize(self) -> None:
         """Open the repository. The ref is created by the first append, not here."""
@@ -455,7 +463,7 @@ class GitLedgerStore:
                 for key, value in documents.items():
                     existing = current[key]
                     if existing is not None and json.loads(existing) != value:
-                        raise ValueError("ledger_receipt_collision")
+                        raise LedgerStoreCollision("ledger_receipt_collision")
                     if existing is None:
                         writes[key] = _document_bytes(value)
                 writes[HEAD_KEY] = _document_bytes(new_head)

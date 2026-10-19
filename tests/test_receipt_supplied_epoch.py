@@ -1142,13 +1142,15 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         1 organization receipt, no orphan."""
         import importlib.machinery
         real_exec = importlib.machinery.SourceFileLoader.exec_module
-        for fail_at in (1, 2):  # 1: the repository append; 2: the organization append, after the repository receipt
-            with self.subTest(fail_at=fail_at):
+        cases = [(fault, fail_at) for fault in ("lost_comparison", "store_collision") for fail_at in (1, 2)]
+        for fault, fail_at in cases:  # fail_at 1: the repository append; 2: the organization append, after it
+            with self.subTest(fault=fault, fail_at=fail_at):
                 for directory in ("frames.d", "quarantine.d"):
                     if (self.mesh / directory).is_dir():
                         for path in (self.mesh / directory).glob("*.json"):
                             path.unlink()
-                good = self.frame("lost-cas-%d" % fail_at, epoch=4096)
+                tag = "%s-%d" % (fault, fail_at)
+                good = self.frame("lost-cas-" + tag, epoch=4096)
                 kernel.publish_frame(good, root=self.mesh)
                 appends = []
 
@@ -1161,6 +1163,8 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                         def append_transaction(store, *args, _original=original, **kwargs):
                             appends.append(store.root)
                             if len(appends) == fail_at:
+                                if fault == "store_collision":
+                                    raise module.LedgerStoreCollision("ledger_receipt_collision")
                                 return False
                             return _original(store, *args, **kwargs)
                         module.Store.append_transaction = append_transaction
@@ -1174,8 +1178,10 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 [row] = faulted
                 refusal = row["result"]
                 self.assertEqual(refusal["failure_code"], "FRAME_DISPATCH_WRITE_FAILED")
-                self.assertEqual(refusal["failed_predicate"], "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:LedgerWriteFault")
-                self.assertIn("ledger_append_lost_comparison", refusal["detail"])
+                self.assertEqual(refusal["failed_predicate"], "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:"
+                                 + ("LedgerWriteFault" if fault == "lost_comparison" else "LedgerStoreCollision"))
+                self.assertIn("ledger_append_lost_comparison" if fault == "lost_comparison"
+                              else "ledger_receipt_collision", refusal["detail"])
                 self.assertIs(refusal["terminal"], False)
                 for field in SIX_FIELDS:
                     self.assertTrue(refusal.get(field), field)
@@ -1187,11 +1193,21 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
                 receipts = [json.loads(p.read_text(encoding="utf-8")) for p in self.written()]
                 ids = [r["transition_id"] for r in receipts
-                       if "transition_id" in r and "lost-cas-%d" % fail_at in r["transition_id"]]
+                       if "transition_id" in r and r["transition_id"].endswith("lost-cas-" + tag)]
                 self.assertEqual(len(ids), 1)
                 [repository] = [r for r in receipts if r.get("transition_id") in ids]
                 bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
                 self.assertEqual(len(bound), 1, "the repository receipt is orphaned or bound twice")
+
+    def test_a_content_collision_stays_a_recorded_refusal(self):
+        """One packet id bound to two different diagnostics is the content's defect: a recorded FAIL_CLOSED,
+        not a write fault, and the first receipt is untouched."""
+        first = ingress._recorded("ALLOW", {"communication_id": "c-1", "body": 1}, "collide", 4096)
+        before = sorted(str(p) for p in self.written())
+        second = ingress._recorded("ALLOW", {"communication_id": "c-1", "body": 2}, "collide", 4096)
+        self.assertIsNotNone(first)
+        self.assertIn("ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC", json.dumps(second))
+        self.assertEqual(sorted(str(p) for p in self.written()), before)
 
     def test_every_ledger_store_write_fault_is_a_ledger_write_fault(self):
         import ast
@@ -1202,6 +1218,10 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
                     name = ast.unparse(node.exc.func)
                     self.assertNotEqual(name, "RuntimeError", relative + ":" + str(node.lineno))
+                    if relative != ".stegverse/transition-ledger/emit.py" and node.exc.args:
+                        # only emit's idempotent_on mismatch is a content collision; a store collision is ours
+                        self.assertFalse(name == "ValueError" and ast.unparse(node.exc.args[0])
+                                         == "'ledger_receipt_collision'", relative + ":" + str(node.lineno))
 
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real

@@ -269,7 +269,8 @@ def _recorded(disposition: str, payload: Any, packet_id: str, hb_epoch: int | No
     try:
         appended, replayed = _append(transition_class, packet_id, evidence, hb_epoch)
     except ValueError as exc:
-        if str(exc) != "ledger_receipt_collision":
+        # A store-side collision is a fault writing our own state, not this packet's: it propagates.
+        if str(exc) != "ledger_receipt_collision" or getattr(exc, "ledger_write_fault", False) is True:
             raise
         collided = _evidence(payload, packet_id, FAIL_CLOSED,
                              failed_predicate="ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC",
