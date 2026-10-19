@@ -324,6 +324,45 @@ class Refusals(unittest.TestCase):
                 finally:
                     ledger.close()
 
+    def test_the_append_cli_tearing_any_put_is_six_fields_without_a_traceback(self):
+        """F-WRITER-TRACE: `merge_transfer.py append` (the push workflow's step) with any of its 4 puts torn prints
+        six-field MERGE_TRANSFER_WRITE_FAILED, exits non-zero with no traceback; the re-run appends once."""
+        driver = (
+            "import os, pathlib, runpy, sys\n"
+            "root = pathlib.Path(os.environ['STEGVERSE_ORG_LEDGER_ROOT']).resolve()\n"
+            "step = int(os.environ['TEAR_AT']); seen = []; real = pathlib.Path.write_bytes\n"
+            "def tear(path, data):\n"
+            "    if root in pathlib.Path(path).resolve().parents:\n"
+            "        seen.append(path)\n"
+            "        if len(seen) == step:\n"
+            "            real(path, data[: len(data) // 2]); raise OSError(28, 'No space left on device')\n"
+            "    return real(path, data)\n"
+            "pathlib.Path.write_bytes = tear\n"
+            "sys.argv = sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        command = [str(ROOT / "resident-runtime/merge_transfer.py"), "append", "--commit", self.merge]
+        for step in (1, 2, 3, 4):
+            with self.subTest(step=step):
+                ledger = Ledger(self.fixture)
+                try:
+                    torn = subprocess.run([sys.executable, "-c", driver, *command], capture_output=True, text=True,
+                                          env={**os.environ, "TEAR_AT": str(step)}, cwd=ROOT)
+                    self.assertEqual(torn.returncode, 1, torn.stderr)
+                    self.assertNotIn("Traceback", torn.stderr)
+                    [failed] = json.loads(torn.stdout)
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertIs(failed["terminal"], False)
+                    rerun = subprocess.run([sys.executable, *command], capture_output=True, text=True,
+                                           env=dict(os.environ), cwd=ROOT)
+                    self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+                    once = ledger.files()
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                    verified = mt.verify_merge_transfer(self.repo, self.merge)
+                    self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                finally:
+                    ledger.close()
+
     def test_the_cli_exits_non_zero_on_a_write_fault(self):
         from unittest import mock
         failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)
