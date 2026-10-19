@@ -634,12 +634,13 @@ def quarantine_frame(item: dict[str, Any], refusal: dict[str, Any], *, mesh_root
     """
     resolved, _provenance = resolve_federation_root(mesh_root)
     frame = item["frame"]
-    marker = {"schema": "stegverse.frame-quarantine/v1", "status": FRAME_REFUSED_QUARANTINED,
+    marker = {"schema": "stegverse.frame-quarantine/v1", "status": "REFUSED",
               "terminal": True, "frame": item["name"], "frame_sha256": frame.get("frame_sha256"),
               "packet_id": frame.get("packet_id"), "is_a_receipt": False,
-              **{key: refusal[key] for key in ("disposition", "failure_code", "failed_predicate", "detail",
-                                               "required_evidence_or_repair", "retry_entrypoint",
-                                               "owning_existing_goal", "next_attempt")},
+              "disposition": refusal["disposition"], "failure_code": FRAME_REFUSED_QUARANTINED,
+              "refusal_failure_code": refusal["failure_code"],
+              **{key: refusal[key] for key in ("failed_predicate", "detail", "required_evidence_or_repair",
+                                               "retry_entrypoint", "owning_existing_goal", "next_attempt")},
               "derived_from_clock": False, "consequence_committed": False}
     path = resolved / QUARANTINE_DIRECTORY / item["name"]
     path.parent.mkdir(parents=True, exist_ok=True)

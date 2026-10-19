@@ -223,8 +223,9 @@ class CapabilityAddressCarriesTheEpoch(Redirected):
         self.publish("clock-stamped", now_ns=kernel.HB_ANCHOR_UNIX_NS + 5 * kernel.HB_PERIOD_NS)
         result, = self.consume()
         marker = result["result"]
-        self.assertEqual(marker["status"], "FRAME_REFUSED_QUARANTINED")
-        self.assertEqual(marker["failure_code"], "HB_EPOCH_INVALID")
+        self.assertEqual(marker["status"], "REFUSED")
+        self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_INVALID")
         self.assertIn("derived_from_clock", marker["detail"])
         self.assertIn("kernel.py::ingest_frame", marker["retry_entrypoint"])
         for field in SIX_FIELDS:
@@ -380,6 +381,19 @@ class EgressAndIngestRefuseFirst(Redirected):
                 kernel.ingest_frame(ROOT, self.fabricated_carried_frame(**marker), mesh_root=self.mesh)
             self.assertSixFieldRefusal(refused, code, "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
+
+    def test_a_forged_carried_frame_writes_nothing_on_the_consume_route(self):
+        """B-P36k: a forged CARRIED claim is never stripped and accepted as SUPPLIED on any route."""
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        forged = self.fabricated_carried_frame(derived_from_clock=False)
+        name = kernel.publish_frame(forged, root=self.mesh).name
+        result, = kernel.consume_addressed_frames(ROOT, mesh_root=self.mesh)
+        self.assertEqual(result["result"]["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(result["result"]["refusal_failure_code"], "CARRIED_PROVENANCE_UNVERIFIED")
+        self.assertEqual(self.written(), [])  # no receipt at either ledger level
+        files = sorted(str(p.relative_to(self.mesh)) for p in self.mesh.rglob("*") if p.is_file())
+        self.assertEqual(files, ["frames.d/" + name, "quarantine.d/" + name])
+        self.assertEqual(kernel.consume_addressed_frames(ROOT, mesh_root=self.mesh), [])
 
     def test_ingest_takes_a_digit_string_carrier_epoch(self):
         self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
@@ -765,7 +779,9 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         self.assertEqual([r["path"].rsplit("/", 1)[1] for r in results], sorted([self.name(bad), self.name(good)]))
         by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
         marker = by_name[self.name(bad)]
-        self.assertEqual(marker["status"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(marker["status"], "REFUSED")
+        self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(marker["refusal_failure_code"], "HB_EPOCH_INVALID")
         self.assertIs(marker["terminal"], True)
         self.assertIs(marker["is_a_receipt"], False)
         for field in SIX_FIELDS:
