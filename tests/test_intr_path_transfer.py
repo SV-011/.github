@@ -137,7 +137,9 @@ class Append(unittest.TestCase):
                              ("FAIL_CLOSED", "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED"))
             self.assertEqual(whole["halves"], {"source": "ALLOW", "destination": "FAIL_CLOSED"})
             self.assertIn("StegVerse-Labs/TVC", whole["retry_entrypoint"])
-            self.assertEqual(whole["classification"], "B")
+            self.assertEqual(whole["classification"], "A")
+            self.assertIn("TVC-PRIVATE-SOURCE-READ-001", whole["owning_existing_goal"])
+            self.assertNotIn("#162", whole["owning_existing_goal"])
             for field in pt.SIX_FIELDS:
                 self.assertTrue(whole[field], field)
         replay = pt.append_transfers(TRANSFER)
@@ -262,7 +264,7 @@ class DestinationHalf(unittest.TestCase):
         p = mine()[0]
         absent = pt.verify_destination(p, cid(p))
         self.assertEqual((absent["disposition"], absent["failure_code"], absent["classification"]),
-                         ("FAIL_CLOSED", "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED", "B"))
+                         ("FAIL_CLOSED", "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED", "A"))
         for field in pt.SIX_FIELDS:
             self.assertTrue(absent[field], field)
 

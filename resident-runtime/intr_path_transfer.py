@@ -239,14 +239,21 @@ def verify_destination(path: Mapping[str, Any], communication_id: str, source: M
     The destination is another organization's internal repository: without a supplied readback
     (stegverse.intr-path-ledger-readback/v1) it is FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED."""
     pi = path_ingress()
+    refused = None
+    if readback is None and source is not None and source.get("disposition") == ALLOW:
+        # the destination ledger, read through the TV/TVC issuance transition (resident-runtime/intr_path_tvc_read.py)
+        readback, refused = pi.tvc_readback(path["path_id"], communication_id, path["destination"] + "/.github")
     if readback is None or source is None or source.get("disposition") != ALLOW:
-        return {**pi.inclusion_refusal(path["destination"] + "/.github", path["path_id"], communication_id),
-                "half": "destination", "failed_predicate": "PATH_HAS_A_DESTINATION_LEDGER_RECEIPT",
+        base = refused or pi.inclusion_refusal(path["destination"] + "/.github", path["path_id"], communication_id)
+        if base.get("failure_code") != pi.CREDENTIAL_NOT_ISSUED:
+            return {**base, "half": "destination"}
+        return {**base, "half": "destination", "failed_predicate": "PATH_HAS_A_DESTINATION_LEDGER_RECEIPT",
                 "required_evidence_or_repair":
-                    "class B: the destination's sealed " + DESTINATION_OPERATION + " receipt for this path, read from "
-                    + path["destination"] + "/.github refs/stegverse/organization-ledger with a TV/TVC-issued "
-                    "least-privilege read credential (GITHUB_TOKEN is scoped to this repository; the destination is "
-                    "internal). The receipt itself exists only after the inbound row lands on the destination's main"}
+                    "the destination's sealed " + DESTINATION_OPERATION + " receipt for this path, read from "
+                    + path["destination"] + "/.github refs/stegverse/organization-ledger through the TV/TVC issuance "
+                    "transition (" + pi.tvc_read.TVC_TRANSITION + ", scope " + path["path_id"] + "#destination_readback; "
+                    "GITHUB_TOKEN reads only this repository; no bot holds a credential). The receipt itself exists "
+                    "only after the inbound row lands on the destination's main"}
     link = {"path_id": path["path_id"], "communication_id": communication_id,
             "source_organization_receipt_sha256": source["organization_receipt_sha256"],
             "source_repository_receipt_sha256": source["repository_receipt_sha256"]}

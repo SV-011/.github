@@ -21,7 +21,7 @@ of that commit's main-merge transfer organization receipt. A ledgered row is ans
 | half | ALLOW when | absent / unsealed | contradicted |
 |---|---|---|---|
 | source | sealed path organization receipt, linked to its sealed repository receipt, linked to the transfer commit's sealed main-merge transfer receipt | FAIL_CLOSED `INTR_PATH_RECEIPT_NOT_LEDGERED` | DENY `INTR_PATH_RECEIPT_LINK_UNVERIFIED` |
-| destination | the destination ledger's sealed `ORGANIZATION_INTR_DESTINATION_INGRESS` receipt for the same path_id and communication_id, linked to its repository receipt, both carrying the source organization and repository receipt seals, read back from the destination ledger | FAIL_CLOSED `INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED` (no readback; class B) or `INTR_PATH_DESTINATION_RECEIPT_NOT_LEDGERED` | DENY `INTR_PATH_DESTINATION_RECEIPT_LINK_UNVERIFIED` |
+| destination | the destination ledger's sealed `ORGANIZATION_INTR_DESTINATION_INGRESS` receipt for the same path_id and communication_id, linked to its repository receipt, both carrying the source organization and repository receipt seals, read back from the destination ledger | FAIL_CLOSED `INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED` (no verified TVC read receipt; class A) or `INTR_PATH_DESTINATION_RECEIPT_NOT_LEDGERED` | DENY `INTR_PATH_DESTINATION_RECEIPT_LINK_UNVERIFIED` |
 
 A path is ALLOW (VERIFIED) only when both halves verify. Every non-ALLOW carries the six fields.
 
@@ -45,9 +45,22 @@ boundary_evidence and repository evidence carry both source seals. A ledgered ro
 takes a readback of each ledger (`stegverse.intr-path-ledger-readback/v1`: tip, head seal, chain, the pair). It is
 ALLOW only when the source pair is sealed and included in the source chain, the destination pair is sealed and
 included in the destination chain, and the destination pair carries the source seals. Without either readback it
-is FAIL_CLOSED `INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED` (six fields; retry: StegVerse-Labs/TVC
-least-privilege issuance of contents:read on the other organization's ledger ref; owning goal #162 under TV/TVC
-custody).
+is FAIL_CLOSED `INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED` (six fields; retry at the TV/TVC issuance
+transition StegVerse-Labs/TVC `TVC-PRIVATE-SOURCE-READ-001`, consumer `INTR-PATH-LEDGER-READBACK-001`, TVC#528;
+owning goal `TVC-PRIVATE-SOURCE-READ-001`).
+
+**Through TV/TVC** (`python resident-runtime/intr_path_ingress.py end-to-end-via-tvc --path-id P --communication-id C`)
+reads this organization's half from its own ledger and the other organization's half from its TVC read receipt
+(`stegverse.tvc-intr-path-ledger-read-receipt/v1`, landed byte for byte at
+`.stegverse/intr-path-transfer/tvc-read-receipts/<SOURCE>--<DESTINATION>.<purpose>.json`;
+`resident-runtime/intr_path_tvc_read.py`). The receipt verifies only when its digests recompute, it names this
+scope (path, purpose, reader organization, the other organization's `.github`, `refs/stegverse/organization-ledger`,
+`contents:read`), authorized = observed = requested tip = the readback's tip, the head epoch is supplied (int >= 32),
+the read-only flags are false and its evidence class is `TVC_RESIDENT_EXECUTION`. A contradicted receipt is DENY
+`INTR_PATH_TVC_READ_RECEIPT_CONTRADICTED`; a fixture outside the tests is FAIL_CLOSED
+`INTR_PATH_TVC_READ_RECEIPT_NOT_RESIDENT`. On ingress, a verified `source_inclusion` receipt is recorded in the
+ingress evidence (`source_inclusion.state: VERIFIED_BY_TVC_READ_RECEIPT`, with the source ledger tip). No bot holds a
+credential; no classic PAT or FEDERATION_* token is used.
 
 **Class B.** In CI the other organization's ledger is not readable: `GITHUB_TOKEN` is scoped to the repository and
 the repositories are internal. No token is minted and no `FEDERATION_*` token is used. Paths whose source is
@@ -56,6 +69,6 @@ another organization also need this transition installed in that organization's 
 **Real state** (`tests/fixtures/intr-path-transfer/expected-real-state.json`, ledger tip `0db6e0bd`): 56/56
 FAIL_CLOSED `INTR_PATH_RECEIPT_NOT_LEDGERED`. No path receipt exists yet. Path receipts appear only once this
 transition lands on main. After that, the 7 paths from StegVerse-org verify their source half, and every path
-stays FAIL_CLOSED at the destination half (`INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED`, class B). Receipts in
+stays FAIL_CLOSED at the destination half (`INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED`, class A, retry at TVC) until its TVC read receipt is landed. Receipts in
 the tests and the PR dry-run are written to temporary directories or a scratch ref. They are not ledgered and
 not authentic.

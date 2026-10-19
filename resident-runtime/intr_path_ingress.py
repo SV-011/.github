@@ -20,10 +20,15 @@ supplied epoch, with boundary evidence linking the source receipts by seal.
 What the destination cannot observe without a credential: that the carried
 source receipts are included in the source organization's ledger. The source
 repositories are internal; GITHUB_TOKEN is scoped to this repository. That
-predicate is FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED until
-TV/TVC issues a least-privilege read credential. ``verify_end_to_end`` turns
-ALLOW only from readbacks of both ledgers: the source ledger's sealed path
-receipts and this ledger's sealed ingress receipts linking them.
+predicate is read through the TV/TVC issuance transition (StegVerse-Labs/TVC
+TVC-PRIVATE-SOURCE-READ-001, InTr path consumer INTR-PATH-LEDGER-READBACK-001;
+resident-runtime/intr_path_tvc_read.py): until a TVC read receipt for the scope
+is landed at .stegverse/intr-path-transfer/tvc-read-receipts/ and verifies, it is
+FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED with retry at that
+TVC transition. ``verify_end_to_end`` turns ALLOW only from readbacks of both
+ledgers: the source ledger's sealed path receipts and this ledger's sealed
+ingress receipts linking them; ``end_to_end_via_tvc`` reads this ledger itself
+and the other organization's from its verified TVC read receipt.
 """
 from __future__ import annotations
 
@@ -49,6 +54,9 @@ def _module(name: str, relative: str):
 
 mt = _module("merge_transfer_for_path_ingress", "resident-runtime/merge_transfer.py")
 ingress = mt.ingress
+tvc_read = _module("intr_path_tvc_read", "resident-runtime/intr_path_tvc_read.py")
+Refused = getattr(mt, "Refused", type("Refused", (Exception,), {"result": {}}))
+TVC_FIXTURE_OK = False   # tests only: accept FIXTURE_NOT_AUTHENTIC TVC read receipts
 
 SOURCE_OPERATION = "INTR_MESH_PATH_TRANSFER"
 SOURCE_EVIDENCE_SCHEMA = "stegverse.intr-path-transfer-evidence/v1"
@@ -62,9 +70,8 @@ INBOUND = ROOT / ".stegverse" / "intr-path-transfer" / "inbound.json"
 GOAL = "StegVerse-org/.github#162"
 ENTRYPOINT = (".github/workflows/intr-path-ingress.yml (after Organization Ledger Main Merge Transfer "
               "completes on a push to main)")
-CREDENTIAL_ENTRYPOINT = ("StegVerse-Labs/TVC least-privilege issuance: contents:read on <SOURCE>/.github "
-                         "refs/stegverse/organization-ledger for this organization's verifier")
-CREDENTIAL_GOAL = "StegVerse-org/.github#162 (credential issuance under TV/TVC custody, StegVerse-Labs/TVC)"
+CREDENTIAL_ENTRYPOINT = tvc_read.TVC_TRANSITION
+CREDENTIAL_GOAL = tvc_read.TVC_GOAL
 SIX_FIELDS = mt.SIX_FIELDS
 ALLOW, DENY, FAIL_CLOSED = "ALLOW", "DENY", "FAIL_CLOSED"
 
@@ -152,15 +159,54 @@ def check_source_pair(org_receipt: Any, repo_receipt: Any, path_id: str, communi
             "source_repository_receipt_sha256": repo_receipt["receipt_sha256"], "message": message}
 
 
-def inclusion_refusal(source_repository: str, path_id: str, communication_id: str) -> dict[str, Any]:
-    org = str(source_repository).split("/")[0]
-    return refusal(FAIL_CLOSED, CREDENTIAL_NOT_ISSUED, "SOURCE_RECEIPT_IS_INCLUDED_IN_THE_SOURCE_LEDGER",
-                   "class B: a TV/TVC-issued least-privilege contents:read credential for " + str(source_repository)
-                   + " refs/stegverse/organization-ledger; GITHUB_TOKEN is scoped to this repository and the source "
-                   "repository is internal. No classic PAT or FEDERATION_* token is used",
-                   "after TV/TVC issues the credential, read the source ledger back and run verify_end_to_end",
-                   entrypoint=CREDENTIAL_ENTRYPOINT.replace("<SOURCE>", org), goal=CREDENTIAL_GOAL,
-                   path_id=path_id, communication_id=communication_id, classification="B")
+def _purpose(path_id: str, other_repository: str) -> str:
+    """The TVC scope purpose for reading ``other_repository``'s ledger on this path."""
+    source = str(path_id).split(":")[0].split("->")[0]
+    return "source_inclusion" if str(other_repository).split("/")[0] == source else "destination_readback"
+
+
+def _reader(path_id: str, purpose: str) -> str:
+    ends = str(path_id).split(":")[0].split("->")
+    return ends[1] if purpose == "source_inclusion" and len(ends) > 1 else ends[0]
+
+
+def inclusion_refusal(other_repository: str, path_id: str, communication_id: str, **extra: Any) -> dict[str, Any]:
+    """FAIL_CLOSED until the TVC read receipt for this scope is observed; retry at the TVC transition."""
+    purpose = _purpose(path_id, other_repository)
+    return {"schema": RESULT_SCHEMA, **tvc_read.not_issued(path_id, purpose, str(other_repository), **extra),
+            "communication_id": communication_id}
+
+
+def tvc_readback(path_id: str, communication_id: str, other_repository: str,
+                 directory: Path | str | None = None) -> tuple[Any, dict[str, Any] | None]:
+    """The other organization's ledger readback from its verified TVC read receipt, or a six-field refusal."""
+    purpose = _purpose(path_id, other_repository)
+    rb, refused = tvc_read.lookup(path_id, purpose, _reader(path_id, purpose), str(other_repository),
+                                  directory=directory or tvc_read.RECEIPT_DIR, allow_fixture=TVC_FIXTURE_OK)
+    if refused is not None:
+        return None, {"schema": RESULT_SCHEMA, **refused, "communication_id": communication_id}
+    return rb, None
+
+
+def source_inclusion(checked: Mapping[str, Any], directory: Path | str | None = None) -> dict[str, Any]:
+    """The carried source organization receipt on the source chain, read through TV/TVC."""
+    pid, cid, src = checked["path_id"], checked["communication_id"], checked["source_repository"]
+    rb, refused = tvc_readback(pid, cid, src, directory)
+    if refused is not None:
+        return refused
+    carried = {"receipt_sha256": checked["source_organization_receipt_sha256"]}
+    found = rb.get("organization_receipt") if isinstance(rb.get("organization_receipt"), Mapping) else {}
+    found_repo = rb.get("repository_receipt") if isinstance(rb.get("repository_receipt"), Mapping) else {}
+    if found.get("receipt_sha256") != carried["receipt_sha256"] or not _included(rb, found) \
+            or found_repo.get("receipt_sha256") != checked["source_repository_receipt_sha256"]:
+        return refusal(DENY, SOURCE_LINK_UNVERIFIED, "SOURCE_RECEIPT_IS_INCLUDED_IN_THE_SOURCE_LEDGER",
+                       "the carried source receipts must be the ones on the source chain read through TV/TVC",
+                       "inspect the carried copies against the source ledger; the carried pair is not verified",
+                       path_id=pid, communication_id=cid, source_ledger_tip=rb.get("ledger_tip"))
+    return {"schema": RESULT_SCHEMA, "disposition": ALLOW, "state": "VERIFIED_BY_TVC_READ_RECEIPT",
+            "path_id": pid, "communication_id": cid, "source_ledger_tip": rb.get("ledger_tip"),
+            "source_ledger_head_epoch": rb.get("ledger_head_epoch"),
+            "tvc_read_receipt": tvc_read.receipt_file(pid, "source_inclusion", ".").name}
 
 
 # -- consume (append) -----------------------------------------------------------
@@ -175,14 +221,17 @@ def load_inbound(path: Path | str = INBOUND) -> list[dict[str, Any]]:
     return list(document["transfers"])
 
 
-def ingress_evidence(checked: Mapping[str, Any]) -> dict[str, Any]:
+def ingress_evidence(checked: Mapping[str, Any], inclusion: Mapping[str, Any] | None = None) -> dict[str, Any]:
     core = {"schema": EVIDENCE_SCHEMA, "repository": repository(), "path_id": checked["path_id"],
             "source_repository": checked["source_repository"],
             "source_organization_receipt_sha256": checked["source_organization_receipt_sha256"],
             "source_repository_receipt_sha256": checked["source_repository_receipt_sha256"],
             "message": checked["message"], "message_sha256": sha(checked["message"]),
             "addressed_service": address(organization()),
-            "source_inclusion": "UNOBSERVED_WITHOUT_A_CROSS_ORG_READ_CREDENTIAL"}
+            "source_inclusion": ({"state": inclusion["state"], "source_ledger_tip": inclusion["source_ledger_tip"],
+                                  "tvc_read_receipt": inclusion["tvc_read_receipt"]}
+                                 if inclusion and inclusion.get("disposition") == ALLOW
+                                 else "UNOBSERVED_WITHOUT_A_CROSS_ORG_READ_CREDENTIAL")}
     return {**core, "payload_sha256": sha(core), "disposition": ALLOW,
             "communication_id": checked["communication_id"]}
 
@@ -222,7 +271,8 @@ def consume(inbound: Path | str = INBOUND) -> list[dict[str, Any]]:
         if failed is not None:
             out.append({**failed, "schema": RESULT_SCHEMA, "path_id": pid, "communication_id": cid})
             continue
-        evidence = ingress_evidence(checked)
+        inclusion = source_inclusion(checked)
+        evidence = ingress_evidence(checked, inclusion)
         try:
             appended, replayed = ingress._append(
                 TRANSITION_CLASS, pid + "@" + cid, evidence, epoch, operation=OPERATION, profile_id=ingress.PROFILE_ID,
@@ -238,7 +288,7 @@ def consume(inbound: Path | str = INBOUND) -> list[dict[str, Any]]:
                     "communication_id": cid, "hb_epoch": epoch, "replayed": replayed,
                     "organization_receipt_sha256": appended["organization_receipt"]["receipt_sha256"],
                     "repository_receipt_sha256": appended["repository_receipt"]["receipt_sha256"],
-                    "source_inclusion": inclusion_refusal(checked["source_repository"], pid, cid)})
+                    "source_inclusion": inclusion})
     return out
 
 
@@ -367,6 +417,32 @@ def readback(path_id: str, communication_id: str, operation: str, ledger_tip: st
             "repository_receipt": mt._receipt(rep, found.get("repo_receipt_sha256")) if found else None}
 
 
+def end_to_end_via_tvc(path_id: str, communication_id: str, directory: Path | str | None = None,
+                       ledger_tip: str | None = None) -> dict[str, Any]:
+    """This organization's half from its own ledger; the other organization's from its verified TVC read receipt."""
+    ends = str(path_id).split(":")[0].split("->")
+    if len(ends) != 2 or organization() not in ends:
+        return refusal(FAIL_CLOSED, NOT_LEDGERED, "THIS_ORGANIZATION_IS_AN_END_OF_THE_PATH",
+                       "run the end-to-end check in the source or destination organization of " + str(path_id),
+                       "re-run in an end organization", path_id=path_id, communication_id=communication_id)
+    here_is_source = organization() == ends[0]
+    other = (ends[1] if here_is_source else ends[0]) + "/.github"
+    remote, refused = tvc_readback(path_id, communication_id, other, directory)
+    if refused is not None:   # the other organization's half first: nothing local is read without it
+        return {**refused, "half": "destination" if here_is_source else "source", "path": "UNVERIFIED"}
+    try:
+        local = readback(path_id, communication_id, SOURCE_OPERATION if here_is_source else OPERATION, ledger_tip)
+    except Refused as exc:
+        return {**exc.result, "schema": RESULT_SCHEMA, "path_id": path_id, "communication_id": communication_id}
+    except Exception as exc:  # the bound ledger location is unavailable in this checkout
+        return refusal(FAIL_CLOSED, NOT_LEDGERED, "THIS_ORGANIZATION_LEDGER_IS_READABLE",
+                       "this organization's ledger at its declared location: " + type(exc).__name__ + ": " + str(exc)[:200],
+                       "re-run where the ledger location is materialized", path_id=path_id,
+                       communication_id=communication_id, path="UNVERIFIED")
+    src, dst = (local, remote) if here_is_source else (remote, local)
+    return verify_end_to_end(path_id, communication_id, src, dst)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -388,6 +464,12 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--source-readback")
     e.add_argument("--destination-readback")
     e.add_argument("--out")
+    t = sub.add_parser("end-to-end-via-tvc")
+    t.add_argument("--path-id", required=True)
+    t.add_argument("--communication-id", required=True)
+    t.add_argument("--receipts", default=None)
+    t.add_argument("--ledger-tip")
+    t.add_argument("--out")
     args = parser.parse_args(argv)
     if args.command == "consume":
         result: Any = consume(args.inbound)
@@ -398,6 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "readback":
         result = readback(args.path_id, args.communication_id, args.operation, args.ledger_tip)
         code = 0
+    elif args.command == "end-to-end-via-tvc":
+        result = end_to_end_via_tvc(args.path_id, args.communication_id, args.receipts, args.ledger_tip)
+        code = 0 if result["disposition"] == ALLOW else 1
     else:
         load = lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if p and Path(p).is_file() else None
         result = verify_end_to_end(args.path_id, args.communication_id, load(args.source_readback),

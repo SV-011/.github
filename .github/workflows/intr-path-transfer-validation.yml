@@ -14,6 +14,9 @@ on:
       - '.stegverse/intr-path-transfer/**'
       - 'resident-runtime/intr_path_transfer.py'
       - 'resident-runtime/intr_path_ingress.py'
+      - 'resident-runtime/intr_path_tvc_read.py'
+      - 'tests/test_intr_path_tvc_read.py'
+      - 'tests/fixtures/intr-path-tvc-read/**'
       - 'resident-runtime/merge_transfer.py'
       - 'resident-runtime/intr_destination_ingress.py'
       - 'org-runtime/intr_protocol.py'
@@ -33,6 +36,9 @@ on:
       - '.stegverse/intr-path-transfer/**'
       - 'resident-runtime/intr_path_transfer.py'
       - 'resident-runtime/intr_path_ingress.py'
+      - 'resident-runtime/intr_path_tvc_read.py'
+      - 'tests/test_intr_path_tvc_read.py'
+      - 'tests/fixtures/intr-path-tvc-read/**'
       - 'tests/test_intr_path_transfer.py'
       - 'tests/test_intr_path_ingress.py'
       - 'tests/fixtures/intr-path-ingress/**'
@@ -62,6 +68,16 @@ jobs:
 
       - name: Destination carrier, ingress append, link and end-to-end checks (synthetic source receipts, temp ledgers)
         run: python3 -m unittest tests.test_intr_path_ingress -v
+
+      - name: Cross-organization pair check through TV/TVC (TVC#528 fixture receipts; no token; real state FAIL_CLOSED at the TVC transition)
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests.test_intr_path_tvc_read -v
+          # real state: no TVC read receipt is landed, so the other organization's half is FAIL_CLOSED with retry at TVC
+          python3 resident-runtime/intr_path_ingress.py end-to-end-via-tvc \
+            --path-id 'StegVerse-org->SV-011:intr-destination' --communication-id 'intr-path-v1:StegVerse-org->SV-011' \
+            --out "$RUNNER_TEMP/pair.json" > /dev/null || true
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); six=("failure_code","failed_predicate","required_evidence_or_repair","retry_entrypoint","owning_existing_goal","next_attempt"); assert r["disposition"] != "ALLOW", r; assert all(r.get(f) for f in six), r; print("INTR_PATH_PAIR_REAL_STATE", r["disposition"], r["failure_code"], r["retry_entrypoint"][:60])' "$RUNNER_TEMP/pair.json"
 
   dry-run:
     runs-on: ubuntu-latest
