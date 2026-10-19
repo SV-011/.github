@@ -8,8 +8,8 @@ unchanged from before. Stdlib only.
 """
 from __future__ import annotations
 
+import hashlib
 import re
-import subprocess
 import unittest
 from pathlib import Path
 
@@ -59,13 +59,12 @@ class TransitionJobRunsOnEveryEvent(unittest.TestCase):
         self.assertIn("--location \"git+$dry#$LEDGER_REF\"", joined)
 
     def test_dispatch_steps_are_unchanged_from_main(self):
-        main = subprocess.run(["git", "-C", str(ROOT), "show", "d7beaf593a15c8e170540cbbf9ee3273003e645a:"
-                               ".github/workflows/organization-ledger-transition.yml"],
-                              check=True, capture_output=True, text=True).stdout
-        before = steps(job(main, "transition"))
+        # sha256 of the transition job's steps at main d7beaf59 (each step right-stripped, joined by newline);
+        # pinned, so a shallow CI checkout needs no history
         now = [s for s in steps(self.transition) if "        if: " + VERIFY not in s]
-        strip = lambda s: s.replace("        if: " + DISPATCH + "\n", "")
-        self.assertEqual([strip(s).rstrip() for s in now], [s.rstrip() for s in before])
+        strip = lambda s: s.replace("        if: " + DISPATCH + "\n", "").rstrip()
+        self.assertEqual(hashlib.sha256("\n".join(strip(s) for s in now).encode()).hexdigest(),
+                         "a632cbb00fe774dff6e278fc9676b62b0e79e0dd582f48e5ae38e97bb70771a6")
 
     def test_a_verify_run_does_not_take_the_appender_lock(self):
         self.assertIn("group: organization-ledger${{ github.event_name != 'workflow_dispatch' && "
