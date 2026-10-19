@@ -67,8 +67,21 @@ def _recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
     return None
 
 
+#: An append's epoch is supplied by its caller and checked by the kernel's
+#: shared rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH); an absent or invalid
+#: one is refused six-field FAIL_CLOSED before anything is written.
 EPOCH_RETRY_ENTRYPOINT = "resident-runtime/aggregate_repo_transition.py::append (hb_epoch=)"
 OrgLedgerEpochRefused = kernel.SuppliedEpochRefused
+
+
+def epoch_refusal(hb_epoch: Any) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED refusal of an append's epoch, or None."""
+    return kernel.writer_epoch_refusal(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+
+
+def require_supplied_epoch(hb_epoch: Any) -> dict[str, Any]:
+    """The heartbeat reference of the supplied epoch, or OrgLedgerEpochRefused."""
+    return kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
 
 
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
@@ -78,7 +91,7 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
     if not isinstance(source_receipt, Mapping) or not isinstance(source_receipt.get("receipt_sha256"), str):
         raise ValueError("source_receipt_required")
     # An absent or invalid epoch is FAIL_CLOSED before the store opens; no clock is read.
-    hb = kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+    hb = require_supplied_epoch(hb_epoch)
     target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)

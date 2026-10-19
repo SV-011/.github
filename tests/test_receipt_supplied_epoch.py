@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SIX_FIELDS = ("failure_code", "failed_predicate", "required_evidence_or_repair",
               "retry_entrypoint", "owning_existing_goal", "next_attempt")
+INVALID = ("33.0", True, 31, "+33", 32.0, " 33", "3_3")
 
 
 def _module(name, relative):
@@ -107,7 +108,7 @@ class Redirected(unittest.TestCase):
         for field in SIX_FIELDS:
             self.assertTrue(refusal.get(field), field)
         self.assertEqual(refusal["failure_code"], code)
-        self.assertEqual(refusal["failed_predicate"], "RECEIPT_REFERENCES_A_SUPPLIED_HEARTBEAT_EPOCH")
+        self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
         self.assertIn(entrypoint, refusal["retry_entrypoint"])
         self.assertIs(refusal["derived_from_clock"], False)
         self.assertIs(refusal["consequence_committed"], False)
@@ -125,11 +126,27 @@ class WriterRefusals(Redirected):
     def test_the_repository_writer_refuses_an_invalid_epoch(self):
         self.no_clock(emit)
         guard = self.no_store(emit)
-        for epoch in (31, True, "32", 32.0):
+        for epoch in INVALID:
             with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
                 emit.append("t:invalid", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=epoch)
             self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "emit.py::append")
         self.assertEqual(guard.opened, 0)
+
+    def test_the_organization_writer_refuses_an_invalid_epoch(self):
+        self.no_clock(aggregate)
+        guard = self.no_store(aggregate)
+        for epoch in INVALID:
+            with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
+                aggregate.append(SOURCE, "REPO_STATE_PROPAGATION", "sha256:a", "sha256:b", {}, "NONE",
+                                 hb_epoch=epoch)
+            self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "aggregate_repo_transition.py::append")
+        self.assertEqual(guard.opened, 0)
+
+    def test_ascii_digits_are_a_supplied_epoch(self):
+        self.no_clock(emit)
+        receipt = emit.append("t:digits", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch="33")
+        self.assertEqual(receipt["hb_reference"]["epoch"], 33)
+        self.assertIs(receipt["hb_reference"]["derived_from_clock"], False)
 
     def test_the_organization_writer_refuses_an_absent_epoch_before_the_store_opens(self):
         self.no_clock(aggregate)
@@ -155,21 +172,46 @@ class WriterRefusals(Redirected):
         self.assertSixFieldRefusal(refused, "HB_EPOCH_NOT_SUPPLIED", "emit.py::append")
         self.assertEqual(self.written(), [])
 
+    def test_the_ingress_with_an_invalid_epoch_writes_nothing(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        for epoch in INVALID:
+            with self.subTest(epoch=epoch), self.assertRaises(ValueError) as refused:
+                ingress.receive(diagnostic("bad-epoch"), registry=REGISTRY, packet_id="bad-epoch",
+                                hb_epoch=epoch)
+            self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "emit.py::append")
+        self.assertEqual(self.written(), [])
+
 
 class CapabilityAddressCarriesTheEpoch(Redirected):
-    def test_a_consumed_frame_hands_its_carrier_epoch_to_both_writers(self):
-        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+    def publish(self, packet_id, **stamp):
         packet = kernel.build_packet(
             origin_org="StegVerse-org", origin_service="stegverse-org.intr-destination",
             destination_org="SV-011", destination_service=ADDRESS,
-            payload=diagnostic("carried-epoch"), standing=GENESIS,
-            transition_reference="intr:transition:carried-epoch",
-            authority_effect="NONE", packet_id="carried-epoch")
-        kernel.publish_packet(packet, root=self.mesh, epoch=37)
-        result, = kernel.consume_addressed_frames(
+            payload=diagnostic(packet_id), standing=GENESIS,
+            transition_reference="intr:transition:" + packet_id,
+            authority_effect="NONE", packet_id=packet_id)
+        kernel.publish_packet(packet, root=self.mesh, **stamp)
+
+    def consume(self):
+        return kernel.consume_addressed_frames(
             ROOT, mesh_root=self.mesh,
             repo_ledger_root=os.environ["STEGVERSE_REPO_LEDGER_ROOT"],
             org_ledger_root=os.environ["STEGVERSE_ORG_LEDGER_ROOT"])
+
+    def test_a_clock_derived_carrier_epoch_is_refused_and_nothing_is_written(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        # The sender stamped the frame from a clock sample: derived_from_clock is true.
+        self.publish("clock-stamped", now_ns=kernel.HB_ANCHOR_UNIX_NS + 5 * kernel.HB_PERIOD_NS)
+        with self.assertRaises(ValueError) as refused:
+            self.consume()
+        self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "kernel.py::ingest_frame")
+        self.assertIn("derived_from_clock", refused.exception.refusal["detail"])
+        self.assertEqual(self.written(), [])
+
+    def test_a_consumed_frame_hands_its_carrier_epoch_to_both_writers(self):
+        self.no_clock(ingress.repository_ledger, ingress.organization_ledger)
+        self.publish("carried-epoch", epoch=37)
+        result, = self.consume()
         operation = result["result"]["execution_result"]["application_result"]["receiving_operation_result"]
         self.assertEqual(operation["disposition"], "ALLOW", operation.get("detail"))
         receipts = [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]

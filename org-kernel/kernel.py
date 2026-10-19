@@ -104,51 +104,87 @@ def hb_reference(now_ns: int | None = None, *, epoch: int | None = None) -> dict
     })
 
 
-HB_EPOCH_NOT_SUPPLIED = "HB_EPOCH_NOT_SUPPLIED"
-HB_EPOCH_INVALID = "HB_EPOCH_INVALID"
-HB_EPOCH_PREDICATE = "RECEIPT_REFERENCES_A_SUPPLIED_HEARTBEAT_EPOCH"
-HB_EPOCH_OWNING_EXISTING_GOAL = ("StegVerse-Labs/.github#2897 / StegVerse-org/.github#162 "
-                                 "P0-runtime-and-custody")
+# The shared supplied-epoch rule and receipt-writer helper, byte-identical to
+# StegVerse-Labs/.github@bc608a3:org-kernel/kernel.py (WU-B13a).
+HB_EPOCH_NOT_SUPPLIED="HB_EPOCH_NOT_SUPPLIED"
+HB_EPOCH_INVALID="HB_EPOCH_INVALID"
+HB_EPOCH_PREDICATE="SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
+HB_EPOCH_OWNING_EXISTING_GOAL="INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001"
 
+def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, str] | None:
+    """The shared supplied-epoch rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH).
+
+    Byte-identical in StegVerse-org/.github#185 and StegVerse-Labs/.github#3212
+    and #3213. `hb_epoch` absent (None) is HB_EPOCH_NOT_SUPPLIED. Otherwise it
+    must be ASCII [0-9]+ only -- an int is read as its decimal text; a bool, a
+    float or anything coerced ('+33', ' 33', '3_3', '33.0') is refused -- with
+    integer value >= 32 (the HB32 anchor). `reference`, the carrier frame's
+    heartbeat reference when there is one, must be an object, and a
+    `derived_from_clock` it carries must be exactly false. Any failure is
+    HB_EPOCH_INVALID. Returns (failure_code, detail), or None when the epoch is
+    supplied. No clock is read.
+    """
+    if reference is not None and not isinstance(reference, dict):
+        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference is not an object"
+    if hb_epoch is None:
+        return "HB_EPOCH_NOT_SUPPLIED", "no hb_epoch was supplied and no clock is read"
+    if isinstance(hb_epoch, bool):
+        text = None
+    elif isinstance(hb_epoch, int):
+        text = str(hb_epoch)
+    elif isinstance(hb_epoch, str):
+        text = hb_epoch
+    else:
+        text = None
+    if text is None or not text.isascii() or not text.isdigit():
+        return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
+    if int(text) < 32:
+        return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
+    if reference is not None and "derived_from_clock" in reference \
+            and reference["derived_from_clock"] is not False:
+        return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
+                                    "a clock-derived epoch is not a supplied one")
+    return None
 
 class SuppliedEpochRefused(ValueError):
     """A receipt writer's refusal of an absent or invalid supplied epoch.
 
-    ``refusal`` is the six-field FAIL_CLOSED from ``writer_epoch_refusal``. It is
-    raised before a store is opened; no clock is read to stand in for the epoch.
+    `refusal` is the six-field FAIL_CLOSED from `writer_epoch_refusal`. Raised
+    before anything is written; no clock is read to stand in for the epoch.
     """
+    def __init__(self, refusal:dict[str,Any])->None:
+        super().__init__(refusal["failure_code"]+": "+refusal["detail"])
+        self.disposition=refusal["disposition"]
+        self.failed_predicate=refusal["failed_predicate"]
+        self.refusal=dict(refusal)
 
-    def __init__(self, refusal: dict[str, Any]) -> None:
-        super().__init__(refusal["failure_code"] + ": " + refusal["detail"])
-        self.disposition = refusal["disposition"]
-        self.failed_predicate = refusal["failed_predicate"]
-        self.refusal = dict(refusal)
+def writer_epoch_refusal(hb_epoch:Any, *, retry_entrypoint:str)->dict[str,Any]|None:
+    """The six-field FAIL_CLOSED of a receipt writer's epoch, or None when it is supplied.
 
-
-def writer_epoch_refusal(hb_epoch: Any, *, retry_entrypoint: str) -> dict[str, Any] | None:
-    """The six-field FAIL_CLOSED of a receipt writer's epoch, or None when it is supplied."""
-    if hb_epoch is None:
-        code, detail = HB_EPOCH_NOT_SUPPLIED, "no hb_epoch was supplied to the receipt writer"
-    elif not isinstance(hb_epoch, int) or isinstance(hb_epoch, bool) or hb_epoch < HB_ANCHOR_EPOCH:
-        code, detail = HB_EPOCH_INVALID, repr(hb_epoch) + " is not an int >= " + str(HB_ANCHOR_EPOCH)
-    else:
+    The shape StegVerse-org/.github#189 gave the organization ledger
+    (`epoch_refusal`): a receipt references the heartbeat epoch its caller
+    supplies, checked by `supplied_epoch_failure`; an absent one is
+    HB_EPOCH_NOT_SUPPLIED and is never derived from a clock.
+    """
+    failure=supplied_epoch_failure(hb_epoch)
+    if failure is None:
         return None
-    return {"disposition": "FAIL_CLOSED", "failure_code": code, "failed_predicate": HB_EPOCH_PREDICATE,
-            "detail": detail,
-            "required_evidence_or_repair": ("the caller supplies hb_epoch= (or --hb-epoch): an int >= "
-                                            + str(HB_ANCHOR_EPOCH) + "; it is never derived from a clock"),
-            "retry_entrypoint": retry_entrypoint,
-            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
-            "next_attempt": "call again with the supplied epoch; nothing was written",
-            "derived_from_clock": False, "consequence_committed": False}
+    code,detail=failure
+    return {"disposition":"FAIL_CLOSED","failure_code":code,"failed_predicate":HB_EPOCH_PREDICATE,
+            "detail":detail,
+            "required_evidence_or_repair":("the caller supplies hb_epoch= (or --hb-epoch): ASCII digits with "
+                                           "value >= "+str(HB_ANCHOR_EPOCH)+"; it is never derived from a clock"),
+            "retry_entrypoint":retry_entrypoint,
+            "owning_existing_goal":HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt":"call again with the supplied epoch; nothing was written",
+            "derived_from_clock":False,"consequence_committed":False}
 
-
-def supplied_hb_reference(hb_epoch: Any, *, retry_entrypoint: str) -> dict[str, Any]:
+def supplied_hb_reference(hb_epoch:Any, *, retry_entrypoint:str)->dict[str,Any]:
     """The heartbeat reference of a supplied epoch, or SuppliedEpochRefused. No clock is read."""
-    refusal = writer_epoch_refusal(hb_epoch, retry_entrypoint=retry_entrypoint)
+    refusal=writer_epoch_refusal(hb_epoch,retry_entrypoint=retry_entrypoint)
     if refusal is not None:
         raise SuppliedEpochRefused(refusal)
-    return hb_reference(epoch=hb_epoch)
+    return hb_reference(epoch=int(str(hb_epoch)))
 
 
 def derive_channel(payload_hash: str) -> dict[str, Any]:
@@ -459,13 +495,24 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
                                "terminal_receipt_id": previous}}
 
 
+CARRIER_EPOCH_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sender re-publishes the packet "
+                                  "with publish_packet(..., epoch=<digits >= 32>)")
+
+
 def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
     packet = recover_packet(frame)
     registry = load_registry(root)
     if frame["destination_org"] != registry["organization"]:
         return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
-    result = dispatch(root, packet, mesh_root=mesh_root,
-                      epoch=(frame.get("heartbeat_reference") or {}).get("epoch"))
+    reference = frame.get("heartbeat_reference")
+    epoch = reference.get("epoch") if isinstance(reference, dict) else None
+    failure = supplied_epoch_failure(epoch, reference)
+    if failure is not None:
+        # The writer's six-field shape, with the carrier's own failure code and detail.
+        refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+        refusal["failure_code"], refusal["detail"] = failure
+        raise SuppliedEpochRefused(refusal)
+    result = dispatch(root, packet, mesh_root=mesh_root, epoch=epoch)
     return {"status": "CONSUMED", "packet": packet, "execution_result": result}
 
 
