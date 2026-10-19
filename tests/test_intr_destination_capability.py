@@ -385,16 +385,18 @@ class AddressedAndClosedTests(RedirectedLedgers):
 
     def test_the_phase5_diagnostic_role_is_not_this_capability(self):
         self.publish(diagnostic("phase5-role"), "sv-011.boundary-diagnostic", "phase5-role")
-        with self.assertRaises(ValueError) as refused:
-            self.consume()
-        self.assertIn("endpoint_adapter_not_installed", str(refused.exception))
+        # B-P36o: an adapter error is quarantined as FRAME_INGEST_FAILED; the batch is not aborted
+        result, = self.consume()
+        self.assertEqual(result["result"]["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(result["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertIn("endpoint_adapter_not_installed", result["result"]["detail"])
 
     def test_a_body_under_another_schema_is_refused_at_the_address(self):
         self.publish(diagnostic("other-schema", schema="stegverse.org-not-a-destination-diagnostic/v1"),
                      ADDRESS, "other-schema")
-        with self.assertRaises(ValueError) as refused:
-            self.consume()
-        self.assertIn("SUBMISSION_BODY_DECLARES_THE_BOUND_PAYLOAD_SCHEMA", str(refused.exception))
+        result, = self.consume()
+        self.assertEqual(result["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertIn("SUBMISSION_BODY_DECLARES_THE_BOUND_PAYLOAD_SCHEMA", result["result"]["detail"])
 
     def test_outbound_resolution_derives_the_peer_address_and_does_not_prove_it_serves(self):
         resolved = egress.resolve_destination(PEER, capability=PROFILE_ID)

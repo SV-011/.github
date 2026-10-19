@@ -625,13 +625,43 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
         refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
         refusal["failure_code"], refusal["detail"] = failure
         raise SuppliedEpochRefused(refusal)
-    packet = recover_packet(frame)
+    try:
+        packet = recover_packet(frame)
+    except (ValueError, KeyError, TypeError) as exc:
+        # B-P36o: a frame that does not recover is a six-field refusal, never a bare error.
+        text = str(exc)
+        code = (HB_REFERENCE_INVALID if text.startswith("heartbeat_")
+                else FRAME_INTEGRITY_INVALID if text.endswith("_mismatch") or "hash" in text
+                else FRAME_INGEST_FAILED)
+        raise SuppliedEpochRefused(frame_refusal(code, exc)) from None
     registry = load_registry(root)
     if frame["destination_org"] != registry["organization"]:
         return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
     lent = None if clock_flagged else int(str(epoch))
     result = dispatch(root, packet, mesh_root=mesh_root, epoch=lent)
     return {"status": "CONSUMED", "packet": packet, "execution_result": result, "epoch_lent": lent is not None}
+
+
+HB_REFERENCE_INVALID = "HB_REFERENCE_INVALID"
+FRAME_INTEGRITY_INVALID = "FRAME_INTEGRITY_INVALID"
+FRAME_INGEST_FAILED = "FRAME_INGEST_FAILED"
+FRAME_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sender re-publishes a frame whose hashes, "
+                          "heartbeat reference and packet recover")
+
+
+def frame_refusal(code: str, exc: BaseException) -> dict[str, Any]:
+    """The six-field FAIL_CLOSED for a frame that does not recover or ingest. No clock is read."""
+    predicate = {HB_REFERENCE_INVALID: "CARRIER_HEARTBEAT_REFERENCE_IS_CONSISTENT",
+                 FRAME_INTEGRITY_INVALID: "CARRIER_FRAME_AND_PACKET_HASHES_VERIFY"}.get(
+        code, "FRAME_INGESTS_WITHOUT_ERROR:" + type(exc).__name__)
+    return {"disposition": "FAIL_CLOSED", "failure_code": code, "failed_predicate": predicate,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "a frame whose frame_sha256, packet_sha256 and heartbeat reference "
+                                           "verify, addressed to a capability this organization serves",
+            "retry_entrypoint": FRAME_RETRY_ENTRYPOINT,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "the frame is quarantined; a corrected frame is a new frame; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
 
 
 QUARANTINE_DIRECTORY = "quarantine.d"
@@ -681,12 +711,13 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
         try:
             result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
-        except ValueError as refused:
+        except (ValueError, KeyError, TypeError) as refused:
             # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
-            # A writer's refusal comes from its own kernel copy, so it is matched by its six fields.
+            # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;
+            # any other adapter error is FRAME_INGEST_FAILED, naming the exception class (B-P36o).
             refusal = getattr(refused, "refusal", None)
             if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
-                raise
+                refusal = frame_refusal(FRAME_INGEST_FAILED, refused)
             result = quarantine_frame(item, refusal, mesh_root=mesh_root)
         seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})

@@ -911,6 +911,83 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                     self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
                     self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
 
+    def test_an_unrecoverable_frame_is_quarantined_in_either_order(self):
+        """B-P36o: a valid epoch with a bad heartbeat reference, a tampered hash, or an adapter error is a
+        six-field refusal and a terminal quarantine — 0 clock reads, 0 ledger files, the batch continues."""
+        def generation(frame):
+            frame["heartbeat_reference"]["generation"] = 12345
+        def heartbeat_id(frame):
+            frame["heartbeat_reference"]["heartbeat_id"] = "HB:1"
+        def packet_hash(frame):
+            frame["packet_sha256"] = "sha256:" + "0" * 64
+        cases = ((generation, True, "HB_REFERENCE_INVALID"), (heartbeat_id, True, "HB_REFERENCE_INVALID"),
+                 (packet_hash, True, "FRAME_INTEGRITY_INVALID"), (None, False, "FRAME_INTEGRITY_INVALID"))
+        for mutate, reseal, code in cases:
+            for refused_first in (True, False):
+                with self.subTest(code=code, mutate=getattr(mutate, "__name__", "frame_sha256"),
+                                  refused_first=refused_first):
+                    for directory in ("frames.d", "quarantine.d"):
+                        if (self.mesh / directory).is_dir():
+                            for path in (self.mesh / directory).glob("*.json"):
+                                path.unlink()
+                    for index in range(64):
+                        bad = self.frame("unrecoverable-%s-%d" % (code, index), epoch=4096)
+                        if mutate is not None:
+                            mutate(bad)
+                        if reseal:
+                            bad["frame_sha256"] = kernel.sha({k: v for k, v in bad.items() if k != "frame_sha256"})
+                        else:
+                            bad["frame_sha256"] = "sha256:" + "e" * 64
+                        good = self.frame("unrecoverable-good-%s-%d" % (code, index), epoch=4096)
+                        if (self.name(bad) < self.name(good)) == refused_first:
+                            break
+                    for frame in (bad, good):
+                        kernel.publish_frame(frame, root=self.mesh)
+                    by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
+                    marker = by_name[self.name(bad)]
+                    self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                    self.assertEqual(marker["refusal_failure_code"], code)
+                    for field in SIX_FIELDS:
+                        self.assertTrue(marker.get(field), field)
+                    self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                    self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
+    def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
+        import datetime as real
+        import sys
+        import types
+        calls = []
+
+        class Raising(real.datetime):
+            @classmethod
+            def now(cls, *_a, **_k):
+                calls.append("now")
+                raise AssertionError("read the clock")
+        shim = types.ModuleType("datetime")
+        shim.__dict__.update({n: getattr(real, n) for n in dir(real) if not n.startswith("__")})
+        shim.datetime = Raising
+        cases = ((lambda f: f["heartbeat_reference"].__setitem__("generation", 12345), True, "HB_REFERENCE_INVALID"),
+                 (lambda f: f.__setitem__("packet_sha256", "sha256:" + "0" * 64), True, "FRAME_INTEGRITY_INVALID"),
+                 (lambda f: None, False, "FRAME_INTEGRITY_INVALID"))
+        for index, (mutate, reseal, code) in enumerate(cases):
+            with self.subTest(code=code, index=index):
+                frame = self.frame("alone-%d" % index, epoch=4096)
+                mutate(frame)
+                frame["frame_sha256"] = (kernel.sha({k: v for k, v in frame.items() if k != "frame_sha256"})
+                                         if reseal else "sha256:" + "e" * 64)
+                sys.modules["datetime"] = shim
+                try:
+                    with self.assertRaises(ValueError) as refused:
+                        kernel.ingest_frame(ROOT, frame, mesh_root=self.mesh)
+                finally:
+                    sys.modules["datetime"] = real
+                refusal = refused.exception.refusal
+                self.assertEqual(refusal["failure_code"], code)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.written(), [])
+
     def test_the_refused_frame_sorting_first_does_not_block_the_batch(self):
         self.run_batch(refused_first=True)
 
