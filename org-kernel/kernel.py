@@ -195,6 +195,22 @@ def derive_channel(payload_hash: str) -> dict[str, Any]:
             "derivation": "PAYLOAD_SHA256_FIRST64_MOD_16", "authority_constraint": "NONE_CARRIER_ONLY"}
 
 
+#: Provenance a writer may record on hb_reference for an epoch it was not
+#: supplied but carried: the source, and the receipt that carried it. Neither
+#: changes the epoch or derived_from_clock.
+EPOCH_PROVENANCE_KEYS = ("source", "head_receipt_sha")
+
+
+def with_epoch_provenance(reference: dict[str, Any], provenance: Any) -> dict[str, Any]:
+    """``reference`` with a carried epoch's provenance recorded on it, or unchanged when there is none."""
+    if provenance is None:
+        return reference
+    if not isinstance(provenance, dict) or set(provenance) != set(EPOCH_PROVENANCE_KEYS) \
+            or not all(isinstance(provenance[key], str) and provenance[key] for key in EPOCH_PROVENANCE_KEYS):
+        raise ValueError("epoch_provenance_invalid")
+    return {**reference, **provenance}
+
+
 def carrier_frame(packet: dict[str, Any], *, now_ns: int | None = None,
                   epoch: int | None = None) -> dict[str, Any]:
     raw = canon(packet)

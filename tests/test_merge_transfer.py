@@ -138,6 +138,11 @@ class RealStateAndAppend(unittest.TestCase):
                 head_receipt = json.loads(before[key(json.loads(tip_head)["receipt_sha256"])])
                 self.assertEqual(org["hb_reference"]["epoch"], head_receipt["hb_reference"]["epoch"])
                 self.assertIs(org["hb_reference"]["derived_from_clock"], False)
+                # a CARRIED epoch: both receipts record its source and the head receipt that carried it
+                for written in (org, rep):
+                    self.assertEqual(written["hb_reference"]["source"], "ORGANIZATION_LEDGER_HEAD")
+                    self.assertEqual(written["hb_reference"]["head_receipt_sha"], json.loads(tip_head)["receipt_sha256"])
+                    self.assertIs(written["hb_reference"]["derived_from_clock"], False)
                 # append-only: nothing that was there changed except the two HEADs
                 after = ledger.files()
                 for name, data in before.items():
@@ -190,7 +195,8 @@ class Refusals(unittest.TestCase):
         return key, ledger.read(key)
 
     def test_a_clock_derived_or_unsealed_head_epoch_is_unobserved(self):
-        for mutate in ("clock", "missing", "bool", "below_anchor", "unsealed"):
+        for mutate in ("clock", "clock_flag_absent", "missing", "bool", "below_anchor", "string", "float",
+                       "unsealed"):
             ledger = Ledger(self.fixture)
             try:
                 key, receipt = self._head_receipt(ledger)
@@ -202,6 +208,12 @@ class Refusals(unittest.TestCase):
                     receipt["hb_reference"]["epoch"] = True
                 elif mutate == "below_anchor":
                     receipt["hb_reference"]["epoch"] = 31
+                elif mutate == "clock_flag_absent":
+                    receipt["hb_reference"].pop("derived_from_clock")
+                elif mutate == "string":
+                    receipt["hb_reference"]["epoch"] = "40"
+                elif mutate == "float":
+                    receipt["hb_reference"]["epoch"] = 32.0
                 if mutate == "unsealed":
                     receipt["tampered"] = True  # the seal no longer verifies
                     ledger.write(key, receipt)

@@ -145,6 +145,22 @@ class WriterRefusals(Redirected):
             self.assertSixFieldRefusal(refused, "HB_EPOCH_INVALID", "aggregate_repo_transition.py::append")
         self.assertEqual(guard.opened, 0)
 
+    def test_a_supplied_epoch_records_no_carried_provenance(self):
+        receipt = emit.append("t:no-provenance", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=40)
+        self.assertNotIn("source", receipt["hb_reference"])
+        self.assertNotIn("head_receipt_sha", receipt["hb_reference"])
+
+    def test_carried_provenance_cannot_rewrite_the_epoch(self):
+        guard = self.no_store(emit)
+        for provenance in ({"source": "ORGANIZATION_LEDGER_HEAD"},
+                           {"source": "X", "head_receipt_sha": "sha256:1", "epoch": 99},
+                           {"source": "X", "head_receipt_sha": "sha256:1", "derived_from_clock": False},
+                           {"source": "", "head_receipt_sha": "sha256:1"}):
+            with self.subTest(provenance=provenance), self.assertRaises(ValueError):
+                emit.append("t:prov", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch=40,
+                            hb_provenance=provenance)
+        self.assertEqual(guard.opened, 0)
+
     def test_ascii_digits_are_a_supplied_epoch(self):
         self.no_clock(emit)
         receipt = emit.append("t:digits", "T", "sha256:a", "sha256:b", {}, "NONE", hb_epoch="33")

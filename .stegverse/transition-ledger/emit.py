@@ -79,7 +79,8 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
            successor_state_sha256: str, evidence: Mapping[str, Any] | None = None,
            authority_constraint: str = "NONE", hb_epoch: int | None = None,
            store: ledger_store.Store | None = None,
-           idempotent_on: tuple[str, ...] | None = None) -> dict[str, Any]:
+           idempotent_on: tuple[str, ...] | None = None,
+           hb_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Append one repository receipt, or return the one this transition already has.
 
     With ``idempotent_on``, a transition the chain already records is returned.
@@ -92,6 +93,7 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     (``RepoLedgerEpochRefused``) before the store is opened. No clock is read.
     """
     hb = kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+    hb = kernel.with_epoch_provenance(hb, hb_provenance)
     target = store or ledger_store.open_store(lr())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)

@@ -87,11 +87,13 @@ def require_supplied_epoch(hb_epoch: Any) -> dict[str, Any]:
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
            predecessor_state: str, successor_state: str, boundary_evidence: Mapping[str, Any],
            authority_constraint: str, hb_epoch: int | None = None,
-           store: ledger_store.Store | None = None, idempotent: bool = False) -> dict[str, Any]:
+           store: ledger_store.Store | None = None, idempotent: bool = False,
+           hb_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(source_receipt, Mapping) or not isinstance(source_receipt.get("receipt_sha256"), str):
         raise ValueError("source_receipt_required")
     # An absent or invalid epoch is FAIL_CLOSED before the store opens; no clock is read.
     hb = require_supplied_epoch(hb_epoch)
+    hb = kernel.with_epoch_provenance(hb, hb_provenance)
     target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)

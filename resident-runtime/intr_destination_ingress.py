@@ -219,12 +219,17 @@ def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_i
 
 def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
             hb_epoch: int | None, *, operation: str = OPERATION_ID, profile_id: str = PROFILE_ID,
-            boundary_extra: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
+            boundary_extra: Mapping[str, Any] | None = None,
+            hb_provenance: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     """Append at both levels. A replay of the same packet returns the recorded pair.
 
     ``operation``, ``profile_id`` and ``boundary_extra`` name another operation
     on the same two-level append (resident-runtime/merge_transfer.py); their
     defaults are this ingress, so its receipts are unchanged.
+
+    ``hb_provenance`` records where a carried epoch came from (merge_transfer:
+    the organization ledger head) on both receipts' ``hb_reference``; a supplied
+    epoch carries none.
 
     The repository locator and the organization locator are caller-supplied.
     On the published ref they are the same git ref: the organization chain at
@@ -241,7 +246,7 @@ def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
     prior = repository_ledger.recorded(store, head, transition_id, transition_class)
     repository_receipt = repository_ledger.append(
         transition_id, transition_class, predecessor, successor, dict(evidence),
-        "NONE", hb_epoch=hb_epoch,
+        "NONE", hb_epoch=hb_epoch, hb_provenance=hb_provenance,
         idempotent_on=("communication_id", "payload_sha256", "disposition"))
     # The organization receipt references the epoch this call was supplied, never
     # one read back from the repository receipt: a replayed repository receipt may
@@ -251,7 +256,7 @@ def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
         {"operation": operation, "profile_id": profile_id,
          "disposition": evidence["disposition"],
          "communication_id": evidence.get("communication_id"), **dict(boundary_extra or {})},
-        "NONE", hb_epoch=hb_epoch, idempotent=True)
+        "NONE", hb_epoch=hb_epoch, idempotent=True, hb_provenance=hb_provenance)
     return ({"repository_receipt": repository_receipt,
              "organization_receipt": organization_receipt}, prior is not None)
 

@@ -178,8 +178,17 @@ def store_module() -> Any:
     return ingress.repository_ledger.ledger_store
 
 
+HEAD_EPOCH_SOURCE = "ORGANIZATION_LEDGER_HEAD"
+
+
 def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
-    """The supplied epoch on the ledger head receipt, or a FAIL_CLOSED refusal."""
+    """The epoch the ledger head receipt carries, or a FAIL_CLOSED refusal.
+
+    It is a CARRIED epoch, not a supplied one: it must pass the shared rule
+    (kernel.supplied_epoch_failure, with the head reference, so derived_from_clock
+    must be exactly false), and the receipts written at it record their
+    provenance (``head_provenance``).
+    """
     def unobserved(detail: str) -> tuple[None, dict[str, Any]]:
         return None, refusal(EPOCH_UNOBSERVED, "MERGE_TRANSFER_EPOCH_IS_THE_LEDGER_HEAD_SUPPLIED_EPOCH",
                              "the organization ledger head receipt must be sealed and carry hb_reference.epoch, "
@@ -194,9 +203,16 @@ def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
         return unobserved("the organization ledger head receipt is absent or unsealed")
     reference = receipt.get("hb_reference")
     epoch = reference.get("epoch") if isinstance(reference, Mapping) else None
-    if type(epoch) is not int or epoch < 32 or reference.get("derived_from_clock") is not False:
-        return unobserved("head hb_reference " + repr(reference) + " is not a supplied epoch")
+    if type(epoch) is not int or not isinstance(reference, dict) or reference.get("derived_from_clock") is not False \
+            or ingress.repository_ledger.kernel.supplied_epoch_failure(epoch, reference) is not None:
+        return unobserved("head hb_reference " + repr(reference) + " is not a carried supplied-rule epoch")
     return epoch, None
+
+
+def head_provenance(store: Any) -> dict[str, str]:
+    """The provenance a receipt written at the head epoch records: source and head receipt."""
+    head = _get(store, store_module().HEAD_KEY)
+    return {"source": HEAD_EPOCH_SOURCE, "head_receipt_sha": head["receipt_sha256"]}
 
 
 def org_chain(store: Any) -> Iterable[Any]:
@@ -296,14 +312,17 @@ def append_merge_transfer(facts: Mapping[str, Any]) -> dict[str, Any]:
         return refusal(FACTS_INVALID, "MERGE_COMMIT_FACTS_ARE_READ_FROM_THE_COMMIT_OBJECT",
                        "pass the commit's tree, parents and subject as git cat-file reads them",
                        "re-run on the pushed commit; nothing was written", repository=repo, detail=bad)
-    epoch, failed = head_epoch(org_store())
+    store = org_store()
+    epoch, failed = head_epoch(store)
     if failed is not None:
         return {**failed, "repository": repo, "merge_commit": facts["merge_commit"]}
+    provenance = head_provenance(store)
     evidence = merge_evidence(repo, facts)
     try:
         appended, replayed = ingress._append(
             TRANSITION_CLASS, facts["merge_commit"], evidence, epoch, operation=OPERATION, profile_id=PROFILE_ID,
-            boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]})
+            boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]},
+            hb_provenance=provenance)
     except ValueError as exc:
         code = COLLISION if str(exc) == "ledger_receipt_collision" else WRITER_REFUSED
         return refusal(code, "ONE_MERGE_COMMIT_BINDS_ONE_TRANSFER_RECEIPT",
