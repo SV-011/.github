@@ -64,7 +64,7 @@ jobs:
           cat "$RUNNER_TEMP/results/commits.txt"
           test -s "$RUNNER_TEMP/results/commits.txt"
 
-      - name: Real state, read-only: each pending merge is FAIL_CLOSED (no receipt)
+      - name: "Real state, read-only: each pending merge is FAIL_CLOSED (no receipt)"
         run: |
           set -euo pipefail
           export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF"
