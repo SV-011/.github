@@ -1248,6 +1248,28 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 [repository] = [r for r in receipts if r.get("transition_id") in ids]
                 bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
                 self.assertEqual(len(bound), 1, "a duplicate organization receipt was written")
+                # torn write (09:29Z): HEAD is consistent and every receipt is on the chain; a later frame is unaffected
+                self.assertConsistentChains()
+                later = self.frame("io-fault-later-%d" % fail_at, epoch=4096)
+                kernel.publish_frame(later, root=self.mesh)
+                consumed = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
+                self.assertEqual(consumed[self.name(later)]["status"], "CONSUMED")
+                self.assertConsistentChains()
+
+    def assertConsistentChains(self):
+        """HEAD names a sealed receipt, and walking previous_receipt_sha256 from it reaches every receipt."""
+        for name in self.ROOTS:
+            root = Path(os.environ[name])
+            files = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (root / "receipts").glob("*.json")}
+            head = json.loads((root / "HEAD.json").read_text(encoding="utf-8"))["receipt_sha256"]
+            walked, digest = set(), head
+            while digest is not None:
+                receipt = files[digest.split(":", 1)[1]]
+                self.assertEqual(receipt["receipt_sha256"], digest)
+                self.assertEqual(kernel.sha({k: v for k, v in receipt.items() if k != "receipt_sha256"}), digest)
+                walked.add(digest)
+                digest = receipt.get("previous_receipt_sha256")
+            self.assertEqual(walked, {r["receipt_sha256"] for r in files.values()}, name + ": an orphan receipt")
 
     def test_an_io_fault_on_the_quarantine_marker_does_not_abort_the_batch(self):
         """F-REPUB scope (V-P11): the consume path publishes nothing, so no response can be re-published. A fault
