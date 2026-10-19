@@ -528,6 +528,75 @@ class EgressAndIngestRefuseFirst(Redirected):
                 for field in SIX_FIELDS:
                     self.assertTrue(record.get(field), field)
 
+    def test_process_boundary_callers_keep_the_75_65_split(self):
+        """Lead 09:54Z (exception ii): exit 75 (our write faulted) is non-terminal -- no denial receipt, no
+        evidence, processed once on the next run; exit 65 (the envelope is bad) is a terminal DENY with its
+        receipt and six-field FRAME_INGEST_FAILED. Both codes come from the real pinned process_boundary."""
+        adapter = _module("denial_adapter_split", "org-boundary/runtime/denial_adapter.py")
+        probe = _module("run_phase5_probe_split", "resident-runtime/run_phase5_probe.py")
+        self.mesh.mkdir(parents=True, exist_ok=True)
+        blocker = self.mesh / "not-a-directory"
+        blocker.write_text("x", encoding="utf-8")
+        wrapper = self.mesh / "process_boundary_unwritable_out.py"
+        wrapper.write_text(
+            "import runpy, sys\n"
+            "args = sys.argv[1:]\n"
+            "args[args.index('--out') + 1] = %r  # a path whose parent is a file\n"
+            "sys.argv = [%r] + args\n"
+            "runpy.run_path(%r, run_name='__main__')\n"
+            % (str(blocker / "out.json"), str(adapter.PROCESS), str(adapter.PROCESS)), encoding="utf-8")
+        request = json.loads((ROOT / "resident-runtime/requests/phase5-allow.json").read_text(encoding="utf-8"))
+        envelope = probe.intr.build_ingress(
+            {"org": "SV-011", "service": "resident-observer"}, {"org": "SV-011", "service": request["destination_service"]},
+            request["payload"], request["carrier_reference"], request["transition_reference"],
+            request.get("authority_effect", "NONE"), request["request_id"])
+        # 75: the write fault is ours -> non-terminal, no receipt
+        real = adapter.PROCESS
+        adapter.PROCESS = wrapper
+        try:
+            faulted = adapter.process(envelope)
+        finally:
+            adapter.PROCESS = real
+        self.assertEqual(faulted["decision"], "FAIL_CLOSED")
+        self.assertNotIn("denial_receipt", faulted)
+        self.assertEqual(faulted["fault"]["failure_code"], "PROCESS_BOUNDARY_WRITE_FAULT")
+        self.assertIs(faulted["fault"]["terminal"], False)
+        for field in SIX_FIELDS:
+            self.assertTrue(faulted["fault"].get(field), field)
+        self.assertEqual(adapter.process(envelope)["decision"], "ALLOW")  # the next run, unfaulted
+        # 65: the envelope itself is bad -> terminal DENY with receipt and six-field FRAME_INGEST_FAILED
+        denied = adapter.process([1, 2])
+        self.assertEqual(denied["decision"], "DENY")
+        self.assertTrue(denied["denial_receipt"]["receipt_id"])
+        self.assertEqual(denied["terminal_record"]["failure_code"], "FRAME_INGEST_FAILED")
+        self.assertEqual(denied["terminal_record"]["boundary_failure_code"], "PROCESS_BOUNDARY_INPUT_FAULT")
+        self.assertIs(denied["terminal_record"]["terminal"], True)
+        for field in SIX_FIELDS:
+            self.assertTrue(denied["terminal_record"].get(field), field)
+        # through the probe: 75 writes no evidence and exits 75; the next run writes the evidence once
+        evidence = self.mesh / "evidence"
+        argv = ["run_phase5_probe.py", "--request", str(ROOT / "resident-runtime/requests/phase5-allow.json"),
+                "--evidence-dir", str(evidence), "--runtime-observer", "test"]
+        import contextlib, io, sys as _sys
+        saved = _sys.argv
+        probe.adapter.PROCESS = wrapper
+        try:
+            _sys.argv = argv
+            with contextlib.redirect_stdout(io.StringIO()) as printed:
+                self.assertEqual(probe.main(), 75)
+        finally:
+            probe.adapter.PROCESS = real
+            _sys.argv = saved
+        self.assertEqual(json.loads(printed.getvalue().strip())["failure_code"], "PROCESS_BOUNDARY_WRITE_FAULT")
+        self.assertFalse(evidence.exists() and any(evidence.iterdir()))
+        try:
+            _sys.argv = argv
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(probe.main(), 0)
+        finally:
+            _sys.argv = saved
+        self.assertEqual(len(list(evidence.glob("*.json"))), 1)
+
     def test_egress_takes_a_supplied_digit_string_epoch(self):
         self.no_clock(egress, egress.repository_ledger, egress.organization_ledger)
         emitted = self.emit("4096", "egress-4096")

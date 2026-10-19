@@ -43,6 +43,11 @@ def main():
       print(json.dumps(input_refusal(exc),sort_keys=True))
       return 1
     result=adapter.process(envelope)
+    if result["decision"]=="FAIL_CLOSED":
+      # An own-state write fault (process_boundary exit 75): non-terminal, so no evidence is written and the
+      # request stays pending; the next run produces its evidence once.
+      print(json.dumps(result["fault"],sort_keys=True))
+      return adapter.WRITE_FAULT_EXIT
     evidence={
       "schema":"stegverse.sv011-resident-boundary-observation/v0.1",
       "entity_id":"SV-011",
