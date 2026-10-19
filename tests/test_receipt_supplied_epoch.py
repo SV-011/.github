@@ -1210,6 +1210,45 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
                 bound = [r for r in receipts if r.get("repo_receipt_sha256") == repository["receipt_sha256"]]
                 self.assertEqual(len(bound), 1, "a duplicate organization receipt was written")
 
+    def test_an_io_fault_on_the_quarantine_marker_does_not_abort_the_batch(self):
+        """F-REPUB scope (V-P11): the consume path publishes nothing, so no response can be re-published. A fault
+        writing a refused frame's marker is FRAME_DISPATCH_IO_FAILED: no partial marker, not seen, and the batch
+        goes on; the next cycle quarantines the frame once."""
+        real_write = Path.write_text
+        for refused_first in (True, False):
+            with self.subTest(refused_first=refused_first):
+                for directory in ("frames.d", "quarantine.d"):
+                    if (self.mesh / directory).is_dir():
+                        for path in (self.mesh / directory).iterdir():
+                            path.unlink()
+                bad, good = self.pair(refused_first)
+                for frame in (bad, good):
+                    kernel.publish_frame(frame, root=self.mesh)
+                quarantine = (self.mesh / "quarantine.d").resolve()
+
+                def failing(path, data, *args, _real=real_write, **kwargs):
+                    if Path(path).resolve().parent == quarantine:
+                        _real(path, data[:7], *args, **kwargs)  # a partial write, then the fault
+                        raise OSError(28, "No space left on device")
+                    return _real(path, data, *args, **kwargs)
+                seen = set()
+                Path.write_text = failing
+                try:
+                    results = self.consume(seen)
+                finally:
+                    Path.write_text = real_write
+                by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
+                self.assertEqual(by_name[self.name(bad)]["failure_code"], "FRAME_DISPATCH_IO_FAILED")
+                self.assertIs(by_name[self.name(bad)]["terminal"], False)
+                self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                self.assertEqual(seen, {self.name(good)})
+                self.assertFalse((self.mesh / "quarantine.d" / self.name(bad)).exists())
+                again = {r["path"].rsplit("/", 1)[1]: r["result"] for r in self.consume(set())}
+                self.assertEqual(again[self.name(bad)]["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                marker = json.loads((self.mesh / "quarantine.d" / self.name(bad)).read_text(encoding="utf-8"))
+                self.assertEqual(marker, again[self.name(bad)])
+                self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
     def test_a_lost_comparison_on_our_ledger_leaves_the_frame_pending_and_resumes_once(self):
         """V-P11 F-TRANSIENT-RT: a writer's lost compare-and-swap is LedgerWriteFault, FRAME_DISPATCH_WRITE_FAILED,
         non-terminal: no marker, not seen. The next cycle consumes the frame once: 1 repository receipt,

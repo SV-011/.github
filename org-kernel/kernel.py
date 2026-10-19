@@ -791,7 +791,10 @@ def quarantine_frame(item: dict[str, Any], refusal: dict[str, Any], *, mesh_root
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(marker, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     if not path.is_file():
-        path.write_text(rendered, encoding="utf-8")
+        # Written aside and renamed, so a fault mid-write leaves no partial marker for the scan to skip on.
+        staged = path.with_name("." + path.name + ".partial")
+        staged.write_text(rendered, encoding="utf-8")
+        os.replace(staged, path)
     return marker
 
 
@@ -812,7 +815,7 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     results = []
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
         if "refusal" in item:
-            result = quarantine_frame(item, item["refusal"], mesh_root=mesh_root)
+            refusal = item["refusal"]
         else:
             try:
                 result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
@@ -829,7 +832,16 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
                 refusal = getattr(refused, "refusal", None)
                 if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
                     refusal = frame_refusal(FRAME_INGEST_FAILED, refused)
+            else:
+                refusal = None
+        if refusal is not None:
+            try:
                 result = quarantine_frame(item, refusal, mesh_root=mesh_root)
+            except OSError as fault:
+                # The marker did not land: not seen, so the next cycle refuses and quarantines it again.
+                results.append({"path": item["path"], "result": dispatch_io_refusal(fault),
+                                "organization_record": None})
+                continue
         seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})
     return results
