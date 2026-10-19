@@ -389,5 +389,83 @@ class CliEpochIsTheSharedRule(Redirected):
             self.assertIs(reference["derived_from_clock"], False)
 
 
+class SecondWriterTakesTheSuppliedEpoch(Redirected):
+    """An organization receipt references the supplied epoch, not one read back from a receipt.
+
+    A repository receipt is seeded with a clock-derived reference (as one written
+    before this rule may carry) and no organization receipt. The replay supplies
+    4096: the organization receipt must reference 4096 with derived_from_clock
+    false, never the seeded clock epoch relabelled as supplied.
+    """
+
+    FIXED_NS = kernel.HB_ANCHOR_UNIX_NS + 7 * kernel.HB_PERIOD_NS
+
+    def seed_clock_repository_receipt(self, writer, organization_ledger, call):
+        honest = writer.kernel.supplied_hb_reference
+        writer.kernel.supplied_hb_reference = lambda *_a, **_k: writer.kernel.hb_reference(self.FIXED_NS)
+        appended = organization_ledger.append
+
+        def interrupted(*_a, **_k):
+            raise RuntimeError("interrupted before the organization receipt")
+        organization_ledger.append = interrupted
+        try:
+            with self.assertRaises(RuntimeError):
+                call()
+        finally:
+            writer.kernel.supplied_hb_reference = honest
+            organization_ledger.append = appended
+
+    def receipts(self):
+        return [json.loads(path.read_text(encoding="utf-8")) for path in self.written()]
+
+    def assertNothingLaundered(self):
+        for receipt in self.receipts():
+            reference = receipt.get("hb_reference")
+            if reference is None:
+                continue
+            if reference["derived_from_clock"] is False:
+                self.assertEqual(reference["epoch"], 4096, receipt.get("schema"))
+        organization = [r for r in self.receipts()
+                        if r.get("schema") == "stegverse.organization-transition-receipt/v1"]
+        self.assertEqual(len(organization), 1)
+        self.assertEqual(organization[0]["hb_reference"]["epoch"], 4096)
+        self.assertIs(organization[0]["hb_reference"]["derived_from_clock"], False)
+
+    def test_ingress_replay_does_not_forward_a_read_back_clock_epoch(self):
+        call = lambda: ingress.receive(diagnostic("laundered"), registry=REGISTRY,
+                                       packet_id="laundered", hb_epoch="4096")
+        self.seed_clock_repository_receipt(ingress.repository_ledger, ingress.organization_ledger, call)
+        seeded, = [r for r in self.receipts() if "hb_reference" in r]
+        self.assertIs(seeded["hb_reference"]["derived_from_clock"], True)
+        result = call()
+        self.assertEqual(result["disposition"], "ALLOW", result.get("detail"))
+        self.assertNothingLaundered()
+
+    def test_egress_record_replay_does_not_forward_a_read_back_clock_epoch(self):
+        record = {"intended_action": "EMIT", "disposition": "ALLOW", "crossed_an_organization_boundary": True,
+                  "frame_sha256": "sha256:" + "1" * 64, "payload_sha256": "sha256:" + "2" * 64}
+        call = lambda: egress._record("EGRESS:laundered", egress.EMITTED_CLASS, record["payload_sha256"],
+                                      kernel.sha(record), record, 4096)
+        self.seed_clock_repository_receipt(egress.repository_ledger, egress.organization_ledger, call)
+        call()
+        self.assertNothingLaundered()
+
+    def test_an_absent_epoch_writes_nothing_even_with_a_fixed_clock(self):
+        fixed = self.FIXED_NS
+        for module in (ingress.repository_ledger, ingress.organization_ledger):
+            saved = module.kernel.datetime
+
+            class Fixed:
+                @staticmethod
+                def now(*_a, **_k):
+                    from datetime import datetime, timezone
+                    return datetime.fromtimestamp(fixed / 1e9, timezone.utc)
+            module.kernel.datetime = Fixed
+            self.addCleanup(setattr, module.kernel, "datetime", saved)
+        with self.assertRaises(ValueError):
+            ingress.receive(diagnostic("absent-fixed"), registry=REGISTRY, packet_id="absent-fixed")
+        self.assertEqual(self.written(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

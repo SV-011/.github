@@ -304,7 +304,8 @@ def _record(transition_id: str, transition_class: str, predecessor: str, success
          "intended_action": record["intended_action"],
          "disposition": record["disposition"],
          "crossed_an_organization_boundary": record["crossed_an_organization_boundary"]},
-        "NONE", hb_epoch=repository_receipt["hb_reference"]["epoch"] if idempotent else hb_epoch,
+        # The supplied epoch, never one read back from the repository receipt.
+        "NONE", hb_epoch=hb_epoch,
         idempotent=idempotent)
     return {"repository_receipt": repository_receipt,
             "organization_receipt": organization_receipt}
