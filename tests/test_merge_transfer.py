@@ -230,32 +230,87 @@ class Refusals(unittest.TestCase):
         finally:
             ledger.close()
 
-    def test_the_verifier_refuses_a_receipt_that_does_not_link(self):
-        cases = ("repo_evidence_other_merge", "repo_receipt_missing", "org_receipt_unsealed", "other_repository",
-                 "other_merge")
-        for case in cases:
+    def _appended(self, ledger):
+        result = mt.append_merge_transfer(self.fixture["commit"])
+        key = mt.store_module().receipt_key
+        return key, key(result["organization_receipt_sha256"]), key(result["repository_receipt_sha256"])
+
+    def _rehead(self, ledger, org_key, org):
+        """Reseal the head organization receipt under its new digest and point HEAD at it."""
+        org = reseal(org)
+        (ledger.root / org_key).unlink()
+        ledger.write(mt.store_module().receipt_key(org["receipt_sha256"]), org)
+        head = ledger.read("HEAD.json")
+        ledger.write("HEAD.json", {**head, "receipt_sha256": org["receipt_sha256"]})
+
+    def _deny(self, result):
+        self.assertEqual(result["disposition"], "DENY", result)
+        self.assertEqual(result["failure_code"], mt.LINK_UNVERIFIED, result)
+        self.assertEqual(result["transfer"], "UNVERIFIED")
+        for field in mt.SIX_FIELDS:
+            self.assertTrue(result[field], field)
+
+    def test_present_evidence_that_contradicts_the_merge_is_deny(self):
+        """DENY MERGE_TRANSFER_RECEIPT_LINK_UNVERIFIED: sealed evidence that names another merge, repository, ref or
+        schema, a digest it does not carry, or a link to the wrong repository receipt."""
+        evidence_cases = {"other_merge": ("merge_commit", "0" * 40), "other_repository": ("repository", "SV-000/.github"),
+                          "other_ref": ("ref", "refs/heads/feature"), "other_schema": ("schema", "stegverse.other/v1"),
+                          "digest_not_carried": ("tree", "f" * 40)}
+        for case, (field, value) in evidence_cases.items():
             ledger = Ledger(self.fixture)
             try:
-                result = mt.append_merge_transfer(self.fixture["commit"])
-                key = mt.store_module().receipt_key
-                org_key, rep_key = key(result["organization_receipt_sha256"]), key(result["repository_receipt_sha256"])
-                if case == "repo_evidence_other_merge":
-                    rep = ledger.read(rep_key, repo=True)
-                    rep["evidence"]["merge_commit"] = "0" * 40
-                    ledger.write(rep_key, reseal(rep), repo=True)
-                    self._six(mt.verify_merge_transfer(self.repo, self.merge), mt.LINK_UNVERIFIED)
-                elif case == "repo_receipt_missing":
+                _, org_key, rep_key = self._appended(ledger)
+                rep = ledger.read(rep_key, repo=True)
+                rep["evidence"][field] = value
+                ledger.write(rep_key, reseal(rep), repo=True)  # sealed, but sealed as another receipt
+                result = mt.verify_merge_transfer(self.repo, self.merge)
+                self._deny(result)
+                self.assertIn(field if case != "digest_not_carried" else "digest", result["detail"], case)
+            finally:
+                ledger.close()
+        for case in ("link_to_another_repository_receipt", "org_receipt_names_another_repository",
+                     "repository_receipt_sealed_as_another"):
+            ledger = Ledger(self.fixture)
+            try:
+                key, org_key, rep_key = self._appended(ledger)
+                org = ledger.read(org_key)
+                others = [p for p in (ledger.repo_root / "receipts").glob("*.json") if p.name != Path(rep_key).name]
+                self.assertTrue(others)
+                other = json.loads(others[0].read_text())
+                self.assertTrue(mt.sealed(other))
+                if case == "link_to_another_repository_receipt":
+                    org["repo_receipt_sha256"] = other["receipt_sha256"]
+                    self._rehead(ledger, org_key, org)
+                elif case == "org_receipt_names_another_repository":
+                    org["repository" if "repository" in org else "source_repository"] = "SV-000/.github"
+                    self._rehead(ledger, org_key, org)
+                else:
+                    ledger.write(rep_key, other, repo=True)  # a sealed receipt stored under the linked digest
+                self._deny(mt.verify_merge_transfer(self.repo, self.merge))
+            finally:
+                ledger.close()
+
+    def test_absent_or_unsealed_evidence_is_fail_closed_not_ledgered(self):
+        for case in ("repo_receipt_missing", "repo_receipt_unsealed", "org_receipt_unsealed", "other_repository",
+                     "other_merge"):
+            ledger = Ledger(self.fixture)
+            try:
+                _, org_key, rep_key = self._appended(ledger)
+                if case == "repo_receipt_missing":
                     (ledger.repo_root / rep_key).unlink()
-                    self._six(mt.verify_merge_transfer(self.repo, self.merge), mt.LINK_UNVERIFIED)
+                elif case == "repo_receipt_unsealed":
+                    rep = ledger.read(rep_key, repo=True)
+                    rep["evidence"]["merge_commit"] = "0" * 40  # not resealed
+                    ledger.write(rep_key, rep, repo=True)
                 elif case == "org_receipt_unsealed":
                     org = ledger.read(org_key)
                     org["hb_reference"]["epoch"] += 1
                     ledger.write(org_key, org)
-                    self._six(mt.verify_merge_transfer(self.repo, self.merge), mt.RECEIPT_UNSEALED)
-                elif case == "other_repository":
-                    self._six(mt.verify_merge_transfer("StegVerse-Labs/.github", self.merge), mt.NOT_LEDGERED)
-                else:
-                    self._six(mt.verify_merge_transfer(self.repo, "1" * 40), mt.NOT_LEDGERED)
+                repo = "StegVerse-Labs/.github" if case == "other_repository" else self.repo
+                merge = "1" * 40 if case == "other_merge" else self.merge
+                result = mt.verify_merge_transfer(repo, merge)
+                self._six(result, mt.NOT_LEDGERED)
+                self.assertEqual(result["transfer"], "UNVERIFIED")
             finally:
                 ledger.close()
 
