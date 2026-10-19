@@ -476,6 +476,25 @@ class CliEpochIsTheSharedRule(Redirected):
                     self.assertTrue(refusal.get(field), field)
         self.assertEqual(self.written(), [])
 
+    def test_two_supplied_epochs_must_agree(self):
+        """B-P36l: an explicit invalid epoch is INVALID; two that differ are HB_EPOCH_CONFLICT; one is supplied."""
+        for argument, env_epoch, code in (("+33", "4096", "HB_EPOCH_INVALID"),
+                                          ("4096", "4097", "HB_EPOCH_CONFLICT"),
+                                          ("4096", "abc", "HB_EPOCH_CONFLICT"),
+                                          ("4096", "", "HB_EPOCH_CONFLICT")):
+            with self.subTest(argument=argument, env_epoch=env_epoch):
+                ran = self.run_cli(argument, env_epoch=env_epoch)
+                self.assertNotEqual(ran.returncode, 0)
+                refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                self.assertEqual(refusal["failure_code"], code)
+                for field in SIX_FIELDS:
+                    self.assertTrue(refusal.get(field), field)
+        self.assertEqual(self.written(), [])
+        agreed = self.run_cli("4096", env_epoch="4096")
+        self.assertEqual(agreed.returncode, 0, agreed.stdout + agreed.stderr)
+        only_env = self.run_cli(None, env_epoch="4096")
+        self.assertEqual(only_env.returncode, 0, only_env.stdout + only_env.stderr)
+
     def test_a_digit_string_cli_epoch_is_accepted(self):
         ran = self.run_cli("4096")
         self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)

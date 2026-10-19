@@ -318,12 +318,19 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     registry = json.loads(args.registry.read_text(encoding="utf-8"))
-    hb_epoch = args.hb_epoch
-    if hb_epoch is None and "STEGVERSE_HB_EPOCH" in os.environ:
-        # A set variable is a supplied value, "" included; only an unset one is absent.
-        hb_epoch = os.environ["STEGVERSE_HB_EPOCH"]
+    # A set variable is a supplied value, "" included; only an unset one is absent.
+    from_env = os.environ.get("STEGVERSE_HB_EPOCH") if "STEGVERSE_HB_EPOCH" in os.environ else None
+    hb_epoch = args.hb_epoch if args.hb_epoch is not None else from_env
     refusal = repository_ledger.kernel.writer_epoch_refusal(
         hb_epoch, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is None and args.hb_epoch is not None and from_env is not None:
+        # Both inputs present: they must name the same epoch, or nothing is written.
+        other = repository_ledger.kernel.supplied_epoch_failure(from_env)
+        if other is not None or int(from_env) != int(args.hb_epoch):
+            refusal = repository_ledger.kernel.writer_epoch_refusal(None, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)
+            refusal["failure_code"] = "HB_EPOCH_CONFLICT"
+            refusal["detail"] = ("--hb-epoch " + repr(args.hb_epoch) + " and STEGVERSE_HB_EPOCH "
+                                 + repr(from_env) + " are both supplied and differ")
     if refusal is not None:
         print(json.dumps(refusal, sort_keys=True))
         return 2
