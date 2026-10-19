@@ -261,6 +261,9 @@ def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
              "organization_receipt": organization_receipt}, prior is not None)
 
 
+PACKET_ID_RECEIPT_COLLISION = "PACKET_ID_RECEIPT_COLLISION"
+
+
 def _recorded(disposition: str, payload: Any, packet_id: str, hb_epoch: int | None, *,
               failed_predicate: str | None = None, detail: str | None = None) -> dict[str, Any]:
     evidence = _evidence(payload, packet_id, disposition,
@@ -275,7 +278,15 @@ def _recorded(disposition: str, payload: Any, packet_id: str, hb_epoch: int | No
         collided = _evidence(payload, packet_id, FAIL_CLOSED,
                              failed_predicate="ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC",
                              detail=str(exc))
-        return _result(collided, None, replayed=False, received=False)
+        # A content conflict: refused before anything is written, terminal, named for the collision.
+        # A byte-identical replay is answered above by the idempotent append, not refused.
+        return {**_result(collided, None, replayed=False, received=False),
+                "failure_code": PACKET_ID_RECEIPT_COLLISION, "terminal": True,
+                "required_evidence_or_repair": "a new packet id for a different diagnostic; "
+                                               "the recorded receipt for this packet id is unchanged",
+                "retry_entrypoint": "org-kernel/kernel.py::publish_frame with a new packet_id",
+                "owning_existing_goal": repository_ledger.kernel.HB_EPOCH_OWNING_EXISTING_GOAL,
+                "next_attempt": "none for this packet id: retrying the same content never clears a collision"}
     return _result(evidence, appended, replayed=replayed, received=disposition == ALLOW)
 
 

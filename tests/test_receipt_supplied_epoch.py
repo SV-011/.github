@@ -1205,8 +1205,21 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         first = ingress._recorded("ALLOW", {"communication_id": "c-1", "body": 1}, "collide", 4096)
         before = sorted(str(p) for p in self.written())
         second = ingress._recorded("ALLOW", {"communication_id": "c-1", "body": 2}, "collide", 4096)
-        self.assertIsNotNone(first)
-        self.assertIn("ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC", json.dumps(second))
+        self.assertEqual(first["disposition"], "ALLOW")
+        # (b) six fields, named for the collision; terminal
+        self.assertEqual(second["disposition"], "FAIL_CLOSED")
+        self.assertEqual(second["failure_code"], "PACKET_ID_RECEIPT_COLLISION")
+        self.assertEqual(second["failed_predicate"], "ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC")
+        self.assertIs(second["terminal"], True)
+        for field in SIX_FIELDS:
+            self.assertTrue(second.get(field), field)
+        # (a) refused before anything is written: no orphan
+        self.assertEqual(sorted(str(p) for p in self.written()), before)
+        # (c) a byte-identical replay is idempotent: the recorded receipt, not a refusal, and no write
+        replay = ingress._recorded("ALLOW", {"communication_id": "c-1", "body": 1}, "collide", 4096)
+        self.assertEqual(replay["disposition"], "ALLOW")
+        self.assertIs(replay["transition_replayed"], True)
+        self.assertNotIn("failure_code", replay)
         self.assertEqual(sorted(str(p) for p in self.written()), before)
 
     def test_every_ledger_store_write_fault_is_a_ledger_write_fault(self):
