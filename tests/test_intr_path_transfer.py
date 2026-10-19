@@ -48,6 +48,9 @@ class Ledger:
         self.saved = {k: os.environ.get(k) for k in ("STEGVERSE_ORG_LEDGER_ROOT", "STEGVERSE_REPO_LEDGER_ROOT")}
         os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(self.root)
         os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.root / NAMESPACE)
+        for commit in EXPECTED.get("temp_merge_transfers") or []:   # temp copies only; not ledgered
+            result = pt.mt.append_merge_transfer(pt.mt.commit_facts(commit))
+            assert result["disposition"] == "ALLOW", result
 
     def files(self):
         return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
