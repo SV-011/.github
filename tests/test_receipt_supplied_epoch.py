@@ -7,6 +7,7 @@ carrier epoch to both writers. Both ledger roots and the mesh are redirected.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -1035,6 +1036,50 @@ class MixedBatchQuarantinesTheRefusedFrame(Redirected):
         self.assertEqual(self.written(), before)
         self.assertEqual(results[0]["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
         self.assertEqual(self.consume(), [])
+
+    def test_a_mistyped_frame_field_is_quarantined_in_either_order(self):
+        """F-TYPE: a resealed frame whose string field is 123, null, a list or a dict is a six-field
+        FRAME_INGEST_FAILED and a terminal quarantine; the valid frame is consumed whichever sorts first."""
+        for field in kernel.CARRIER_FRAME_STRING_FIELDS:
+            for value in (123, None, [1], {"a": 1}):
+                for refused_first in (True, False):
+                    with self.subTest(field=field, value=value, refused_first=refused_first):
+                        for directory in ("frames.d", "quarantine.d"):
+                            if (self.mesh / directory).is_dir():
+                                for path in (self.mesh / directory).glob("*.json"):
+                                    path.unlink()
+                        for index in range(64):
+                            packet_id = "mistyped-%s-%d" % (field, index)
+                            bad = self.frame(packet_id, epoch=4096)
+                            bad[field] = value
+                            bad["frame_sha256"] = kernel.sha({k: v for k, v in bad.items() if k != "frame_sha256"})
+                            bad_name = hashlib.sha256((packet_id + "|" + bad["frame_sha256"]).encode()).hexdigest() + ".json"
+                            good = self.frame("mistyped-good-%s-%d" % (field, index), epoch=4096)
+                            if (bad_name < self.name(good)) == refused_first:
+                                break
+                        kernel.publish_frame(good, root=self.mesh)
+                        (self.mesh / "frames.d" / bad_name).write_text(json.dumps(bad), encoding="utf-8")
+                        results = self.consume(set())
+                        by_name = {r["path"].rsplit("/", 1)[1]: r["result"] for r in results}
+                        if field == "destination_org":
+                            self.assertNotIn(bad_name, by_name)  # addressed to no organization: not offered here
+                        else:
+                            marker = by_name[bad_name]
+                            self.assertEqual(marker["failure_code"], "FRAME_REFUSED_QUARANTINED")
+                            self.assertEqual(marker["refusal_failure_code"], "FRAME_INGEST_FAILED")
+                            self.assertEqual(marker["failed_predicate"], "FRAME_INGESTS_WITHOUT_ERROR:TypeError")
+                            for key in SIX_FIELDS:
+                                self.assertTrue(marker.get(key), key)
+                        self.assertEqual(by_name[self.name(good)]["status"], "CONSUMED")
+                        self.assertEqual([r["path"].rsplit("/", 1)[1] for r in self.consume()], [self.name(good)])
+
+    def test_recover_packet_type_checks_before_decoding(self):
+        frame = self.frame("typed", epoch=4096)
+        for value in (123, None, [1], {"a": 1}):
+            with self.subTest(value=value):
+                bad = dict(frame, packet_base64=value)
+                with self.assertRaises(TypeError):
+                    kernel.recover_packet(bad)
 
     def test_an_unrecoverable_frame_alone_writes_nothing_and_reads_no_clock(self):
         import datetime as real

@@ -295,7 +295,13 @@ def _supplied_epoch_as_int(reference: Any) -> Any:
     return normalized
 
 
+CARRIER_FRAME_STRING_FIELDS = ("packet_base64", "packet_sha256", "packet_id", "destination_org")
+
+
 def recover_packet(frame: dict[str, Any]) -> dict[str, Any]:
+    for field in CARRIER_FRAME_STRING_FIELDS:
+        if not isinstance(frame.get(field), str):
+            raise TypeError("carrier_frame_field_not_a_string: " + field)
     body = dict(frame)
     claimed = body.pop("frame_sha256", None)
     if claimed != sha(body):
@@ -648,8 +654,8 @@ def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = 
         raise SuppliedEpochRefused(refusal)
     try:
         packet = recover_packet(frame)
-    except (ValueError, KeyError, TypeError) as exc:
-        # B-P36o: a frame that does not recover is a six-field refusal, never a bare error.
+    except Exception as exc:
+        # B-P36o / F-TYPE: a frame that does not recover is a six-field refusal, never a bare error.
         text = str(exc)
         code = (HB_REFERENCE_INVALID if text.startswith("heartbeat_")
                 else FRAME_INTEGRITY_INVALID if text.endswith("_mismatch") or "hash" in text
@@ -735,8 +741,9 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
         else:
             try:
                 result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
-            except (ValueError, KeyError, TypeError) as refused:
+            except Exception as refused:
                 # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
+                # The guard is total (F-TYPE): no exception from one frame aborts the batch.
                 # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;
                 # any other adapter error is FRAME_INGEST_FAILED, naming the exception class (B-P36o).
                 refusal = getattr(refused, "refusal", None)
