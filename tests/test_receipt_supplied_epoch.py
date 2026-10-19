@@ -346,6 +346,24 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertSixFieldRefusal(refused, "HB_EPOCH_PROVENANCE_UNMARKED", "kernel.py::ingest_frame")
         self.assertEqual(self.written(), [])
 
+    def test_the_shared_rule_is_the_pinned_final_text(self):
+        import hashlib
+        import inspect
+        self.assertEqual(hashlib.sha256(inspect.getsource(kernel.supplied_epoch_failure).encode()).hexdigest(),
+                         kernel.SHARED_VALIDATOR_SHA256)
+        self.assertEqual(kernel.SHARED_VALIDATOR_SHA256,
+                         "ad8ff52936d5bcd9a2ad6caceb2d9a637a099518989b34bbb3370301c7a4cce2")
+
+    def test_the_final_rule_marker_cases(self):
+        rule = kernel.supplied_epoch_failure
+        self.assertEqual(rule(4096, {"epoch": 4096, "sampled_unix_ns": 1})[0], "HB_EPOCH_INVALID")
+        self.assertEqual(rule(4096, {"epoch": 4096, "source": "ORGANIZATION_LEDGER_HEAD",
+                                     "head_receipt_sha": "sha256:" + "f" * 64})[0],
+                         "HB_EPOCH_PROVENANCE_UNMARKED")
+        self.assertEqual(rule(4096, {"epoch": 4096, "derived_from_clock": False, "sampled_unix_ns": 1})[0],
+                         "HB_EPOCH_INVALID")
+        self.assertIsNone(rule(4096, {"epoch": 4096, "derived_from_clock": False, "source": "X"}))
+
     def test_the_shared_rule_refuses_an_unmarked_reference(self):
         self.assertEqual(kernel.supplied_epoch_failure(40, {"epoch": 40})[0], "HB_EPOCH_PROVENANCE_UNMARKED")
         self.assertIsNone(kernel.supplied_epoch_failure(40, {"epoch": 40, "derived_from_clock": False}))

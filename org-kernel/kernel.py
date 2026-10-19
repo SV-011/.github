@@ -111,6 +111,10 @@ HB_EPOCH_INVALID="HB_EPOCH_INVALID"
 HB_EPOCH_PREDICATE="SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
 HB_EPOCH_OWNING_EXISTING_GOAL="INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001"
 
+#: sha256(inspect.getsource(supplied_epoch_failure).encode()) of the FINAL shared
+#: rule, StegVerse-Labs/.github#3282 @e1b3ac8 (comment 6261939357). Pinned by test.
+SHARED_VALIDATOR_SHA256 = "ad8ff52936d5bcd9a2ad6caceb2d9a637a099518989b34bbb3370301c7a4cce2"
+
 def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, str] | None:
     """The shared supplied-epoch rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH).
 
@@ -144,10 +148,8 @@ def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, s
             and reference["derived_from_clock"] is not False:
         return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
                                     "a clock-derived epoch is not a supplied one")
-    if reference is not None and "sampled_unix_ns" in reference:
-        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference carries sampled_unix_ns: a clock marker"
-    if reference is not None and "derived_from_clock" not in reference:
-        return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference has no derived_from_clock"
+    if reference is not None and "sampled_unix_ns" in reference: return "HB_EPOCH_INVALID", "the carrier's heartbeat reference carries sampled_unix_ns; a sampled clock value is CLOCK, never a supplied epoch"
+    if reference is not None and "derived_from_clock" not in reference: return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference carries no derived_from_clock; an unmarked clock value is laundering, and a carrier cannot self-assert CARRIED provenance"
     return None
 
 class SuppliedEpochRefused(ValueError):
@@ -244,8 +246,8 @@ def carried_provenance_refusal(provenance: Any, reference: dict[str, Any], head_
         epoch = carried.get("epoch") if isinstance(carried, dict) else None
         if body is None or receipt.get("receipt_sha256") != current or sha(body) != current:
             detail = "the organization ledger head receipt " + current + " is absent or its seal does not verify"
-        elif not isinstance(carried, dict) or carried.get("derived_from_clock") is not False \
-                or type(epoch) is not int or supplied_epoch_failure(epoch, carried) is not None:
+        elif not isinstance(carried, dict) or type(epoch) is not int \
+                or supplied_epoch_failure(epoch, carried) is not None:
             detail = "the head receipt's hb_reference " + repr(carried) + " is not a supplied-rule, non-clock epoch"
         elif epoch != reference.get("epoch"):
             detail = "the carried epoch " + repr(reference.get("epoch")) + " is not the head epoch " + repr(epoch)
