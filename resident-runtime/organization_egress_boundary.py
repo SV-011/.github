@@ -48,6 +48,36 @@ CLOSURE_REFUSED_CLASS = "ORGANIZATION_EGRESS_CLOSURE_REFUSED"
 ALLOW = "ALLOW"
 DENY = "DENY"
 PENDING = "PENDING"
+FAIL_CLOSED = "FAIL_CLOSED"
+
+#: An absent response is the protocol's receiver-unavailable disposition
+#: (org-contract `propagation_receiver_unavailable_disposition`), returned with
+#: the six fields and recorded nowhere -- never a bare in-flight state. Ported
+#: from StegVerse-org/.github#186; `PENDING` stays defined for the other
+#: callers in this module, and `close` no longer returns it.
+RESPONSE_ABSENT_FAILURE_CODE = "DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION"
+RESPONSE_ABSENT_PREDICATE = "EGRESS_RESPONSE_DURABLY_MATERIALIZED_BEFORE_CLOSE"
+
+#: The shared supplied-epoch rule (consumers Q3; P1 #163; TVC#517). A closure
+#: writes both ledger levels, so it takes the epoch it is given and never reads
+#: a clock: none supplied is HB_EPOCH_NOT_SUPPLIED, anything other than ASCII
+#: digits at or above the HB32 anchor is HB_EPOCH_INVALID. Both fail closed
+#: with nothing appended.
+HB_EPOCH_NOT_SUPPLIED = "HB_EPOCH_NOT_SUPPLIED"
+HB_EPOCH_INVALID = "HB_EPOCH_INVALID"
+HB_EPOCH_PREDICATE = "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
+HB_ANCHOR_EPOCH = 32
+INTR_PROTOCOL_GOAL = "INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001"
+
+#: The declared order of `close`'s refusals. Input refusals take precedence over
+#: state refusals, and within inputs the supplied-epoch check comes first: a
+#: call missing both an epoch and a response is HB_EPOCH_NOT_SUPPLIED, not the
+#: response absence. No refusal on this list appends anything.
+CLOSE_REFUSAL_PRECEDENCE = (
+    (HB_EPOCH_PREDICATE, "INPUT"),
+    ("DESTINATION_IS_A_DECLARED_PEER_OF_THIS_ORGANIZATION", "INPUT"),
+    (RESPONSE_ABSENT_PREDICATE, "STATE"),
+)
 
 ACK_CLASSES = frozenset({"ecosystem.monitor.response", "ecosystem.work.ack",
                          "ecosystem.communication.ack"})
@@ -445,10 +475,110 @@ def verify_closure(resolved: Mapping[str, Any], packet_id: str, response: Mappin
     return findings
 
 
+def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, str] | None:
+    """The shared supplied-epoch rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH).
+
+    Ported from StegVerse-org/.github#186 (the same rule as org#185 and
+    StegVerse-Labs/.github#3212 and #3213). `hb_epoch` absent (None) is
+    HB_EPOCH_NOT_SUPPLIED. Otherwise it must be ASCII [0-9]+ only -- an int is
+    read as its decimal text; a bool, a float or anything coerced ('+33',
+    ' 33', '3_3', '33.0') is refused -- with integer value >= 32 (the HB32
+    anchor). `reference`, the carrier frame's heartbeat reference when there is
+    one, must be an object, and a `derived_from_clock` it carries must be
+    exactly false. Any failure is HB_EPOCH_INVALID. Returns (failure_code,
+    detail), or None when the epoch is supplied. No clock is read.
+    """
+    if reference is not None and not isinstance(reference, dict):
+        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference is not an object"
+    if hb_epoch is None:
+        return "HB_EPOCH_NOT_SUPPLIED", "no hb_epoch was supplied and no clock is read"
+    if isinstance(hb_epoch, bool):
+        text = None
+    elif isinstance(hb_epoch, int):
+        text = str(hb_epoch)
+    elif isinstance(hb_epoch, str):
+        text = hb_epoch
+    else:
+        text = None
+    if text is None or not text.isascii() or not text.isdigit():
+        return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
+    if int(text) < 32:
+        return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
+    if reference is not None and "derived_from_clock" in reference \
+            and reference["derived_from_clock"] is not False:
+        return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
+                                    "a clock-derived epoch is not a supplied one")
+    return None
+
+
+def epoch_refusal(hb_epoch: Any, entrypoint: str) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED refusal of an epoch not supplied or invalid, or None."""
+    failure = supplied_epoch_failure(hb_epoch)
+    if failure is None:
+        return None
+    code, detail = failure
+    return {
+        "schema": RESULT_SCHEMA,
+        "operation": OPERATION_ID,
+        "disposition": FAIL_CLOSED,
+        "emitted": False,
+        "failure_code": code,
+        "failed_predicate": HB_EPOCH_PREDICATE,
+        "detail": detail,
+        "required_evidence_or_repair": (
+            "supply hb_epoch from the carrier as ASCII digits with value >= " + str(HB_ANCHOR_EPOCH)
+            + "; it is never derived from a clock"),
+        "retry_entrypoint": entrypoint,
+        "owning_existing_goal": INTR_PROTOCOL_GOAL,
+        "next_attempt": "call " + entrypoint + " again with the supplied epoch; nothing was "
+                        "published and nothing was appended",
+        "refusal_recorded": False,
+        "authority_constraint": "NONE_REFUSAL_ONLY",
+        "production_receipt_claimed": False,
+    }
+
+
+def _recorded_attestation(emission: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The attestation this organization already recorded for this packet.
+
+    Origin attestation is not installed on this boundary, so every emission
+    record here carries `origin_attestation_state` NOT_PROVEN and this returns
+    None: the closure reports an unattested origin exactly as the emission did.
+    Nothing is reconstructed on the closure's behalf. Ported from
+    StegVerse-org/.github@0f9481af, reading only this organization's own
+    emission record.
+    """
+    if not emission or emission.get("origin_attestation_state") != "PROVEN":
+        return None
+    carried = {field: value for field, value in emission.items()
+               if field.startswith(("origin_attestation", "attested_", "signature_"))}
+    return {**carried,
+            "attestation_read_from_this_organizations_own_emission_record": True}
+
+
 def close(destination_organization: str, packet_id: str, communication_id: str, *,
           root: Path | None = None, mesh_root: Path | None = None,
           hb_epoch: int | None = None) -> dict[str, Any]:
-    """Observe a far-side answer. No answer is ``PENDING`` and writes nothing."""
+    """Observe the far side's closure of an emitted crossing, and record it.
+
+    Fails closed with DURABLE_QUEUE_OR_EVENT_EPHEMERAL_MATERIALIZATION and the
+    six fields, and records nothing, when no response is in the mesh. An absence
+    is not an arrival: nothing crossed the boundary, so there is no disposition
+    to record, and appending a refusal per attempt would record the attempts
+    rather than the crossing. The refusal says what a later attempt needs
+    instead of leaving the caller to wait.
+
+    Refusals follow `CLOSE_REFUSAL_PRECEDENCE`: the supplied epoch first, then
+    the destination, then the response absence. Function-level port of
+    StegVerse-org/.github#186.
+    """
+    # Input refusals precede state refusals; within inputs the epoch is first.
+    refused_epoch = epoch_refusal(hb_epoch, "resident-runtime/organization_egress_boundary.py::close")
+    if refused_epoch is not None:
+        return {**{k: v for k, v in refused_epoch.items() if k != "emitted"},
+                "closed": False, "closure_recorded": False,
+                "communication_id": communication_id, "request_packet_id": packet_id}
+    hb_epoch = int(str(hb_epoch))  # admitted as ASCII digits
     origin = this_organization(root)
     resolved = resolve_destination(destination_organization, root=root)
     collected = kernel.collect_ecosystem_responses(origin, communication_id, mesh_root=mesh_root)
@@ -458,7 +588,24 @@ def close(destination_organization: str, packet_id: str, communication_id: str, 
         return {
             "schema": RESULT_SCHEMA,
             "operation": OPERATION_ID,
-            "disposition": PENDING,
+            "disposition": FAIL_CLOSED,
+            "failure_code": RESPONSE_ABSENT_FAILURE_CODE,
+            "failed_predicate": RESPONSE_ABSENT_PREDICATE,
+            "detail": ("no response from " + str(resolved["destination_organization"])
+                       + " for communication_id " + str(communication_id)
+                       + " is materialized in the mesh"),
+            "required_evidence_or_repair": (
+                "a response frame from " + str(resolved["destination_organization"])
+                + " correlated by communication_id " + str(communication_id)
+                + ", durably materialized in the mesh (durable queue or event-ephemeral "
+                "materialization) before close reads it; no caller waits for it"),
+            "retry_entrypoint": "resident-runtime/organization_egress_boundary.py::close",
+            "owning_existing_goal": INTR_PROTOCOL_GOAL,
+            "next_attempt": ("call resident-runtime/organization_egress_boundary.py::close "
+                             "again with the same packet_id, communication_id and a "
+                             "supplied epoch once the response is materialized; nothing "
+                             "was appended at either ledger level"),
+            "refusal_recorded": False,
             "disposition_is_transition_evidence": True,
             "closed": False,
             "closure_recorded": False,
@@ -466,7 +613,7 @@ def close(destination_organization: str, packet_id: str, communication_id: str, 
             "communication_id": communication_id,
             "request_packet_id": packet_id,
             "destination_organization": resolved["destination_organization"],
-            "authority_constraint": "NONE_OBSERVATION_ONLY",
+            "authority_constraint": "NONE_REFUSAL_ONLY",
             "time_constraint": "HEARTBEAT_EPOCH",
             "production_receipt_claimed": False,
         }
@@ -499,6 +646,7 @@ def close(destination_organization: str, packet_id: str, communication_id: str, 
         "far_side_terminal_receipt_recomputed": recomputed[-1] if recomputed else None,
         "far_side_application_result": response.get("application_result"),
         "closure_record": record,
+        "recorded_origin_attestation": _recorded_attestation(emission),
         "closure_transition_class": transition_class,
         "closure_repository_receipt_sha256": appended["repository_receipt"]["receipt_sha256"],
         "closure_organization_receipt_sha256": appended["organization_receipt"]["receipt_sha256"],
