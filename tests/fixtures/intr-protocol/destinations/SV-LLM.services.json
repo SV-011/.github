@@ -1,0 +1,59 @@
+{
+  "schema_version": "sv-llm.service-registry.v1",
+  "organization": "SV-LLM",
+  "services": [
+    {
+      "service_id": "sv-llm.org-control",
+      "repository": "SV-LLM/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "sv-llm.boundary-diagnostic",
+      "repository": "SV-LLM/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "sv-llm.sdk-manifest-ingress",
+      "repository": "SV-LLM/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "sdk-manifest-ingress",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "stegverse.sdk-manifest-crossing-payload/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    },
+    {
+      "service_id": "sv-llm.intr-destination",
+      "repository": "SV-LLM/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    }
+  ],
+  "boundary_rule": "All organization-crossing communication is generated and consumed through SV-LLM/.github using Interlock/InTr as manifest-bound state transitions; the manifest determines the destination and an existing destination is sufficient. SV-LLM repositories are destinations by existence (data/organization-tree.json) and declare no endpoint profile."
+}

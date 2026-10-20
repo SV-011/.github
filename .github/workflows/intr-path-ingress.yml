@@ -1,0 +1,95 @@
+name: InTr Mesh Path Ingress
+
+# The destination half of an InTr mesh path. A row of
+# .stegverse/intr-path-transfer/inbound.json landing on this organization's main
+# carries copies of a source organization's sealed path receipts; landing it is
+# the transition. This writer runs when organization-ledger-merge-transfer.yml
+# completes for that push (workflow_run: an event of the push, not a dispatch;
+# no workflow_dispatch, schedule or cross-repository call). Each carried pair
+# that is sealed, linked and names this destination is consumed by
+# resident-runtime/intr_path_ingress.py through the destination ingress
+# two-level append (operation ORGANIZATION_INTR_DESTINATION_INGRESS, supplied
+# epoch on the ledger head, no clock); the receipts carry both source seals. A
+# row already ledgered is answered from the ledger. The carried pair's inclusion
+# in the source ledger is not readable with GITHUB_TOKEN and is recorded
+# FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED (class B, TV/TVC).
+#
+# Writer only. The PR-facing checks are intr-path-transfer-validation.yml.
+on:
+  workflow_run:
+    workflows: ["Organization Ledger Main Merge Transfer"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: organization-ledger
+  cancel-in-progress: false
+
+jobs:
+  append:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LEDGER_REF: refs/stegverse/organization-ledger
+    steps:
+      - name: Checkout the pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Bind the designated organization ledger ref and the repository ledger subtree
+        run: |
+          set -euo pipefail
+          namespace=$(python3 -c 'import json; l=json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]; assert l["ref"]=="refs/stegverse/organization-ledger", l; print(l["namespace"])')
+          echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
+          git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+          echo "ledger tip: $(git rev-parse "$LEDGER_REF")"
+          mkdir -p "$RUNNER_TEMP/results"
+
+      - name: Consume each inbound row through the destination ingress
+        run: |
+          set -euo pipefail
+          if [ ! -f .stegverse/intr-path-transfer/inbound.json ]; then
+            echo "no inbound rows; no transition"; echo "NO_INBOUND=1" >> "$GITHUB_ENV"; exit 0
+          fi
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          python3 resident-runtime/intr_path_ingress.py consume --out "$RUNNER_TEMP/results/consume.json"
+
+      - name: Publish the ledger ref (fast-forward only)
+        if: env.NO_INBOUND != '1'
+        run: |
+          if ! git push origin "$LEDGER_REF:$LEDGER_REF"; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"ORGANIZATION_LEDGER_PUBLISH_RACE","failed_predicate":"PUBLISHED_REF_FAST_FORWARDS","required_evidence_or_repair":"another append moved the ref first; this run published nothing","retry_entrypoint":".github/workflows/intr-path-ingress.yml (re-run)","owning_existing_goal":"StegVerse-org/.github#162","next_attempt":"re-run; a ledgered inbound row is answered from the ledger"}'
+            exit 1
+          fi
+
+      - name: Verify each inbound row from a fresh fetch of the published ref
+        if: env.NO_INBOUND != '1'
+        run: |
+          set -euo pipefail
+          fresh="$RUNNER_TEMP/readback.git"
+          git init -q --bare "$fresh"
+          auth_header=$(git config --local --get http.https://github.com/.extraheader || true)
+          if [ -z "$auth_header" ]; then
+            echo '{"disposition":"FAIL_CLOSED","failure_code":"LEDGER_READBACK_UNAVAILABLE","failed_predicate":"FRESH_FETCH_HAS_CREDENTIALS","required_evidence_or_repair":"checkout credentials unavailable for an independent ref fetch","retry_entrypoint":".github/workflows/intr-path-ingress.yml","owning_existing_goal":"StegVerse-org/.github#162","next_attempt":"re-run with repository contents permission"}'
+            exit 1
+          fi
+          git --git-dir="$fresh" -c "http.https://github.com/.extraheader=$auth_header" fetch -q "$(git remote get-url origin)" "+$LEDGER_REF:$LEDGER_REF"
+          export STEGVERSE_ORG_LEDGER_ROOT="git+$fresh#$LEDGER_REF"
+          export STEGVERSE_REPO_LEDGER_ROOT="git+$fresh#$LEDGER_REF:$REPO_LEDGER_NAMESPACE"
+          python3 resident-runtime/intr_path_ingress.py verify --out "$RUNNER_TEMP/results/verify.json" > /dev/null
+          python3 -c 'import json,sys; [print(r["disposition"], r["path_id"]) for r in json.load(open(sys.argv[1]))]' "$RUNNER_TEMP/results/verify.json"
+
+      - name: Retain the run's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intr-path-ingress-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/results

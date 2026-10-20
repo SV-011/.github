@@ -1,0 +1,124 @@
+{
+  "schema_version": "stegverse-labs.service-registry.v1",
+  "organization": "StegVerse-Labs",
+  "services": [
+    {
+      "service_id": "stegverse-labs.org-control",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-labs.boundary-diagnostic",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-labs.sdk-manifest-ingress",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "sdk-manifest-ingress",
+      "capability_binding_authority": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "stegverse.sdk-manifest-crossing-payload/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "address_grants_admission_authority": false,
+      "selects_processing_at_this_address": false,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-labs.intr-destination",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_authority": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "address_grants_admission_authority": false,
+      "selects_processing_at_this_address": false,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    },
+    {
+      "service_id": "stegverse-labs.governance",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/governance_endpoint.py",
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE",
+      "endpoint_adapter_hb_epoch": "CARRIER_SUPPLIED",
+      "admits_processing": [
+        {
+          "capability": "governance",
+          "route_id": "stegverse.route.canonical-governed.v1"
+        }
+      ],
+      "decision_authority": "StegVerse-Labs/StegCore:stegcore.steggate.evaluate_admissibility"
+    },
+    {
+      "service_id": "stegverse-labs.remediation",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/remediation_endpoint.py",
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE",
+      "admits_processing": [
+        {
+          "capability": "remediation",
+          "route_id": "stegverse.route.governed-remediation.v1"
+        }
+      ],
+      "classification_authority": "StegVerse-Labs/StegVerse-Healer:app/manifest_remediation_intake.py::classify_sdk_deny"
+    },
+    {
+      "service_id": "stegverse-labs.organization-role-conformance",
+      "repository": "StegVerse-Labs/.github",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "stegverse.sdk-manifest-crossing-payload/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "endpoint_adapter": "resident-runtime/organization_role_conformance.py",
+      "endpoint_adapter_disposition": "ALLOW_DECLARED_ADAPTER",
+      "endpoint_adapter_effect": "PURE",
+      "admits_processing": [
+        {
+          "capability": "organization_role_conformance",
+          "route_id": "stegverse.route.organization-role-conformance.v1"
+        }
+      ],
+      "authorized_issuer": "StegVerse-Labs/StegDB:STEGDB-ORGANIZATION-ROLE-VERSION-PROPAGATION-002",
+      "standing": {
+        "mode": "ESTABLISH_GENESIS",
+        "node_ref": "StegVerse-Labs/StegDB:STEGDB-ORGANIZATION-ROLE-VERSION-PROPAGATION-002",
+        "predecessor": null
+      },
+      "source_mutation": false
+    }
+  ],
+  "boundary_rule": "All organization-crossing communication is generated and consumed through StegVerse-Labs/.github using Interlock/InTr; endpoint authority remains transition-governed."
+}
