@@ -42,5 +42,48 @@
   },
   "organization_ledger_ref": "refs/stegverse/organization-ledger",
   "organization_ledger_repository": "SV-011/.github",
-  "organization_ledger_ref_designation_source": "SV-011/.github organization ledger, published at refs/stegverse/organization-ledger"
+  "organization_ledger_ref_designation_source": "SV-011/.github organization ledger, published at refs/stegverse/organization-ledger",
+  "member_repository_ledgers": {
+    "status": "DEFAULT_IN_FORCE_FAIL_CLOSED_H29A",
+    "authority_constraint": "NONE_DECLARATION_ONLY",
+    "source_shape": "StegVerse-org/LLM-adapter#431@a2237bc38316f3abe362bcf7f06a2356ac3a0abd: .stegverse/transition-ledger/contract.json repository_ledger_location, and llm_adapter/endpoint_ledger_designation.py stegverse.endpoint-ledger-designation/v1 store_type GIT_REF (StegVerse-org/.github#162 comment 6372402934). The shape is restated here; no #431 code is vendored or imported, because #431 is not admitted.",
+    "intake": "resident-runtime/repository_ledger_intake.py",
+    "consumed_receipt_schema": "stegverse.repo-transition-receipt/v1",
+    "bindings": [
+      {
+        "member_repository": "SV-011/entity",
+        "repository_ledger_location": {
+          "repository": "SV-011/.github",
+          "ref": "refs/stegverse/organization-ledger",
+          "namespace": "repository-ledger/SV-011/entity",
+          "locator_form": "git+<checkout>#refs/stegverse/organization-ledger:repository-ledger/SV-011/entity",
+          "new_ledger_root": false,
+          "designation_source": "SV-011/.github .stegverse/transition-ledger/org-contract.json organization_ledger_ref; the same subtree form SV-011/.github declares for its own repository chain (contract.json repository_ledger_location) and StegVerse-org/LLM-adapter#431@a2237bc3 declares for LLM-adapter.",
+          "initialization": "Genesis is a REPOSITORY_LEDGER_INITIALIZATION transition whose first receipt has previous_receipt_sha256 null. Publication is the organization's own append under ORGANIZATION_LEDGER_LOCK; no admitted path performs it for SV-011/entity yet.",
+          "rule": "The SV-011/entity repository chain is kept in its own subtree of the designated organization ledger ref. Repository replay walks repository-ledger/SV-011/entity/HEAD.json back through its own receipts and never reads an organization receipt. Existing organization-ledger commits are not rewritten.",
+          "expected_genesis_receipt_sha256": null,
+          "expected_genesis_note": "Null on purpose: no receipt for repository-ledger/SV-011/entity exists on the published ref (read back at tip 449c5ff3). No digest is invented; the intake fails closed ORG_LEDGER_GENESIS_NOT_PINNED until an admitted change sets it from the read-back genesis."
+        },
+        "ledger_designation": {
+          "schema": "stegverse.endpoint-ledger-designation/v1",
+          "endpoint_id": "SV-011/entity",
+          "endpoint_kind": "PERMANENT",
+          "stores": [
+            {
+              "store_type": "GIT_REF",
+              "provider": "git",
+              "repository": "SV-011/.github",
+              "ref": "refs/stegverse/organization-ledger",
+              "namespace": "repository-ledger/SV-011/entity"
+            }
+          ],
+          "provider_selection": "SINGLE_PROVIDER_V1",
+          "genesis_class": "REPOSITORY_LEDGER_INITIALIZATION",
+          "expected_genesis_receipt_sha256": null,
+          "head_signer_source": "ORG_LEDGER_HEAD_SIGNER",
+          "rollback_watermark_source": null
+        }
+      }
+    ]
+  }
 }

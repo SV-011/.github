@@ -1,0 +1,52 @@
+name: Validate Repository Ledger Intake (H29a)
+
+# PR-facing and read-only. Runs the H29(a) member repository-ledger intake
+# tests on temporary ledgers, then reads the published ledger ref for the
+# SV-011/entity subtree. Nothing appends or pushes; no job holds contents: write.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.stegverse/transition-ledger/org-contract.json'
+      - 'resident-runtime/repository_ledger_intake.py'
+      - 'resident-runtime/ledger_store.py'
+      - 'tests/test_repository_ledger_intake.py'
+      - '.github/workflows/repository-ledger-intake-validation.yml'
+
+permissions:
+  contents: read
+
+env:
+  LEDGER_REF: refs/stegverse/organization-ledger
+
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout organization boundary (full history)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Binding, intake and read-back tests (temporary ledgers)
+        run: python3 -m unittest tests.test_repository_ledger_intake -v
+
+      - name: "Real state, read-only: SV-011/entity subtree is FAIL_CLOSED, never a genesis"
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
+          tip=$(git rev-parse "$LEDGER_REF")
+          python3 resident-runtime/repository_ledger_intake.py readback --member SV-011/entity \
+            --location "git+$GITHUB_WORKSPACE#$LEDGER_REF" > "$RUNNER_TEMP/readback.json" || true
+          python3 resident-runtime/repository_ledger_intake.py intake --member SV-011/entity > "$RUNNER_TEMP/intake.json" || true
+          python3 - "$RUNNER_TEMP/readback.json" "$RUNNER_TEMP/intake.json" <<'PY'
+          import json, sys
+          six = ("failure_code", "failed_predicate", "required_evidence_or_repair", "retry_entrypoint",
+                 "owning_existing_goal", "next_attempt")
+          for path in sys.argv[1:]:
+              r = json.load(open(path))
+              assert r["disposition"] == "FAIL_CLOSED" and all(r.get(k) for k in six), r
+              print(path, r["failure_code"], r["append_leg"]["failure_code"])
+          PY
+          test "$(git rev-parse "$LEDGER_REF")" = "$tip"
+          { echo '### H29a real-state read (published ref, read-only)'; echo '```json'; cat "$RUNNER_TEMP/readback.json"; echo; cat "$RUNNER_TEMP/intake.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
