@@ -22,6 +22,8 @@ WORKFLOWS = ROOT / ".github/workflows"
 PR_FACING = WORKFLOWS / "organization-ledger-transition.yml"
 WRITER = WORKFLOWS / "organization-ledger-transition-writer.yml"
 MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
+#: the InTr path writers (StegVerse-org/.github#162): workflow_run on the main-merge transfer only.
+INTR_WRITERS = (WORKFLOWS / "intr-path-transfer.yml", WORKFLOWS / "intr-path-ingress.yml")
 
 #: sha256 of the dispatch job's steps at main d7beaf59 (each step right-stripped, joined by newline,
 #: the job-level and step-level dispatch conditions removed).
@@ -132,11 +134,16 @@ class WriterSplit(unittest.TestCase):
             if re.search(r"(?m)^  pull_request(_target)?:", on_block(text)):
                 self.assertIsNone(WRITE_KEY.search(text), path.name)
                 self.assertIsNone(WRITE_ALL.search(text), path.name)
-        # the two writers are the only contents: write holders, both job-scoped, neither on pull_request
+        # the ledger writers are the only contents: write holders, all job-scoped, none on pull_request
         holders = sorted(p.name for p in WORKFLOWS.glob("*.yml") if WRITE_KEY.search(p.read_text()))
-        self.assertEqual(holders, sorted([WRITER.name, MERGE_WRITER.name]))
-        for path in (WRITER, MERGE_WRITER):
+        self.assertEqual(holders, sorted([WRITER.name, MERGE_WRITER.name] + [p.name for p in INTR_WRITERS]))
+        for path in (WRITER, MERGE_WRITER) + INTR_WRITERS:
             self.assertIn("\npermissions:\n  contents: read\n", path.read_text())
+        for path in INTR_WRITERS:
+            text = path.read_text()
+            self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on_block(text)), ["workflow_run"], path.name)
+            self.assertIn('workflows: ["Organization Ledger Main Merge Transfer"]', text, path.name)
+            self.assertIn("concurrency:\n  group: organization-ledger\n  cancel-in-progress: false\n", text, path.name)
 
 
 if __name__ == "__main__":
