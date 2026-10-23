@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://admissible-existence.org/schemas/gtg-governance-disposition-v1.schema.json",
+  "title": "GTG Governance Disposition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "governance_evaluation_id",
+    "transition_id",
+    "evaluated_at",
+    "disposition",
+    "scope",
+    "authority_state",
+    "standing_state",
+    "consent_state",
+    "viability_state",
+    "commit_time_reconstruction_required",
+    "reason_codes",
+    "unresolved_conditions",
+    "execution_authority_granted",
+    "certification_claimed"
+  ],
+  "properties": {
+    "schema_version": {"const": "GTG-GOVERNANCE-DISPOSITION-v1"},
+    "governance_evaluation_id": {"type": "string", "pattern": "^GTG-EVAL-[A-Z0-9-]+$"},
+    "transition_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "evaluated_at": {"type": "string", "format": "date-time"},
+    "disposition": {"enum": ["ALLOW", "DENY", "DEFER", "TRANSFORM", "TERMINATE", "FAIL_CLOSED"]},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["included_actions", "excluded_actions"],
+      "properties": {
+        "included_actions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "excluded_actions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "authority_state": {"enum": ["SATISFIED", "UNSATISFIED", "PARTIAL", "EXPIRED", "UNKNOWN"]},
+    "standing_state": {"enum": ["VALID", "INVALID", "PARTIAL", "EXPIRED", "UNKNOWN"]},
+    "consent_state": {"enum": ["NOT_REQUIRED", "VALID", "INVALID", "PARTIAL", "REVOKED", "UNKNOWN"]},
+    "viability_state": {"enum": ["VIABLE", "NONVIABLE", "CONDITIONALLY_VIABLE", "UNKNOWN"]},
+    "commit_time_reconstruction_required": {"type": "boolean"},
+    "reason_codes": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
+    "unresolved_conditions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "execution_authority_granted": {"const": false},
+    "certification_claimed": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"disposition": {"const": "ALLOW"}}},
+      "then": {
+        "properties": {
+          "authority_state": {"const": "SATISFIED"},
+          "standing_state": {"const": "VALID"},
+          "viability_state": {"enum": ["VIABLE", "CONDITIONALLY_VIABLE"]},
+          "commit_time_reconstruction_required": {"const": true}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"disposition": {"const": "DEFER"}}},
+      "then": {"properties": {"unresolved_conditions": {"minItems": 1}}}
+    }
+  ]
+}

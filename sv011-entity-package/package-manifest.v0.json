@@ -1,0 +1,36 @@
+{
+  "schema": "stegverse.sv011.entity-package-manifest/v0",
+  "entity_id": "SV-011/entity/experiment-1",
+  "components": [
+    {
+      "role": "admissibility_predicates",
+      "repo": "Admissible-Existence/GTG",
+      "commit": "57b7274858dcf5f927a8218c9be7921136b03fd8",
+      "path": "formal/predicates.py",
+      "git_blob_sha1": "b0e2cb2dc5e55a3b01ca2c71ff63a1971db2a22b",
+      "local_path": "components/Admissible-Existence/GTG/formal/predicates.py",
+      "supplies": "GTG-A1..A8 executable predicates; a transition is ALLOW only if all eight hold"
+    },
+    {
+      "role": "disposition_vocabulary",
+      "repo": "Admissible-Existence/GTG",
+      "commit": "57b7274858dcf5f927a8218c9be7921136b03fd8",
+      "path": "schemas/gtg-governance-disposition-v1.schema.json",
+      "git_blob_sha1": "4d412fe45ebdfcd522a1c6e6587f1dea658dd4fc",
+      "local_path": "components/Admissible-Existence/GTG/schemas/gtg-governance-disposition-v1.schema.json",
+      "supplies": "closed disposition set (ALLOW, DENY, FAIL_CLOSED, ...) and the constant-false execution flag every disposition carries"
+    },
+    {
+      "role": "transition_receipt_rule",
+      "repo": "Admissible-Existence/AE",
+      "commit": "fdece170797d23ce84e3c52d3b89f517d5d3d21d",
+      "path": ".stegverse/transition-ledger/contract.json",
+      "git_blob_sha1": "927e140ea1cbca79bc146dcfb5ab9d514bccade1",
+      "local_path": "components/Admissible-Existence/AE/.stegverse/transition-ledger/contract.json",
+      "supplies": "append-only receipts, receipt schema, required receipt fields incl. predecessor/successor state digests and previous_receipt_sha256, local replay rule"
+    }
+  ],
+  "declared_actions": ["PROPOSE", "TRANSITION", "VERIFY"],
+  "declared_transition_classes": ["GENESIS", "ENTITY_STATE_UPDATE"],
+  "next_experiment": "Experiment 2 (out of scope here): KV infrastructure - _StegVerse/ tree, storage endpoint / access adapter, SKAP Vault, KV and StegOS boundaries through a healthy node."
+}

@@ -1,0 +1,33 @@
+name: SV-011 Entity Package v0
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sv011-entity-package/**"
+      - ".github/workflows/sv011-entity-package-v0.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sv011-entity-package/**"
+      - ".github/workflows/sv011-entity-package-v0.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  entity-governance-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Governance-by-design tests (stdlib unittest)
+        working-directory: sv011-entity-package
+        run: python3 -m unittest discover -s tests -v
+      - name: Example run from the declared manifest only
+        working-directory: sv011-entity-package
+        run: |
+          rec="$(mktemp -d)"
+          python3 -m sv011_entity load --package .
+          python3 -m sv011_entity run --package . --record "$rec" --request examples/genesis-request.json
+          python3 -m sv011_entity run --package . --record "$rec" --request examples/update-request.json
+          python3 -m sv011_entity run --package . --record "$rec" --request examples/verify-request.json
