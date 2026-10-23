@@ -1,0 +1,32 @@
+{
+  "action": "TRANSITION",
+  "evidence": {
+    "horizon": "next transition",
+    "necessity": [],
+    "proof_path": "sv011-entity-package/package-manifest.v0.json",
+    "purpose_result": {
+      "status": "COMPATIBLE"
+    },
+    "scope": "SV-011 entity own state",
+    "standing_results": [
+      {
+        "status": "ESTABLISHED"
+      }
+    ],
+    "uncertainty_status": "WITHIN_THRESHOLD",
+    "viability": [
+      {
+        "status": "VIABLE"
+      }
+    ]
+  },
+  "observed_at": "2026-10-23T00:00:00Z",
+  "predecessor_state_sha256": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+  "schema": "stegverse.sv011.entity-action-request/v0",
+  "successor_state": {
+    "entity": "SV-011/entity/experiment-1",
+    "state_version": 0
+  },
+  "transition_class": "GENESIS",
+  "transition_id": "sv011-entity-genesis"
+}
