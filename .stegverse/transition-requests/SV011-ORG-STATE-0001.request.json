@@ -21,7 +21,7 @@
   "transition_class": "CURRENT_STATE_DECLARATION",
   "org_transition_class": "REPO_STATE_PROPAGATION",
   "predecessor_state_sha256": "sha256:3db9008d0326bdfa687796308fd61dc16e11e299e1c3762e03e577cd1f23fe51",
-  "successor_state_sha256": "sha256:02db42d906e8ba8b0e05c4b18d63dc6d378095b1441d057beb6b063d25f8a04a",
+  "successor_state_sha256": "sha256:2af2537228e7b6de2a59bedd4d11a28743c6564e6b8a84495860d44f2ba57d27",
   "authority_constraint": "NONE",
   "evidence": {
     "predecessor_state_source": "head organization receipt on refs/stegverse/organization-ledger at 2cc58cec",
@@ -30,8 +30,8 @@
   },
   "current_state": {
     "state_id": "SV011-ORG-STATE-0001",
-    "as_of": "2026-10-17T14:04:30Z",
-    "fresh_until": "2026-10-24T14:04:30Z",
+    "as_of": "2026-10-23T18:57:11Z",
+    "fresh_until": "2026-10-30T18:57:11Z",
     "declared_transition_element": {
       "transition_id": "T-181",
       "fixture_ref": "fixtures/transition-elements/t-181.receipt-record.json"

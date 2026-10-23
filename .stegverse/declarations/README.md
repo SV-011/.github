@@ -6,7 +6,7 @@ DEFAULT in force (fail-closed) (B2). This directory holds transition requests th
 
 It declares the first `current_state` for SV-011/.github:
 
-- `state_id` `SV011-ORG-STATE-0001`, `as_of` 2026-10-17T14:04:30Z, `fresh_until` 2026-10-24T14:04:30Z.
+- `state_id` `SV011-ORG-STATE-0001`, `as_of` 2026-10-23T18:57:11Z, `fresh_until` 2026-10-30T18:57:11Z (restated from 2026-10-17T14:04:30Z / 2026-10-24T14:04:30Z under the B2 rule; same 7-day window).
 - `declared_transition_element` T-181, `fixtures/transition-elements/t-181.receipt-record.json`. `Admissible-Existence/TT@ba3cca71` has no t-011 fixture, so this is the named fallback.
 - `declared_role_escalation` `sv011.context-to-evidence`, `context` to `evidence`; `satisfied_scope_ids` `[]`.
 - `predecessor_state_sha256` is the live head organization receipt (`sha256:3db9008d…`); `successor_state_sha256` is the `basis_digest` of the declared `current_state`.

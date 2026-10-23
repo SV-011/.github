@@ -25,7 +25,7 @@
     "head_current_state_transition_id": "T-181",
     "head_current_state_fixture_ref": "fixtures/transition-elements/t-181.receipt-record.json",
     "head_current_state_role_id": "sv011.context-to-evidence",
-    "head_current_state_basis_digest": "02db42d906e8ba8b0e05c4b18d63dc6d378095b1441d057beb6b063d25f8a04a",
+    "head_current_state_basis_digest": "2af2537228e7b6de2a59bedd4d11a28743c6564e6b8a84495860d44f2ba57d27",
     "basis_established": true,
     "current_state_reason": "HEAD_RECEIPT_CURRENT_STATE",
     "paths_changed": [
