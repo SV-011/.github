@@ -503,6 +503,21 @@ class InTrIngressUnchanged(unittest.TestCase):
     #: (commit sha, V-P11 row, resulting file sha256) for each graded exception fix; empty on SV-011.
     GRADED_EXCEPTION_FIXES: tuple[tuple[str, str, str], ...] = ()
 
+    #: library files the lead's 20:29Z ruling keeps pinned to main (rows 5-7 there are OPEN for Grok Lane B)
+    PINNED_LIBRARY = {
+        ".stegverse/transition-ledger/emit.py": "ba8412815f2d78566cd83224194a43ed613ebbbac99bd0ed141064dbc70763d5",
+        "resident-runtime/aggregate_repo_transition.py":
+            "60d9221a376d92c7203942ef495447f8224f862629b4e5287cf6b77f052f08fb",
+        "resident-runtime/ledger_store.py": "279899d4a35f179508cc51ff8415ff73a994327ff8c47c9ccdb0d5c7797d7579",
+        "resident-runtime/organization_egress_boundary.py":
+            "478911384c798d876a860eeff67e3d9dc981110694d8c924b6ef187038e3d762",
+    }
+
+    def test_the_pinned_library_files_are_byte_identical_to_main(self):
+        import hashlib
+        for relative, digest in self.PINNED_LIBRARY.items():
+            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), digest, relative)
+
     def test_the_allowlist_is_empty(self):
         self.assertEqual(self.GRADED_EXCEPTION_FIXES, ())
 
@@ -617,6 +632,143 @@ class OnTheGitLedgerRef(Ledgers):
         result = binding.verify(REQUEST, closure)
         self.assert_refused(result, "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
         self.assertEqual(result["failed_predicate"], "BINDING_IS_COMMITTED_WITH_THE_RECEIPTS_IT_BINDS")
+
+
+class ThroughTheBoundary(Ledgers):
+    """Forgery probes run through the writer's CLI sequence, not the library API (lead 20:29Z (c)):
+    precheck -> ingress -> bind -> seal -> verify (local) -> readback + verify (fresh fetch)."""
+
+    REF = OnTheGitLedgerRef.REF
+    use_directories = OnTheGitLedgerRef.use_directories
+    tip = OnTheGitLedgerRef.tip
+
+    def run_cli(self, script, *args, env=None):
+        completed = subprocess.run([sys.executable, str(ROOT / script), *args], capture_output=True, text=True,
+                                   env={**os.environ, **(env or {})})
+        self.assertNotIn("Traceback", completed.stderr, completed.stderr)
+        return completed.returncode, completed
+
+    def results(self, name, document):
+        path = self.work / name
+        path.write_text(json.dumps(document))
+        return path
+
+    def step(self, action, request_path, ingress_path=None, published=""):
+        out = self.work / (action + ".json")
+        args = [action, "--request-result", str(request_path), "--out", str(out)]
+        if ingress_path is not None:
+            args += ["--ingress-result", str(ingress_path)]
+        if action == "seal":
+            args += ["--published-tip", published]
+        code, _ = self.run_cli("resident-runtime/committed_request_binding.py", *args)
+        return code, json.loads(out.read_text())
+
+    def ingress(self, packet="packet-1"):
+        out = self.work / "ingress.json"
+        code, completed = self.run_cli(
+            "resident-runtime/intr_destination_ingress.py", "--self-closure",
+            "--registry", str(ROOT / "org-boundary/registry/services.json"), "--out", str(out),
+            env={"STEGVERSE_COMMUNICATION_ID": "comm-1", "STEGVERSE_PACKET_ID": packet, "STEGVERSE_HB_EPOCH": "33"})
+        self.assertEqual(code, 0, completed.stdout)
+        return out
+
+    def fresh(self):
+        fresh = self.work / "fresh.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(fresh)], check=True)
+        subprocess.run(["git", "--git-dir", str(fresh), "fetch", "-q", str(self.repository),
+                        "+" + self.REF + ":" + self.REF], check=True)
+        location = "git+" + str(fresh) + "#" + self.REF
+        return location, {"STEGVERSE_ORG_LEDGER_ROOT": location,
+                          "STEGVERSE_REPO_LEDGER_ROOT": location + ":" + NAMESPACE}
+
+    def request_file(self, pair):
+        return self.results("request.json", {"disposition": "ALLOW", "request_path": pair["path"],
+                                             "request_sha256": pair["sha256"], "hb_epoch": 33})
+
+    def genuine_run(self):
+        request = self.request_file(REQUEST)
+        self.assertEqual(self.step("precheck", request)[0], 0)
+        ingress = self.ingress()
+        for action in ("bind", "seal", "verify"):
+            code, result = self.step(action, request, ingress)
+            self.assertEqual(code, 0, (action, result))
+        return request, ingress
+
+    def test_a_forged_request_digest_stops_at_precheck_and_nothing_reaches_the_ledger(self):
+        forged = {**REQUEST, "sha256": "sha256:" + hashlib.sha256(b"forged").hexdigest()}
+        code, result = self.step("precheck", self.request_file(forged))
+        self.assertEqual(code, 1)
+        self.assert_refused(result, "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertIsNone(self.tip())  # the writer's step fails here: no append, bind, seal or publish
+
+    def test_a_committed_request_injected_into_the_ingress_result_is_never_bound(self):
+        request = self.request_file(REQUEST)
+        self.assertEqual(self.step("precheck", request)[0], 0)
+        ingress = json.loads(self.ingress().read_text())
+        tip = self.tip()
+        injected = self.results("ingress-injected.json", {**ingress, "committed_request": REQ_D})
+        code, result = self.step("bind", request, injected)
+        self.assertEqual(code, 1)
+        self.assert_refused(result, "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON")
+        self.assertEqual(self.tip(), tip)  # nothing bound
+        self.assertEqual(self.step("verify", request, injected)[0], 1)
+
+    def test_a_forged_binding_on_the_ledger_fails_the_fresh_fetch_verify(self):
+        request, ingress = self.genuine_run()
+        # plant a rehashed binding for a forged request on top of the genuine one, as if pushed by someone else
+        org = binding.stores()["organization"]
+        (genuine_digest, genuine), = list(binding.chain(org))
+        forged_pair = {**REQUEST, "sha256": "sha256:" + hashlib.sha256(b"forged").hexdigest()}
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        body.update(committed_request={**forged_pair, "hb_epoch_source": "COMMITTED_REQUEST"},
+                    previous_binding_sha256=genuine_digest)
+        forged = {**body, "receipt_sha256": binding.sha(body)}
+        binding._put(org, binding.PREFIX + forged["receipt_sha256"][7:] + ".json", forged)
+        binding._put(org, binding.HEAD, {"schema": binding.HEAD_SCHEMA, "receipt_sha256": forged["receipt_sha256"]})
+        location, fresh_env = self.fresh()
+        for pair, code_expected in ((forged_pair, "COMMITTED_REQUEST_DIGEST_UNVERIFIED"),
+                                    (REQUEST, "COMMITTED_REQUEST_BINDING_ABSENT")):
+            out = self.work / "fresh-verify.json"
+            code, _ = self.run_cli("resident-runtime/committed_request_binding.py", "verify",
+                                   "--request-result", str(self.request_file(pair)),
+                                   "--ingress-result", str(ingress), "--out", str(out), env=fresh_env)
+            self.assertEqual(code, 1)
+            self.assert_refused(json.loads(out.read_text()), code_expected)
+
+    def test_a_forged_receipt_carrying_another_request_on_the_ledger_is_refused_through_the_boundary(self):
+        request, ingress = self.genuine_run()
+        repo = binding.stores()["repository"]
+        closure = json.loads(ingress.read_text())
+        genuine = repo.get(binding.ledger_store.receipt_key(closure["repository_receipt_sha256"]))
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        body["evidence"] = {**body["evidence"], "committed_request": {**REQ_D, "hb_epoch_source": "COMMITTED_REQUEST"}}
+        body["previous_receipt_sha256"] = genuine["receipt_sha256"]
+        forged = {**body, "receipt_sha256": binding.sha(body)}
+        repo.put(binding.ledger_store.receipt_key(forged["receipt_sha256"]), forged)
+        repo.put(binding.ORG_HEAD, {**repo.get(binding.ORG_HEAD), "receipt_sha256": forged["receipt_sha256"]})
+        forged_ingress = self.results("ingress-forged.json",
+                                      {**closure, "repository_receipt_sha256": forged["receipt_sha256"]})
+        for action in ("bind", "verify"):
+            code, result = self.step(action, request, forged_ingress)
+            self.assertEqual(code, 1, action)
+            self.assertIn(result["failure_code"], ("COMMITTED_REQUEST_DIGEST_UNVERIFIED",
+                                                   "COMMITTED_REQUEST_BINDING_ABSENT"), result)
+            if action == "bind":
+                self.assertEqual(result["failure_code"], "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+
+    def test_the_genuine_sequence_passes_the_fresh_fetch_readback_and_verify(self):
+        request, ingress = self.genuine_run()
+        location, fresh_env = self.fresh()
+        readback_out = self.work / "readback.json"
+        code, completed = self.run_cli("resident-runtime/organization_ledger_readback.py", "--location", location,
+                                       "--repository-namespace", NAMESPACE, "--ingress-result", str(ingress),
+                                       "--out", str(readback_out))
+        self.assertEqual(code, 0, completed.stdout)
+        out = self.work / "fresh-verify.json"
+        code, _ = self.run_cli("resident-runtime/committed_request_binding.py", "verify",
+                               "--request-result", str(request), "--ingress-result", str(ingress),
+                               "--out", str(out), env=fresh_env)
+        self.assertEqual((code, json.loads(out.read_text())["disposition"]), (0, "ALLOW"))
 
 
 if __name__ == "__main__":

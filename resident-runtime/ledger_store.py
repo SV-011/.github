@@ -30,59 +30,6 @@ SOURCE_PREFIX = "source-receipts/"
 GIT_SCHEME = "git+"
 
 
-COMMITTED_REQUEST_KEY = "committed_request"
-COMMITTED_REQUEST_GOAL = "SVORG-LLM-ORG-FOUNDATION-001"
-
-
-class CommittedRequestRefused(ValueError):
-    """A six-field, terminal refusal raised before any write (V-P11 rows 3-5)."""
-
-    def __init__(self, failure_code: str, failed_predicate: str, detail: str, repair: str,
-                 retry_entrypoint: str) -> None:
-        super().__init__(failure_code + ": " + detail)
-        self.failure_code = failure_code
-        self.refusal = {
-            "disposition": "FAIL_CLOSED",
-            "failure_code": failure_code,
-            "failed_predicate": failed_predicate,
-            "required_evidence_or_repair": repair,
-            "retry_entrypoint": retry_entrypoint,
-            "owning_existing_goal": COMMITTED_REQUEST_GOAL,
-            "next_attempt": "none for this input: nothing was written; supply evidence without it",
-            "terminal": True,
-            "detail": detail,
-            "production_receipt_claimed": False,
-        }
-
-
-def committed_request_path(value: Any) -> str | None:
-    """The JSON path of a committed_request key at any depth of ``value``, read without recursion."""
-    stack = [("$", value)]
-    while stack:
-        where, node = stack.pop()
-        if isinstance(node, dict) or hasattr(node, "items"):
-            for key, child in node.items():
-                if key == COMMITTED_REQUEST_KEY:
-                    return where + "." + str(key)
-                stack.append((where + "." + str(key), child))
-        elif isinstance(node, (list, tuple)):
-            stack.extend((where + "[" + str(index) + "]", child) for index, child in enumerate(node))
-    return None
-
-
-def refuse_injected_committed_request(retry_entrypoint: str, **documents: Any) -> None:
-    """FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON when any document carries committed_request."""
-    for name, document in documents.items():
-        found = committed_request_path(document)
-        if found is not None:
-            raise CommittedRequestRefused(
-                "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON", "EVIDENCE_CARRIES_NO_COMMITTED_REQUEST",
-                name + " " + found,
-                "evidence without a committed_request key; a committed request is bound only by "
-                "resident-runtime/committed_request_binding.py from the verified request file",
-                retry_entrypoint)
-
-
 def _document_bytes(value: Any) -> bytes:
     """One serialization for every store, so a document reads back the same."""
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
