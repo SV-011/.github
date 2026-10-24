@@ -255,7 +255,8 @@ class ForgeryProbe(Ledgers):
 
     def test_no_source_means_no_binding(self):
         os.environ.pop(binding.SOURCE_VARIABLE)
-        self.assert_refused(binding.bind(REQUEST, self.closure(), 33), "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        result = binding.bind(REQUEST, self.closure(), 33)
+        self.assertEqual((result["failure_code"], result["terminal"]), ("LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY", False))
         self.assertEqual(self.files(binding.SCHEMA), [])
 
 
@@ -340,6 +341,41 @@ class ValidatorRows(Ledgers):
         self.assert_refused(result, "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
         self.assertEqual(result["failed_predicate"], "BOUND_RECEIPT_CARRIES_THIS_RUNS_REQUEST_DIGEST")
         self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_row2_an_unset_ledger_environment_is_a_non_terminal_retry_with_exit_75(self):
+        closure = self.closure()
+        for variable in ("STEGVERSE_ORG_LEDGER_ROOT", "STEGVERSE_REPO_LEDGER_ROOT", binding.SOURCE_VARIABLE):
+            for action, ingress_doc in (("precheck", None), ("bind", closure), ("seal", closure), ("verify", closure)):
+                env = {k: v for k, v in os.environ.items() if k != variable}
+                args = [sys.executable, str(self.MODULE), action, "--request-result",
+                        str(self.work / "r.json"), "--out", str(self.work / "o.json")]
+                (self.work / "r.json").write_text(json.dumps(self.request_doc()))
+                if ingress_doc is not None:
+                    (self.work / "i.json").write_text(json.dumps(ingress_doc))
+                    args += ["--ingress-result", str(self.work / "i.json")]
+                completed = subprocess.run(args, capture_output=True, text=True, env=env)
+                result = json.loads(completed.stdout)
+                if variable != binding.SOURCE_VARIABLE and action == "precheck":
+                    self.assertEqual(completed.returncode, 0)  # precheck reads no ledger
+                    continue
+                if variable == "STEGVERSE_REPO_LEDGER_ROOT" and action == "seal":
+                    continue  # seal folds the organization ref only
+                if variable == binding.SOURCE_VARIABLE and action == "seal":
+                    continue  # seal reads no request
+                self.assertEqual(completed.returncode, 75, (variable, action, result))
+                self.assertEqual(result["failure_code"], "LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY")
+                self.assertIs(result["terminal"], False)
+                self.assertNotIn("Traceback", completed.stderr)
+        env = {k: v for k, v in os.environ.items() if k != "STEGVERSE_ORG_LEDGER_ROOT"}
+        out = self.work / "tr.json"
+        completed = subprocess.run([sys.executable, str(ROOT / "resident-runtime/transition_request.py"),
+                                    "--before", "0" * 40, "--after", "1" * 40, "--out", str(out)],
+                                   capture_output=True, text=True, env=env)
+        self.assertEqual(completed.returncode, 75, completed.stdout + completed.stderr)
+        result = json.loads(out.read_text())
+        self.assertEqual((result["failure_code"], result["terminal"]), ("LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY", False))
+        for field in SIX_FIELDS:
+            self.assertTrue(result.get(field), field)
 
     def test_row3_git_unavailable_is_a_non_terminal_retry_with_exit_75(self):
         closure = self.closure()

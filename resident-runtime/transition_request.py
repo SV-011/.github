@@ -52,6 +52,7 @@ FIELD_NOT_SUPPLIED = "TRANSITION_REQUEST_FIELD_NOT_SUPPLIED"
 REQUEST_INVALID = "TRANSITION_REQUEST_INVALID"
 REVISION_UNREADABLE = "TRANSITION_REQUEST_REVISION_UNREADABLE"
 GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
+ENVIRONMENT_UNAVAILABLE = "LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY"
 EXIT_TEMPFAIL = 75
 MAX_BYTES = 65536
 MAX_DEPTH = 8
@@ -244,18 +245,31 @@ def main() -> int:
     try:
         if shutil.which("git") is None:
             raise FileNotFoundError("git is not on PATH")
-        result = select(args.before, args.after, ledger_head_epoch())
+        try:
+            head_epoch = ledger_head_epoch()
+        except ValueError as exc:  # STEGVERSE_ORG_LEDGER_ROOT unset or not a locator
+            raise EnvironmentUnavailable(str(exc)) from None
+        result = select(args.before, args.after, head_epoch)
+    except EnvironmentUnavailable as exc:
+        result = {**git_unavailable(exc), "failure_code": ENVIRONMENT_UNAVAILABLE,
+                  "failed_predicate": "LEDGER_LOCATION_SUPPLIED_TO_THE_WRITER",
+                  "required_evidence_or_repair": "STEGVERSE_ORG_LEDGER_ROOT and STEGVERSE_REPO_LEDGER_ROOT set "
+                                                 "to the designated ledger locators"}
     except OSError as exc:
         result = git_unavailable(exc)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
-    if result.get("failure_code") == GIT_UNAVAILABLE:
+    if result.get("failure_code") in (GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE):
         return EXIT_TEMPFAIL
     return 0 if result["disposition"] in (ALLOW, NO_REQUEST) else 1
 
 
-def git_unavailable(exc: OSError) -> dict[str, Any]:
+class EnvironmentUnavailable(Exception):
+    pass
+
+
+def git_unavailable(exc: Exception) -> dict[str, Any]:
     return {**refusal(INVALID, GIT_UNAVAILABLE, "GIT_IS_RUNNABLE", "git on PATH for the writer run",
                       type(exc).__name__ + ": " + str(exc)),
             "disposition": "FAIL_CLOSED", "terminal": False,

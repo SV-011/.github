@@ -98,9 +98,10 @@ BINDING_ABSENT = "COMMITTED_REQUEST_BINDING_ABSENT"
 CHAIN_INVALID = "COMMITTED_REQUEST_BINDING_CHAIN_INVALID"
 WRITE_FAULT = "UNDETERMINED_RETRY_IS_IDEMPOTENT"
 GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
+ENVIRONMENT_UNAVAILABLE = "LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY"
 FORGED_FROM_EVIDENCE = "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON"
 EXIT_TEMPFAIL = 75
-NON_TERMINAL = (WRITE_FAULT, GIT_UNAVAILABLE)
+NON_TERMINAL = (WRITE_FAULT, GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE)
 #: OSError, LedgerWriteFault (a RuntimeError), ledger_receipt_collision (a ValueError)
 WRITE_FAULTS = (OSError, RuntimeError, ValueError)
 ORG_HEAD = "HEAD.json"
@@ -133,6 +134,8 @@ def refusal(exc: Refused) -> dict[str, Any]:
                        "in the same ledger commit as the receipts it binds",
         WRITE_FAULT: "none: re-run the same writer; the binding completes exactly once",
         GIT_UNAVAILABLE: "git on PATH for the writer run",
+        ENVIRONMENT_UNAVAILABLE: "STEGVERSE_ORG_LEDGER_ROOT, STEGVERSE_REPO_LEDGER_ROOT and "
+                                 "STEGVERSE_COMMITTED_REQUEST_SOURCE set for the writer run",
         FORGED_FROM_EVIDENCE: "run results without any committed_request key; the binding builds it from the "
                               "verified request path and digest",
     }[exc.failure_code]
@@ -194,6 +197,8 @@ def verified_request(binding: Mapping[str, Any]) -> None:
     """The binding's sha256 is the sha256 of the request file committed at its path in the pushed revision."""
     source = os.environ.get(SOURCE_VARIABLE, "")
     repository, separator, revision = source.rpartition("#")
+    if not source:
+        raise Refused(ENVIRONMENT_UNAVAILABLE, "COMMITTED_REQUEST_SOURCE_SUPPLIED", SOURCE_VARIABLE + " is not set")
     if not separator or not repository or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_SOURCE_SUPPLIED", SOURCE_VARIABLE + "=" + repr(source))
     path = binding["path"]
@@ -274,11 +279,11 @@ def stores() -> dict[str, Any]:
     for level, variable, _ in LEVELS:
         configured = os.environ.get(variable)
         if not configured:
-            raise Refused(RECEIPT_UNREADABLE, "BOUND_LEDGER_LOCATION_SUPPLIED", variable + " is not set")
+            raise Refused(ENVIRONMENT_UNAVAILABLE, "BOUND_LEDGER_LOCATION_SUPPLIED", variable + " is not set")
         try:
             opened[level] = ledger_store.open_store(ledger_store.parse_locator(configured))
         except ValueError as exc:
-            raise Refused(RECEIPT_UNREADABLE, "BOUND_LEDGER_LOCATION_IS_VALID", str(exc)) from None
+            raise Refused(ENVIRONMENT_UNAVAILABLE, "BOUND_LEDGER_LOCATION_IS_VALID", str(exc)) from None
     return opened
 
 
@@ -502,6 +507,8 @@ def seal(published_tip: str | None, message: str) -> dict[str, Any]:
 
 
 def _seal(published_tip: str | None, message: str) -> dict[str, Any]:
+    if not os.environ.get("STEGVERSE_ORG_LEDGER_ROOT"):
+        return refusal(Refused(ENVIRONMENT_UNAVAILABLE, "LEDGER_LOCATION_SUPPLIED", "STEGVERSE_ORG_LEDGER_ROOT is not set"))
     store = ledger_store.open_store(ledger_store.parse_locator(os.environ.get("STEGVERSE_ORG_LEDGER_ROOT", "")))
     if not hasattr(store, "_git"):
         return refusal(Refused(CHAIN_INVALID, "SEAL_NEEDS_A_GIT_LEDGER_REF", str(store.locator(ORG_HEAD))))
@@ -542,7 +549,7 @@ def main() -> int:
     print(json.dumps(result, sort_keys=True, allow_nan=False))
     if result.get("disposition") == "ALLOW":
         return 0
-    return EXIT_TEMPFAIL if result.get("failure_code") == GIT_UNAVAILABLE else 1
+    return EXIT_TEMPFAIL if result.get("failure_code") in (GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE) else 1
 
 
 def _read_json(path: Path) -> Any:
