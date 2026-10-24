@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -258,6 +259,108 @@ class ForgeryProbe(Ledgers):
         self.assertEqual(self.files(binding.SCHEMA), [])
 
 
+class ValidatorRows(Ledgers):
+    """V-P11 rows 5-7 (forgery probes) and row 3 (git unavailable), in this lane's code."""
+
+    MODULE = ROOT / "resident-runtime/committed_request_binding.py"
+
+    def cli(self, action, request_doc, ingress_doc=None, env=None, extra=()):
+        request_path = self.work / ("request-" + action + ".json")
+        request_path.write_text(json.dumps(request_doc))
+        args = [sys.executable, str(self.MODULE), action, "--request-result", str(request_path),
+                "--out", str(self.work / ("out-" + action + ".json")), *extra]
+        if ingress_doc is not None:
+            ingress_path = self.work / ("ingress-" + action + ".json")
+            ingress_path.write_text(json.dumps(ingress_doc))
+            args += ["--ingress-result", str(ingress_path)]
+        completed = subprocess.run(args, capture_output=True, text=True, env={**os.environ, **(env or {})})
+        return completed.returncode, json.loads(completed.stdout)
+
+    def request_doc(self, pair=REQUEST, **extra):
+        return {"disposition": "ALLOW", "request_path": pair["path"], "request_sha256": pair["sha256"],
+                "hb_epoch": 33, **extra}
+
+    def test_row5_committed_request_injected_into_evidence_json_at_any_depth_is_refused(self):
+        closure = self.closure()
+        forged = {"path": REQUEST["path"], "sha256": "sha256:" + "9" * 64}
+        for request_doc, ingress_doc in (
+                (self.request_doc(committed_request=forged), closure),
+                (self.request_doc(), {**closure, "committed_request": forged}),
+                (self.request_doc(), {**closure, "nested": [{"deeper": {"committed_request": forged}}]})):
+            for action in ("bind", "verify"):
+                code, result = self.cli(action, request_doc, ingress_doc)
+                self.assertEqual(code, 1)
+                self.assert_refused(result, "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON")
+        code, result = self.cli("precheck", self.request_doc(committed_request=forged))
+        self.assert_refused(result, "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_row6_the_request_is_refused_before_any_write_and_before_publish(self):
+        forged = {**REQUEST, "sha256": "sha256:" + hashlib.sha256(b"forged").hexdigest()}
+        code, result = self.cli("precheck", self.request_doc(forged))
+        self.assertEqual(code, 1)
+        self.assert_refused(result, "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertEqual(self.cli("precheck", self.request_doc())[1]["disposition"], "ALLOW")
+        writer = (ROOT / ".github/workflows/organization-ledger-transition-writer.yml").read_text()
+        order = [writer.index(marker) for marker in (
+            "committed_request_binding.py precheck",       # before the ingress append writes anything
+            "intr_destination_ingress.py --self-closure",
+            "committed_request_binding.py bind",
+            "committed_request_binding.py seal",
+            "--out \"$RUNNER_TEMP/results/binding-verify-local.json\"",  # verify on the local ref
+            "- name: Publish the ledger ref (fast-forward only)",     # then publish
+        )]
+        self.assertEqual(order, sorted(order))
+
+    def test_row7_an_off_ledger_receipt_is_never_bound(self):
+        closure = self.closure()
+        repo_store = binding.stores()["repository"]
+        (_, genuine), = self.files("stegverse.repo-transition-receipt/v1")
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        body["evidence"] = {**body["evidence"], "communication_id": "comm-off-ledger"}
+        off = {**body, "receipt_sha256": binding.sha(body)}  # rehashed: it seals, but no HEAD reaches it
+        binding._put(repo_store, binding.ledger_store.receipt_key(off["receipt_sha256"]), off)
+        result = binding.bind(REQUEST, {**closure, "repository_receipt_sha256": off["receipt_sha256"]}, 33)
+        self.assert_refused(result, "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertEqual(result["failed_predicate"], "BOUND_RECEIPT_IS_ON_THE_LEDGER_REACHABLE_FROM_HEAD")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_row7_a_bound_receipt_carrying_another_request_digest_is_never_bound(self):
+        closure = self.closure()
+        repo_store = binding.stores()["repository"]
+        (_, genuine), = self.files("stegverse.repo-transition-receipt/v1")
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        body["evidence"] = {**body["evidence"], "committed_request": {**REQ_D, "hb_epoch_source": "COMMITTED_REQUEST"}}
+        body["previous_receipt_sha256"] = genuine["receipt_sha256"]
+        forged = {**body, "receipt_sha256": binding.sha(body)}
+        binding._put(repo_store, binding.ledger_store.receipt_key(forged["receipt_sha256"]), forged)
+        head = repo_store.get(binding.ORG_HEAD)
+        binding._put(repo_store, binding.ORG_HEAD, {**head, "receipt_sha256": forged["receipt_sha256"]})
+        result = binding.bind(REQUEST, {**closure, "repository_receipt_sha256": forged["receipt_sha256"]}, 33)
+        self.assert_refused(result, "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertEqual(result["failed_predicate"], "BOUND_RECEIPT_CARRIES_THIS_RUNS_REQUEST_DIGEST")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_row3_git_unavailable_is_a_non_terminal_retry_with_exit_75(self):
+        closure = self.closure()
+        scrubbed = {"PATH": str(self.work / "no-bin")}
+        for action, ingress_doc in (("precheck", None), ("bind", closure), ("seal", closure), ("verify", closure)):
+            code, result = self.cli(action, self.request_doc(), ingress_doc, env=scrubbed)
+            self.assertEqual(code, 75, (action, result))
+            self.assertEqual(result["failure_code"], "GIT_UNAVAILABLE_RETRY")
+            self.assertIs(result["terminal"], False)
+            for field in SIX_FIELDS:
+                self.assertTrue(result.get(field), field)
+        out = self.work / "tr.json"
+        completed = subprocess.run([sys.executable, str(ROOT / "resident-runtime/transition_request.py"),
+                                    "--before", "0" * 40, "--after", "1" * 40, "--out", str(out)],
+                                   capture_output=True, text=True, env={**os.environ, **scrubbed})
+        self.assertEqual(completed.returncode, 75, completed.stderr)
+        result = json.loads(out.read_text())
+        self.assertEqual((result["failure_code"], result["terminal"]), ("GIT_UNAVAILABLE_RETRY", False))
+        self.assertNotIn("Traceback", completed.stderr)
+
+
 class WriteFaultsAndTornReads(Ledgers):
     """F-WRITER-TRACE: a write fault is a non-terminal retry that completes exactly once; a torn read is refused."""
 
@@ -447,6 +550,30 @@ class OnTheGitLedgerRef(Ledgers):
         self.assertEqual(binding.seal(published, "ledger: committed request")["disposition"], "ALLOW")
         self.assertEqual(self.git("rev-list", "--count", self.REF), "1")
         self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
+
+    def test_row1_an_identical_replay_is_an_allow_no_op_end_to_end(self):
+        module = ROOT / "resident-runtime/committed_request_binding.py"
+        request_path, ingress_path = self.work / "request.json", self.work / "ingress.json"
+        request_path.write_text(json.dumps({"disposition": "ALLOW", "request_path": REQUEST["path"],
+                                            "request_sha256": REQUEST["sha256"], "hb_epoch": 33}))
+        tips = []
+        for _ in range(2):
+            published = self.tip()
+            ingress_path.write_text(json.dumps(self.closure()))  # the second closure is the ingress replay
+            for action in ("precheck", "bind", "seal", "verify"):
+                completed = subprocess.run(
+                    [sys.executable, str(module), action, "--published-tip", published or "",
+                     "--request-result", str(request_path), "--ingress-result", str(ingress_path),
+                     "--out", str(self.work / (action + ".json"))], capture_output=True, text=True)
+                self.assertEqual(completed.returncode, 0, (action, completed.stdout, completed.stderr))
+            tips.append(self.tip())
+            result = readback.readback(self.location, json.loads(ingress_path.read_text()), NAMESPACE)
+            self.assertEqual(result["disposition"], "ALLOW")
+        self.assertEqual(tips[0], tips[1])  # the replay wrote and sealed nothing
+        self.assertEqual(json.loads((self.work / "bind.json").read_text())["replayed"], True)
+        self.assertIs(json.loads((self.work / "seal.json").read_text())["nothing_to_seal"], True)
+        verified = json.loads((self.work / "verify.json").read_text())
+        self.assertEqual((verified["disposition"], verified["bindings_chain_length"]), ("ALLOW", 1))
 
     def test_an_unsealed_binding_is_not_in_the_same_commit_as_its_receipts(self):
         closure = self.closure()

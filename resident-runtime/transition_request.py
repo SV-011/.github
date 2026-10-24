@@ -23,7 +23,8 @@ refusal; nothing is written either way:
   INVALID TRANSITION_REQUEST_REVISION_UNREADABLE: --before or --after is not in
     the clone, or the request file cannot be read at --after.
 
-Every refusal is terminal for the pushed request.
+Every refusal is terminal for the pushed request, except GIT_UNAVAILABLE_RETRY
+(git cannot be run): six fields, NOT terminal, exit 75.
 
 An accepted request carries ``request_sha256`` (sha256 of the committed bytes),
 recorded in the writer run's request.json evidence and step summary. Stdlib only.
@@ -34,6 +35,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -49,6 +51,8 @@ ALLOW, NOT_SUPPLIED, INVALID = "ALLOW", "NOT_SUPPLIED", "INVALID"
 FIELD_NOT_SUPPLIED = "TRANSITION_REQUEST_FIELD_NOT_SUPPLIED"
 REQUEST_INVALID = "TRANSITION_REQUEST_INVALID"
 REVISION_UNREADABLE = "TRANSITION_REQUEST_REVISION_UNREADABLE"
+GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
+EXIT_TEMPFAIL = 75
 MAX_BYTES = 65536
 MAX_DEPTH = 8
 NO_REQUEST = "NO_REQUEST"
@@ -237,11 +241,25 @@ def main() -> int:
     parser.add_argument("--after", required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    result = select(args.before, args.after, ledger_head_epoch())
+    try:
+        if shutil.which("git") is None:
+            raise FileNotFoundError("git is not on PATH")
+        result = select(args.before, args.after, ledger_head_epoch())
+    except OSError as exc:
+        result = git_unavailable(exc)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
+    if result.get("failure_code") == GIT_UNAVAILABLE:
+        return EXIT_TEMPFAIL
     return 0 if result["disposition"] in (ALLOW, NO_REQUEST) else 1
+
+
+def git_unavailable(exc: OSError) -> dict[str, Any]:
+    return {**refusal(INVALID, GIT_UNAVAILABLE, "GIT_IS_RUNNABLE", "git on PATH for the writer run",
+                      type(exc).__name__ + ": " + str(exc)),
+            "disposition": "FAIL_CLOSED", "terminal": False,
+            "next_attempt": "re-run the same push once git is available; nothing was read or written"}
 
 
 if __name__ == "__main__":

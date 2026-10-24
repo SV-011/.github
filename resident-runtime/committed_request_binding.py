@@ -27,6 +27,14 @@ written:
     pushed revision (STEGVERSE_COMMITTED_REQUEST_SOURCE=<repository>#<revision>),
     or that file cannot be read there. A forged or rehashed committed_request is
     never bound and never verified; nothing is written.
+  FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON (every action): a caller-supplied
+    run result (request.json, ingress.json) carries a committed_request key at
+    any depth; the binding's committed_request is only ever built from the
+    request path and digest and verified against the committed file.
+  COMMITTED_REQUEST_DIGEST_UNVERIFIED also covers a bound receipt that is not on
+    its ledger chain reachable from HEAD (an off-ledger receipt), or that carries
+    a committed_request other than this run's.
+  GIT_UNAVAILABLE_RETRY (NOT terminal, exit 75): git cannot be run.
   COMMITTED_REQUEST_REPLAY_MISMATCH: these receipts (a replayed packet) are
     already bound to a committed request with a different path or digest.
   COMMITTED_REQUEST_BINDING_ABSENT (verify): the closure's receipts have no
@@ -65,6 +73,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -88,6 +97,10 @@ REPLAY_MISMATCH = "COMMITTED_REQUEST_REPLAY_MISMATCH"
 BINDING_ABSENT = "COMMITTED_REQUEST_BINDING_ABSENT"
 CHAIN_INVALID = "COMMITTED_REQUEST_BINDING_CHAIN_INVALID"
 WRITE_FAULT = "UNDETERMINED_RETRY_IS_IDEMPOTENT"
+GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
+FORGED_FROM_EVIDENCE = "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON"
+EXIT_TEMPFAIL = 75
+NON_TERMINAL = (WRITE_FAULT, GIT_UNAVAILABLE)
 #: OSError, LedgerWriteFault (a RuntimeError), ledger_receipt_collision (a ValueError)
 WRITE_FAULTS = (OSError, RuntimeError, ValueError)
 ORG_HEAD = "HEAD.json"
@@ -119,11 +132,14 @@ def refusal(exc: Refused) -> dict[str, Any]:
         CHAIN_INVALID: "every binding verifies against its body, links to its predecessor and is committed "
                        "in the same ledger commit as the receipts it binds",
         WRITE_FAULT: "none: re-run the same writer; the binding completes exactly once",
+        GIT_UNAVAILABLE: "git on PATH for the writer run",
+        FORGED_FROM_EVIDENCE: "run results without any committed_request key; the binding builds it from the "
+                              "verified request path and digest",
     }[exc.failure_code]
-    if exc.failure_code == WRITE_FAULT:
+    if exc.failure_code in NON_TERMINAL:
         return {
             "disposition": "FAIL_CLOSED",
-            "failure_code": WRITE_FAULT,
+            "failure_code": exc.failure_code,
             "failed_predicate": exc.failed_predicate,
             "required_evidence_or_repair": repair,
             "retry_entrypoint": ENTRYPOINT + " (re-run the same push)",
@@ -186,6 +202,8 @@ def verified_request(binding: Mapping[str, Any]) -> None:
     try:
         committed = subprocess.run(["git", "-C", repository, "show", revision + ":" + path],
                                    check=True, capture_output=True).stdout
+    except FileNotFoundError as exc:
+        raise Refused(GIT_UNAVAILABLE, "GIT_IS_RUNNABLE", str(exc)) from None
     except (OSError, subprocess.CalledProcessError) as exc:
         raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_IS_READABLE_AT_THE_REVISION",
                       path + "@" + revision + ": " + str(exc)) from None
@@ -193,6 +211,62 @@ def verified_request(binding: Mapping[str, Any]) -> None:
     if actual != binding["sha256"]:
         raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_DIGEST_IS_THE_COMMITTED_FILE",
                       path + "@" + revision + " is " + actual + ", not " + binding["sha256"])
+
+
+def carries_committed_request(value: Any) -> str | None:
+    """The JSON path of a committed_request key at any depth, read without recursion."""
+    stack = [("$", value)]
+    while stack:
+        where, node = stack.pop()
+        if isinstance(node, Mapping):
+            for key, child in node.items():
+                if key == "committed_request":
+                    return where + "." + str(key)
+                stack.append((where + "." + str(key), child))
+        elif isinstance(node, list):
+            stack.extend((where + "[" + str(index) + "]", child) for index, child in enumerate(node))
+    return None
+
+
+def no_injected_request(**documents: Any) -> None:
+    for name, document in documents.items():
+        found = carries_committed_request(document)
+        if found is not None:
+            raise Refused(FORGED_FROM_EVIDENCE, "RUN_RESULTS_CARRY_NO_COMMITTED_REQUEST", name + " " + found)
+
+
+def _chain_digests(store: Any, level: str) -> set[str]:
+    """Receipt digests reachable from this ledger's HEAD through previous_receipt_sha256."""
+    head = _get(store, ORG_HEAD)
+    cursor = head.get("receipt_sha256") if isinstance(head, Mapping) else None
+    digests: set[str] = set()
+    while isinstance(cursor, str) and cursor not in digests:
+        digests.add(cursor)
+        receipt = _get(store, ledger_store.receipt_key(cursor))
+        if not isinstance(receipt, Mapping):
+            break
+        cursor = receipt.get("previous_receipt_sha256")
+    return digests
+
+
+def on_ledger(store: Any, level: str, digest: str, binding: Mapping[str, Any]) -> None:
+    """A bound receipt is on its ledger chain from HEAD and carries no other committed_request."""
+    if digest not in _chain_digests(store, level):
+        raise Refused(DIGEST_UNVERIFIED, "BOUND_RECEIPT_IS_ON_THE_LEDGER_REACHABLE_FROM_HEAD", level + " " + digest)
+    receipt = _get(store, ledger_store.receipt_key(digest))
+    stack = [receipt]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Mapping):
+            carried = node.get("committed_request")
+            if carried is not None and (not isinstance(carried, Mapping)
+                                        or {k: carried.get(k) for k in ("path", "sha256")}
+                                        != {k: binding[k] for k in ("path", "sha256")}):
+                raise Refused(DIGEST_UNVERIFIED, "BOUND_RECEIPT_CARRIES_THIS_RUNS_REQUEST_DIGEST",
+                              level + " " + digest + " carries " + json.dumps(carried, sort_keys=True)[:200])
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def stores() -> dict[str, Any]:
@@ -259,6 +333,8 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
             raise Refused(REQUEST_INVALID, "HB_EPOCH_IS_A_SUPPLIED_INT_AT_LEAST_32", repr(hb_epoch))
         opened = stores()
         bound = [bound_receipt(opened[level], level, ingress_result.get(field)) for level, _, field in LEVELS]
+        for entry in bound:
+            on_ledger(opened[entry["level"]], entry["level"], entry["receipt_sha256"], binding)
     except Refused as exc:
         return refusal(exc)
     target = opened["organization"]
@@ -398,6 +474,7 @@ def verify(request: Mapping[str, Any], ingress_result: Mapping[str, Any]) -> dic
         for level, entry in recorded.items():
             if bound_receipt(opened[level], level, entry.get("receipt_sha256")) != entry:
                 raise Refused(RECEIPT_UNREADABLE, "BOUND_RECEIPT_HAS_THE_RECORDED_PARENT", level)
+            on_ledger(opened[level], level, entry["receipt_sha256"], binding)
         if expected["organization"] not in _org_chain(org, receipt.get("organization_head_sha256")):
             raise Refused(BINDING_ABSENT, "RECORDED_ORGANIZATION_HEAD_REACHES_THE_BOUND_RECEIPT",
                           str(receipt.get("organization_head_sha256")))
@@ -429,8 +506,12 @@ def _seal(published_tip: str | None, message: str) -> dict[str, Any]:
     if not hasattr(store, "_git"):
         return refusal(Refused(CHAIN_INVALID, "SEAL_NEEDS_A_GIT_LEDGER_REF", str(store.locator(ORG_HEAD))))
     tip = store._tip()
-    if tip is None or tip == published_tip:
-        return refusal(Refused(CHAIN_INVALID, "RUN_APPENDED_TO_THE_REF", "tip " + str(tip)))
+    if tip is not None and tip == published_tip:
+        # a replay appended nothing (the ingress and bind answered from the ledger): nothing to seal
+        return {"disposition": "ALLOW", "sealed_commit": None, "nothing_to_seal": True, "parent": published_tip,
+                "production_receipt_claimed": False}
+    if tip is None:
+        return refusal(Refused(CHAIN_INVALID, "RUN_APPENDED_TO_THE_REF", "the ledger ref does not exist"))
     if published_tip and store._git("merge-base", "--is-ancestor", published_tip, tip,
                                     check=False).returncode != 0:
         return refusal(Refused(CHAIN_INVALID, "PUBLISHED_TIP_IS_AN_ANCESTOR", published_tip))
@@ -448,19 +529,49 @@ def _seal(published_tip: str | None, message: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=("bind", "seal", "verify"))
+    parser.add_argument("action", choices=("precheck", "bind", "seal", "verify"))
     parser.add_argument("--published-tip", default="", help="seal: the ledger ref tip before this run")
     parser.add_argument("--request-result", type=Path, required=True, help="transition_request.py output")
-    parser.add_argument("--ingress-result", type=Path, required=True, help="intr_destination_ingress.py output")
+    parser.add_argument("--ingress-result", type=Path, default=None,
+                        help="intr_destination_ingress.py output (every action but precheck)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    result = run(args)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    print(json.dumps(result, sort_keys=True, allow_nan=False))
+    if result.get("disposition") == "ALLOW":
+        return 0
+    return EXIT_TEMPFAIL if result.get("failure_code") == GIT_UNAVAILABLE else 1
+
+
+def _read_json(path: Path) -> Any:
     try:
-        request = json.loads(args.request_result.read_text(encoding="utf-8"))
-        ingress_result = json.loads(args.ingress_result.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        result = refusal(Refused(RECEIPT_UNREADABLE, "RUN_RESULTS_ARE_READABLE", str(exc)))
-    else:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise Refused(RECEIPT_UNREADABLE, "RUN_RESULTS_ARE_READABLE", type(exc).__name__ + ": " + str(exc)) from None
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    if shutil.which("git") is None:
+        return refusal(Refused(GIT_UNAVAILABLE, "GIT_IS_ON_PATH", "git is not on PATH"))
+    try:
+        request = _read_json(args.request_result)
+        if args.action != "precheck" and args.ingress_result is None:
+            raise Refused(RECEIPT_UNREADABLE, "RUN_RESULTS_ARE_READABLE", "--ingress-result is required for "
+                          + args.action)
+        ingress_result = {} if args.action == "precheck" else _read_json(args.ingress_result)
+        no_injected_request(**{"request-result": request, "ingress-result": ingress_result})
+        if not isinstance(request, Mapping) or not isinstance(ingress_result, Mapping):
+            raise Refused(RECEIPT_UNREADABLE, "RUN_RESULTS_ARE_OBJECTS", "request or ingress result is not an object")
         pair = {"path": request.get("request_path"), "sha256": request.get("request_sha256")}
+        if args.action == "precheck":
+            verified_request(committed_request(pair["path"], pair["sha256"]))
+            return {"disposition": "ALLOW", "committed_request_verified": True, **pair,
+                    "production_receipt_claimed": False}
+    except Refused as exc:
+        return refusal(exc)
+    try:
         if args.action == "bind":
             result = bind(pair, ingress_result, request.get("hb_epoch"))
         elif args.action == "seal":
@@ -468,10 +579,9 @@ def main() -> int:
                           "ledger: committed request " + str(pair["path"]) + " " + str(pair["sha256"]))
         else:
             result = verify(pair, ingress_result)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps(result, sort_keys=True, allow_nan=False))
-    return 0 if result.get("disposition") == "ALLOW" else 1
+    except FileNotFoundError as exc:
+        return refusal(Refused(GIT_UNAVAILABLE, "GIT_IS_RUNNABLE", str(exc)))
+    return result
 
 
 if __name__ == "__main__":

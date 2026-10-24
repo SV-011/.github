@@ -100,6 +100,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify the committed request before any write
+        if: env.REQUEST_DISPOSITION == 'ALLOW'
+        run: |
+          set -euo pipefail
+          python3 resident-runtime/committed_request_binding.py precheck \
+            --request-result "$RUNNER_TEMP/results/request.json" \
+            --out "$RUNNER_TEMP/results/precheck.json"
+
       - name: Append the intr-destination diagnostic self-closure
         if: env.REQUEST_DISPOSITION == 'ALLOW'
         run: |
@@ -146,6 +154,11 @@ jobs:
             --request-result "$RUNNER_TEMP/results/request.json" \
             --ingress-result "$RUNNER_TEMP/results/ingress.json" \
             --out "$RUNNER_TEMP/results/seal.json"
+          # validate before publishing: a refusal here fails the job and the publish step never runs
+          python3 resident-runtime/committed_request_binding.py verify \
+            --request-result "$RUNNER_TEMP/results/request.json" \
+            --ingress-result "$RUNNER_TEMP/results/ingress.json" \
+            --out "$RUNNER_TEMP/results/binding-verify-local.json"
 
       - name: Publish the ledger ref (fast-forward only)
         if: env.REQUEST_DISPOSITION == 'ALLOW'

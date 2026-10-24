@@ -97,6 +97,7 @@ class WriterSplit(unittest.TestCase):
             "      - name: Checkout organization boundary",
             "      - name: Bind the designated organization ledger ref",
             "      - name: Read the committed request",
+            "      - name: Verify the committed request before any write",
             "      - name: Append the intr-destination diagnostic self-closure",
             "      - name: Bind the committed request to the closure's receipts",
             "      - name: Publish the ledger ref (fast-forward only)",
