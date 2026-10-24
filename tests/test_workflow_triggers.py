@@ -13,9 +13,7 @@ dispatch makes a state transition wait on an operator; a schedule reads a
 clock. A writer runs on the committed push that carries its request
 (precedent: organization-ledger-merge-transfer.yml:6-8).
 
-PENDING_OTHER_AUTHOR lists triggers on lines this lane did not write. Each
-entry is a known non-conformance owned elsewhere, not an exemption: the test
-fails when an entry is no longer present, so the list only shrinks.
+There are no exemptions.
 """
 
 import json
@@ -26,14 +24,6 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 FORBIDDEN = re.compile(r"^\s*(workflow_dispatch|schedule)\s*:")
-
-PENDING_OTHER_AUTHOR = {
-    # writer; line authored by StegVerse (8c02f27). Owner converts it to a
-    # committed request on push to main.
-    (".github/workflows/organization-ledger-transition-writer.yml", "workflow_dispatch"): "StegVerse",
-    # validation-only; line authored by Cursor Agent (012a684).
-    (".github/workflows/intr-destination-capability-validation.yml", "workflow_dispatch"): "Cursor Agent",
-}
 
 
 def forbidden_triggers():
@@ -52,11 +42,7 @@ class WorkflowTriggers(unittest.TestCase):
         self.assertTrue(list(WORKFLOWS.rglob("*.y*ml")), "no workflow files found")
 
     def test_no_manual_dispatch_or_schedule_trigger(self):
-        bad = {
-            f"{rel}:{lines[0]}: {trigger}"
-            for (rel, trigger), lines in forbidden_triggers().items()
-            if (rel, trigger) not in PENDING_OTHER_AUTHOR
-        }
+        bad = {f"{rel}:{lines[0]}: {trigger}" for (rel, trigger), lines in forbidden_triggers().items()}
         message = json.dumps(
             {
                 "failure_code": "WORKFLOW_TRIGGER_NOT_A_COMMITTED_STATE_TRANSITION",
@@ -73,12 +59,6 @@ class WorkflowTriggers(unittest.TestCase):
             indent=2,
         )
         self.assertEqual(sorted(bad), [], message)
-
-    def test_pending_other_author_entries_are_still_present(self):
-        found = forbidden_triggers()
-        stale = sorted(f"{rel}: {trigger}" for rel, trigger in PENDING_OTHER_AUTHOR if (rel, trigger) not in found)
-        self.assertEqual(stale, [], "repaired; remove from PENDING_OTHER_AUTHOR: " + json.dumps(stale))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,16 +3,17 @@
 organization-ledger-transition.yml is PR-facing and read-only: on pull_request
 and push its `validate` and `transition` jobs run with contents: read; the
 transition job verifies a temporary copy of the published ledger and never
-appends or pushes. The workflow_dispatch self-closure writer is
-organization-ledger-transition-writer.yml: dispatch only, job-scoped
-contents: write, the shared organization-ledger lock, and steps byte-identical
-to the dispatch job at main d7beaf59 (pinned by digest, so a shallow CI
-checkout needs no history). No workflow with a pull_request trigger holds
+appends or pushes. The self-closure writer is
+organization-ledger-transition-writer.yml: COMMITTED_REQUEST (B-P40), run by
+the push to main that commits a request under
+.stegverse/transition-ledger/requests/, with no dispatch, no input and no
+default epoch (tests/test_transition_request.py), job-scoped contents: write,
+the shared organization-ledger lock, a fast-forward-only publish and a
+fresh-fetch readback. No workflow with a pull_request trigger holds
 contents: write. Stdlib only.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -23,44 +24,10 @@ PR_FACING = WORKFLOWS / "organization-ledger-transition.yml"
 WRITER = WORKFLOWS / "organization-ledger-transition-writer.yml"
 MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
 
-#: sha256 of the dispatch job's steps at main d7beaf59 (each step right-stripped, joined by newline,
-#: the job-level and step-level dispatch conditions removed).
-MAIN_DISPATCH_STEPS_SHA256 = "a632cbb00fe774dff6e278fc9676b62b0e79e0dd582f48e5ae38e97bb70771a6"
-MAIN_DISPATCH_BLOCK = """  workflow_dispatch:
-    inputs:
-      communication_id:
-        description: 'communication_id the closure correlates on'
-        required: true
-        type: string
-      packet_id:
-        description: 'packet id for this diagnostic self-closure'
-        required: true
-        type: string
-      hb_epoch:
-        description: 'heartbeat epoch constraint (integer, at least 32)'
-        required: true
-        default: '32'
-        type: string
-"""
-MAIN_DISPATCH_ENV = """    env:
+WRITER_ENV = """    env:
       LEDGER_REF: refs/stegverse/organization-ledger
-      STEGVERSE_COMMUNICATION_ID: ${{ inputs.communication_id }}
-      STEGVERSE_PACKET_ID: ${{ inputs.packet_id }}
-      STEGVERSE_HB_EPOCH: ${{ inputs.hb_epoch }}
+      BEFORE: ${{ github.event.before }}
 """
-
-
-#: action pins (M-P9) mapped back to the tags main d7beaf59 used, so the digest still binds every other byte.
-ACTION_PINS = {
-    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4": "actions/checkout@v4",
-    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4": "actions/upload-artifact@v4",
-}
-
-
-def unpin(step: str) -> str:
-    for pinned, tag in ACTION_PINS.items():
-        step = step.replace(pinned, tag)
-    return step
 
 
 WRITE_KEY = re.compile(r"(?m)^\s+contents:\s*write\s*$")
@@ -110,21 +77,34 @@ class WriterSplit(unittest.TestCase):
             self.assertNotIn(word, text)
         self.assertIn("group: organization-ledger-verify-${{ github.run_id }}", self.pr)
 
-    def test_the_writer_is_dispatch_only_with_job_scoped_write(self):
+    def test_the_writer_runs_on_a_committed_request_with_job_scoped_write(self):
         on = on_block(self.writer)
-        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["workflow_dispatch"])
-        self.assertEqual(on.strip("\n") + "\n", MAIN_DISPATCH_BLOCK)
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["push"])
+        self.assertNotIn("inputs", on)
         self.assertIn("\npermissions:\n  contents: read\n", self.writer)
         self.assertIn("concurrency:\n  group: organization-ledger\n  cancel-in-progress: false\n", self.writer)
         found = jobs(self.writer)
         self.assertEqual(list(found), ["transition"])
         job = found["transition"]
         self.assertTrue(job.startswith("    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n"
-                                       + MAIN_DISPATCH_ENV), job[:300])
+                                       + WRITER_ENV), job[:300])
 
-    def test_the_writer_steps_are_the_dispatch_steps_of_main(self):
-        now = [unpin(s).rstrip() for s in steps(jobs(self.writer)["transition"])]
-        self.assertEqual(hashlib.sha256("\n".join(now).encode()).hexdigest(), MAIN_DISPATCH_STEPS_SHA256)
+    def test_the_writer_appends_publishes_fast_forward_and_reads_back(self):
+        names = [step.split("\n", 1)[0] for step in steps(jobs(self.writer)["transition"])]
+        self.assertEqual(names, [
+            "      - name: Checkout organization boundary",
+            "      - name: Bind the designated organization ledger ref",
+            "      - name: Read the committed request",
+            "      - name: Append the intr-destination diagnostic self-closure",
+            "      - name: Publish the ledger ref (fast-forward only)",
+            "      - name: Read the organization and repository ledgers back from a fresh fetch",
+            "      - name: Retain the run's evidence",
+        ])
+        self.assertIn('git push origin "$LEDGER_REF:$LEDGER_REF"', self.writer)
+        self.assertNotRegex(self.writer, r"git push[^\n]*\+")
+        self.assertIn("intr_destination_ingress.py --self-closure", self.writer)
+        self.assertIn("organization_ledger_readback.py \\\n            --location \"git+$fresh#$LEDGER_REF\"",
+                      self.writer)
 
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):

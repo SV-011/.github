@@ -39,7 +39,6 @@ on:
       - 'tests/test_organization_ledger_publication.py'
       - 'docs/INTR_DESTINATION_CAPABILITY_MIRROR_HANDOFF.md'
       - '.github/workflows/intr-destination-capability-validation.yml'
-  workflow_dispatch:
 
 permissions:
   contents: read

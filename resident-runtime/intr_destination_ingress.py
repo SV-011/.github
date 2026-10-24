@@ -123,6 +123,10 @@ def _evidence(payload: Any, packet_id: str, disposition: str, *,
         "standing_rechecked_here": False,
         "production_receipt_claimed": False,
     }
+    body = payload.get("body") if isinstance(payload, Mapping) else None
+    if isinstance(body, Mapping) and isinstance(body.get("request_sha256"), str):
+        # the committed request (resident-runtime/transition_request.py) this closure answers
+        record["request_sha256"] = body["request_sha256"]
     if failed_predicate is not None:
         record["failed_predicate"] = failed_predicate
         record["detail"] = detail
@@ -190,18 +194,21 @@ def _plain_token(value: str, name: str) -> str:
     return token
 
 
-def diagnostic_payload(communication_id: str) -> dict[str, Any]:
+def diagnostic_payload(communication_id: str, request_sha256: str | None = None) -> dict[str, Any]:
     """The diagnostic this organization acknowledges on a self-closure."""
+    body = {"schema": PAYLOAD_SCHEMA, "probe": "diagnostic-self-closure"}
+    if request_sha256 is not None:
+        body["request_sha256"] = request_sha256
     return {
         "message_class": COMMUNICATION_CLASS,
         "communication_id": communication_id,
         "subject": "purpose-neutral mesh diagnostic",
-        "body": {"schema": PAYLOAD_SCHEMA, "probe": "diagnostic-self-closure"},
+        "body": body,
     }
 
 
 def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_id: str,
-                 hb_epoch: int | None = None) -> dict[str, Any]:
+                 hb_epoch: int | None = None, request_sha256: str | None = None) -> dict[str, Any]:
     """Acknowledge this organization's own diagnostic and append both receipts.
 
     ``_append`` writes the repository receipt and the organization receipt that
@@ -213,7 +220,9 @@ def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_i
     """
     identifier = _plain_token(communication_id, "communication_id")
     packet = _plain_token(packet_id, "packet_id")
-    return receive(diagnostic_payload(identifier), registry=registry, packet_id=packet,
+    if request_sha256 is not None:
+        request_sha256 = _plain_token(request_sha256, "request_sha256")
+    return receive(diagnostic_payload(identifier, request_sha256), registry=registry, packet_id=packet,
                    hb_epoch=hb_epoch)
 
 
@@ -301,6 +310,7 @@ def main() -> int:
     parser.add_argument("--registry", type=Path, required=True)
     parser.add_argument("--packet-id", default=os.environ.get("STEGVERSE_PACKET_ID"))
     parser.add_argument("--hb-epoch", type=int, default=None)
+    parser.add_argument("--request-sha256", default=os.environ.get("STEGVERSE_REQUEST_SHA256"))
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     registry = json.loads(args.registry.read_text(encoding="utf-8"))
@@ -311,7 +321,8 @@ def main() -> int:
         if not args.communication_id or not args.packet_id:
             parser.error("--self-closure requires communication_id and packet_id")
         result = self_closure(args.communication_id, registry=registry,
-                              packet_id=args.packet_id, hb_epoch=hb_epoch)
+                              packet_id=args.packet_id, hb_epoch=hb_epoch,
+                              request_sha256=args.request_sha256 or None)
     else:
         if args.payload is None:
             parser.error("--payload is required")

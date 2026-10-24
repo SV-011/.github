@@ -38,6 +38,8 @@ jobs:
         run: python tools/run_declared_tasks.py
       - name: Assert no workflow triggers on manual dispatch or schedule
         run: python -m unittest tests.test_workflow_triggers -v
+      - name: Assert the ledger transition writer reads a committed request
+        run: python -m unittest tests.test_transition_request -v
       - name: Assert workflow actions are pinned to commit shas
         run: python -m unittest tests.test_workflow_action_pins -v
       - name: Assert validation-only authority
