@@ -123,6 +123,88 @@ class Row5SourceReceiptOnLedger(Ledgers):
         self.assert_six_field(raised.exception.refusal, "SOURCE_RECEIPT_NOT_ON_LEDGER")
 
 
+class Row8DesignatedSourceLedger(Ledgers):
+    """SOURCE_LEDGER_OVERRIDE_LAUNDERS_FABRICATED_RECEIPT on aggregate.append: no caller-chosen source ledger."""
+
+    REF = "refs/stegverse/organization-ledger"
+    NAMESPACE = json.loads((ROOT / ".stegverse/transition-ledger/contract.json").read_text())[
+        "repository_ledger_location"]["namespace"]
+
+    def use_git(self, repository, repo_locator=None):
+        base = "git+" + str(repository) + "#" + self.REF
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = base
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = repo_locator or base + ":" + self.NAMESPACE
+
+    def test_there_is_no_source_store_override(self):
+        import inspect
+        self.assertNotIn("source_store", inspect.signature(aggregate.append).parameters)
+
+    def test_an_attacker_or_symlinked_or_foreign_source_ledger_aggregates_nothing(self):
+        designated = self.work / "ledger.git"
+        self.use_git(designated)
+        genuine = self.repository_receipt()
+        attacker = self.work / "attacker.git"
+        attacker_locator = "git+" + str(attacker) + "#" + self.REF + ":" + self.NAMESPACE
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = attacker_locator
+        minted = self.repository_receipt("t-minted")  # minted into the attacker's root
+        (self.work / "link.git").symlink_to(attacker)
+        for locator in (attacker_locator,
+                        "git+" + str(self.work / "link.git") + "#" + self.REF + ":" + self.NAMESPACE,
+                        "git+" + str(designated) + "#" + self.REF + ":repository-ledger/Other/repo",
+                        str(self.work / "plain-dir")):
+            os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = locator
+            for source in (minted, genuine):
+                with self.assertRaises(ValueError) as raised:
+                    aggregate.append(source, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+                self.assert_six_field(raised.exception.refusal, "SOURCE_LEDGER_NOT_DESIGNATED")
+        self.use_git(designated)
+        organization = aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                        hb_epoch=33)
+        self.assertEqual(organization["repo_receipt_sha256"], genuine["receipt_sha256"])
+        with self.assertRaises(ValueError):  # the attacker's receipt is still not on the designated ledger
+            aggregate.append(minted, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+
+    def test_a_receipt_naming_another_repository_aggregates_nothing(self):
+        genuine = self.repository_receipt()
+        foreign = {**genuine, "repository": "Other-Org/.github"}
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(foreign, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "SOURCE_LEDGER_NOT_DESIGNATED")
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+
+class Row9CorruptReceiptOnTheWalk(Ledgers):
+    def test_a_corrupt_stored_receipt_is_terminal_and_a_read_fault_is_a_retry(self):
+        first = self.repository_receipt("t-1")
+        second = self.repository_receipt("t-2")
+        repo = Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"])
+        stored = repo / "receipts" / (second["receipt_sha256"][7:] + ".json")
+        good = stored.read_bytes()
+        for corrupt in (b"{truncated", b"[1]", b"\xff\xfe"):
+            stored.write_bytes(corrupt)
+            with self.assertRaises(ValueError) as raised:
+                aggregate.append(first, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+            self.assert_six_field(raised.exception.refusal, "SOURCE_LEDGER_RECEIPT_CORRUPT")
+        stored.write_bytes(good)
+        real_get = aggregate.ledger_store.Store.get
+
+        def faulty(store, key):
+            if str(store.root) == str(repo) and key.startswith("receipts/"):
+                raise PermissionError("injected read fault")
+            return real_get(store, key)
+        aggregate.ledger_store.Store.get = faulty
+        try:
+            with self.assertRaises(ValueError) as raised:
+                aggregate.append(first, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        finally:
+            aggregate.ledger_store.Store.get = real_get
+        refusal = raised.exception.refusal
+        self.assertEqual((refusal["failure_code"], refusal["terminal"]), ("SOURCE_LEDGER_READ_FAULT_RETRY", False))
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+
 class Row4EgressPayload(Ledgers):
     def test_a_half_set_committed_request_in_an_egress_payload_publishes_zero_frames(self):
         mesh = self.work / "mesh"

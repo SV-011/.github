@@ -218,7 +218,7 @@ class Binding(Ledgers):
                             "BOUND_RECEIPT_UNREADABLE")
         (path, repository), = self.files("stegverse.repo-transition-receipt/v1")
         path.write_text("{not json")
-        self.assert_refused(binding.bind(REQUEST, closure, 33), "BOUND_RECEIPT_UNREADABLE")
+        self.assert_refused(binding.bind(REQUEST, closure, 33), "LEDGER_RECEIPT_CORRUPT")
         self.assertEqual(self.files(binding.SCHEMA), [])
 
     def test_a_non_finite_value_is_never_written(self):
@@ -531,6 +531,76 @@ class WriteFaultsAndTornReads(Ledgers):
             self.assert_refused(binding.bind(REQUEST, closure, 33), "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
             path.write_bytes(good_receipt if path == receipt_path else good_head)
         self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
+
+
+class SourceLedgerRows(Ledgers):
+    """Rows 8 (designated source ledger) and 9 (corrupt receipt on the walk) on the binding."""
+
+    REF = "refs/stegverse/organization-ledger"
+
+    def git_locators(self, repository, ref=None, namespace=NAMESPACE):
+        base = "git+" + str(repository) + "#" + (ref or self.REF)
+        return base, base + ":" + namespace
+
+    def test_row8_a_caller_chosen_repository_ledger_is_refused(self):
+        designated = self.work / "ledger.git"
+        org, repo = self.git_locators(designated)
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"], os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = org, repo
+        closure = self.closure()
+        attacker = self.work / "attacker.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(attacker)], check=True)
+        (self.work / "link.git").symlink_to(attacker)
+        (self.work / "same.git").symlink_to(designated)
+        cases = {
+            "attacker ledger": self.git_locators(attacker)[1],
+            "symlink to an attacker ledger": self.git_locators(self.work / "link.git")[1],
+            "another namespace (another repository's ledger)": self.git_locators(designated,
+                                                                                  namespace="repository-ledger/X/y")[1],
+            "another ref": self.git_locators(designated, ref="refs/stegverse/other")[1],
+            "a directory beside a git organization ledger": str(self.work / "plain"),
+        }
+        for name, locator in cases.items():
+            os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = locator
+            for result in (binding.bind(REQUEST, closure, 33), binding.verify(REQUEST, closure)):
+                self.assert_refused(result, "SOURCE_LEDGER_NOT_DESIGNATED")
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = self.git_locators(self.work / "same.git")[1]
+        self.assertEqual(binding.bind(REQUEST, closure, 33)["disposition"], "ALLOW")  # a symlink to the designated repo
+
+    def test_row8_a_receipt_from_another_repositorys_ledger_is_refused(self):
+        closure = self.closure()
+        (path, receipt), = self.files("stegverse.repo-transition-receipt/v1")
+        body = {k: v for k, v in receipt.items() if k != "receipt_sha256"}
+        body["repository"] = "Other-Org/.github"
+        foreign = {**body, "receipt_sha256": binding.sha(body)}
+        repo_store = binding.stores()["repository"]
+        binding._put(repo_store, binding.ledger_store.receipt_key(foreign["receipt_sha256"]), foreign)
+        result = binding.bind(REQUEST, {**closure, "repository_receipt_sha256": foreign["receipt_sha256"]}, 33)
+        self.assert_refused(result, "SOURCE_LEDGER_NOT_DESIGNATED")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_row9_a_corrupt_receipt_on_the_walk_is_terminal_and_a_read_fault_is_a_retry(self):
+        closure = self.closure()
+        repo_root = Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"])
+        head = repo_root / "HEAD.json"
+        good = head.read_bytes()
+        for corrupt in (b"{truncated", b"[1, 2]", b"\xff\xfe"):
+            head.write_bytes(corrupt)
+            self.assert_refused(binding.bind(REQUEST, closure, 33), "LEDGER_RECEIPT_CORRUPT")
+        head.write_bytes(good)
+        real_get = binding.ledger_store.Store.get
+
+        def faulty(store, key):
+            if key == "HEAD.json" and str(store.root) == str(repo_root):
+                raise PermissionError("injected read fault")
+            return real_get(store, key)
+        binding.ledger_store.Store.get = faulty
+        try:
+            result = binding.bind(REQUEST, closure, 33)
+        finally:
+            binding.ledger_store.Store.get = real_get
+        self.assertEqual((result["failure_code"], result["terminal"]), ("LEDGER_READ_FAULT_RETRY", False))
+        self.assertEqual(self.files(binding.SCHEMA), [])
+        self.assertEqual(binding.bind(REQUEST, closure, 33)["disposition"], "ALLOW")
 
 
 class InTrIngressUnchanged(unittest.TestCase):

@@ -38,7 +38,7 @@ class CommittedRequestRefused(ValueError):
     """A six-field, terminal refusal raised before any write (V-P11 rows 3-5)."""
 
     def __init__(self, failure_code: str, failed_predicate: str, detail: str, repair: str,
-                 retry_entrypoint: str) -> None:
+                 retry_entrypoint: str, terminal: bool = True) -> None:
         super().__init__(failure_code + ": " + detail)
         self.failure_code = failure_code
         self.refusal = {
@@ -48,8 +48,9 @@ class CommittedRequestRefused(ValueError):
             "required_evidence_or_repair": repair,
             "retry_entrypoint": retry_entrypoint,
             "owning_existing_goal": COMMITTED_REQUEST_GOAL,
-            "next_attempt": "none for this input: nothing was written; supply evidence without it",
-            "terminal": True,
+            "next_attempt": ("none for this input: nothing was written; supply evidence without it" if terminal
+                             else "re-run once the ledger is readable; nothing was written"),
+            "terminal": terminal,
             "detail": detail,
             "production_receipt_claimed": False,
         }

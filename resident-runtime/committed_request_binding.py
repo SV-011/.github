@@ -35,6 +35,11 @@ written:
     its ledger chain reachable from HEAD (an off-ledger receipt), or that carries
     a committed_request other than this run's.
   GIT_UNAVAILABLE_RETRY (NOT terminal, exit 75): git cannot be run.
+  SOURCE_LEDGER_NOT_DESIGNATED: the repository ledger is not this repository's
+    own (on a git ref: the organization ledger's repository by realpath, its ref,
+    the contract namespace), or a bound receipt names another repository.
+  LEDGER_RECEIPT_CORRUPT: a stored receipt on the walk is not a JSON object;
+    LEDGER_READ_FAULT_RETRY (NOT terminal, exit 75): the store cannot be read.
   COMMITTED_REQUEST_REPLAY_MISMATCH: these receipts (a replayed packet) are
     already bound to a committed request with a different path or digest.
   COMMITTED_REQUEST_BINDING_ABSENT (verify): the closure's receipts have no
@@ -100,8 +105,14 @@ WRITE_FAULT = "UNDETERMINED_RETRY_IS_IDEMPOTENT"
 GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
 ENVIRONMENT_UNAVAILABLE = "LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY"
 FORGED_FROM_EVIDENCE = "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON"
+NOT_DESIGNATED = "SOURCE_LEDGER_NOT_DESIGNATED"
+RECEIPT_CORRUPT = "LEDGER_RECEIPT_CORRUPT"
+READ_FAULT = "LEDGER_READ_FAULT_RETRY"
+REPOSITORY_CONTRACT = json.loads((Path(__file__).resolve().parents[1] / ".stegverse/transition-ledger/contract.json")
+                                 .read_text(encoding="utf-8"))
 EXIT_TEMPFAIL = 75
-NON_TERMINAL = (WRITE_FAULT, GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE)
+NON_TERMINAL = (WRITE_FAULT, GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE, READ_FAULT)
+TEMPFAIL = (GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE, READ_FAULT)
 #: OSError, LedgerWriteFault (a RuntimeError), ledger_receipt_collision (a ValueError)
 WRITE_FAULTS = (OSError, RuntimeError, ValueError)
 ORG_HEAD = "HEAD.json"
@@ -136,6 +147,10 @@ def refusal(exc: Refused) -> dict[str, Any]:
         GIT_UNAVAILABLE: "git on PATH for the writer run",
         ENVIRONMENT_UNAVAILABLE: "STEGVERSE_ORG_LEDGER_ROOT, STEGVERSE_REPO_LEDGER_ROOT and "
                                  "STEGVERSE_COMMITTED_REQUEST_SOURCE set for the writer run",
+        NOT_DESIGNATED: "this repository's own ledger: the organization ledger's repository (realpath) and ref "
+                        "with the contract namespace, holding receipts that name " + REPOSITORY_CONTRACT["repository"],
+        RECEIPT_CORRUPT: "repair the corrupt ledger document",
+        READ_FAULT: "a readable ledger store; re-run",
         FORGED_FROM_EVIDENCE: "run results without any committed_request key; the binding builds it from the "
                               "verified request path and digest",
     }[exc.failure_code]
@@ -240,15 +255,25 @@ def no_injected_request(**documents: Any) -> None:
             raise Refused(FORGED_FROM_EVIDENCE, "RUN_RESULTS_CARRY_NO_COMMITTED_REQUEST", name + " " + found)
 
 
+def _read(store: Any, key: str) -> Any:
+    """One stored document: corrupt is terminal, an unreadable store is a retry, never a traceback (row 9)."""
+    document = _get(store, key)
+    if isinstance(document, (OSError, RuntimeError)):
+        raise Refused(READ_FAULT, "LEDGER_STORE_IS_READABLE", key + ": " + str(document))
+    if isinstance(document, BaseException) or (document is not None and not isinstance(document, Mapping)):
+        raise Refused(RECEIPT_CORRUPT, "LEDGER_DOCUMENTS_ARE_JSON_OBJECTS", key + ": " + repr(document)[:200])
+    return document
+
+
 def _chain_digests(store: Any, level: str) -> set[str]:
     """Receipt digests reachable from this ledger's HEAD through previous_receipt_sha256."""
-    head = _get(store, ORG_HEAD)
+    head = _read(store, ORG_HEAD)
     cursor = head.get("receipt_sha256") if isinstance(head, Mapping) else None
     digests: set[str] = set()
     while isinstance(cursor, str) and cursor not in digests:
         digests.add(cursor)
-        receipt = _get(store, ledger_store.receipt_key(cursor))
-        if not isinstance(receipt, Mapping):
+        receipt = _read(store, ledger_store.receipt_key(cursor))
+        if receipt is None:
             break
         cursor = receipt.get("previous_receipt_sha256")
     return digests
@@ -258,7 +283,7 @@ def on_ledger(store: Any, level: str, digest: str, binding: Mapping[str, Any]) -
     """A bound receipt is on its ledger chain from HEAD and carries no other committed_request."""
     if digest not in _chain_digests(store, level):
         raise Refused(DIGEST_UNVERIFIED, "BOUND_RECEIPT_IS_ON_THE_LEDGER_REACHABLE_FROM_HEAD", level + " " + digest)
-    receipt = _get(store, ledger_store.receipt_key(digest))
+    receipt = _read(store, ledger_store.receipt_key(digest))
     stack = [receipt]
     while stack:
         node = stack.pop()
@@ -284,7 +309,22 @@ def stores() -> dict[str, Any]:
             opened[level] = ledger_store.open_store(ledger_store.parse_locator(configured))
         except ValueError as exc:
             raise Refused(ENVIRONMENT_UNAVAILABLE, "BOUND_LEDGER_LOCATION_IS_VALID", str(exc)) from None
+    designated(ledger_store.parse_locator(os.environ["STEGVERSE_ORG_LEDGER_ROOT"]),
+               ledger_store.parse_locator(os.environ["STEGVERSE_REPO_LEDGER_ROOT"]))
     return opened
+
+
+def designated(organization: Any, repository: Any) -> None:
+    """The repository ledger is this repository's own, never a caller-chosen one (row 8)."""
+    if not (isinstance(organization, ledger_store.GitLocator) or isinstance(repository, ledger_store.GitLocator)):
+        return  # a directory store (tests, local runs) is held to the receipts' repository identity
+    expected = REPOSITORY_CONTRACT["repository_ledger_location"]["namespace"]
+    if not (isinstance(organization, ledger_store.GitLocator) and isinstance(repository, ledger_store.GitLocator)
+            and organization.namespace is None
+            and os.path.realpath(organization.repository) == os.path.realpath(repository.repository)
+            and organization.ref == repository.ref and repository.namespace == expected):
+        raise Refused(NOT_DESIGNATED, "SOURCE_LEDGER_IS_THIS_REPOSITORYS_DESIGNATED_LEDGER",
+                      "repository ledger " + str(repository) + " is not " + str(organization) + ":" + expected)
 
 
 def _get(store: Any, key: str) -> Any:
@@ -322,9 +362,12 @@ def _put(store: Any, key: str, document: Any) -> None:
 def bound_receipt(store: Any, level: str, digest: Any) -> dict[str, Any]:
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
         raise Refused(RECEIPT_UNREADABLE, "BOUND_RECEIPT_DIGEST_SUPPLIED", level + " " + repr(digest))
-    receipt = _get(store, ledger_store.receipt_key(digest))
+    receipt = _read(store, ledger_store.receipt_key(digest))
     if not sealed(receipt, digest):
         raise Refused(RECEIPT_UNREADABLE, "BOUND_RECEIPT_VERIFIES_AGAINST_ITS_BODY", level + " " + digest)
+    if receipt.get("repository") != REPOSITORY_CONTRACT["repository"]:
+        raise Refused(NOT_DESIGNATED, "BOUND_RECEIPT_NAMES_THIS_REPOSITORY",
+                      level + " " + digest + " names " + repr(receipt.get("repository")))
     return {"level": level, "receipt_sha256": digest,
             "previous_receipt_sha256": receipt.get("previous_receipt_sha256")}
 
@@ -552,7 +595,7 @@ def main() -> int:
     print(json.dumps(result, sort_keys=True, allow_nan=False))
     if result.get("disposition") == "ALLOW":
         return 0
-    return EXIT_TEMPFAIL if result.get("failure_code") in (GIT_UNAVAILABLE, ENVIRONMENT_UNAVAILABLE) else 1
+    return EXIT_TEMPFAIL if result.get("failure_code") in TEMPFAIL else 1
 
 
 def _read_json(path: Path) -> Any:
