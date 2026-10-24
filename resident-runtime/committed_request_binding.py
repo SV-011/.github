@@ -30,6 +30,17 @@ written:
     not verify against its body, is not linked to its predecessor, or was not
     committed in the same ledger commit as the receipts it binds.
 
+  UNDETERMINED_RETRY_IS_IDEMPOTENT (bind, seal; NOT terminal): writing the
+    binding, its HEAD or the sealed commit faulted. The binding digest is a
+    pure function of its inputs and the chain HEAD, and the receipt is put
+    before the HEAD, so re-running completes the binding exactly once.
+
+Binding receipts and the bindings HEAD on a directory store are written
+atomically (staged beside the target, fsynced, os.replace), so a fault leaves
+the old document or the new one, never a torn one; a git ref store commits
+each put. A torn or partial read anywhere on the chain is
+COMMITTED_REQUEST_BINDING_CHAIN_INVALID, never a traceback.
+
 Each binding also records the organization chain HEAD at the moment of append
 (organization_head_sha256), cross-linking the two chains. ``seal`` folds the
 run's unpublished ledger commits into one commit on the published tip, so the
@@ -67,6 +78,9 @@ RECEIPT_UNREADABLE = "BOUND_RECEIPT_UNREADABLE"
 REPLAY_MISMATCH = "COMMITTED_REQUEST_REPLAY_MISMATCH"
 BINDING_ABSENT = "COMMITTED_REQUEST_BINDING_ABSENT"
 CHAIN_INVALID = "COMMITTED_REQUEST_BINDING_CHAIN_INVALID"
+WRITE_FAULT = "UNDETERMINED_RETRY_IS_IDEMPOTENT"
+#: OSError, LedgerWriteFault (a RuntimeError), ledger_receipt_collision (a ValueError)
+WRITE_FAULTS = (OSError, RuntimeError, ValueError)
 ORG_HEAD = "HEAD.json"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LEVELS = (("repository", "STEGVERSE_REPO_LEDGER_ROOT", "repository_receipt_sha256"),
@@ -93,7 +107,21 @@ def refusal(exc: Refused) -> dict[str, Any]:
                         "committed with them",
         CHAIN_INVALID: "every binding verifies against its body, links to its predecessor and is committed "
                        "in the same ledger commit as the receipts it binds",
+        WRITE_FAULT: "none: re-run the same writer; the binding completes exactly once",
     }[exc.failure_code]
+    if exc.failure_code == WRITE_FAULT:
+        return {
+            "disposition": "FAIL_CLOSED",
+            "failure_code": WRITE_FAULT,
+            "failed_predicate": exc.failed_predicate,
+            "required_evidence_or_repair": repair,
+            "retry_entrypoint": ENTRYPOINT + " (re-run the same push)",
+            "owning_existing_goal": GOAL,
+            "next_attempt": "re-run; an already written binding is answered from the chain, never duplicated",
+            "terminal": False,
+            "detail": exc.detail,
+            "production_receipt_claimed": False,
+        }
     return {
         "disposition": "FAIL_CLOSED",
         "failure_code": exc.failure_code,
@@ -141,15 +169,43 @@ def stores() -> dict[str, Any]:
         configured = os.environ.get(variable)
         if not configured:
             raise Refused(RECEIPT_UNREADABLE, "BOUND_LEDGER_LOCATION_SUPPLIED", variable + " is not set")
-        opened[level] = ledger_store.open_store(ledger_store.parse_locator(configured))
+        try:
+            opened[level] = ledger_store.open_store(ledger_store.parse_locator(configured))
+        except ValueError as exc:
+            raise Refused(RECEIPT_UNREADABLE, "BOUND_LEDGER_LOCATION_IS_VALID", str(exc)) from None
     return opened
 
 
 def _get(store: Any, key: str) -> Any:
     try:
         return store.get(key)
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, RuntimeError) as exc:
         return exc
+
+
+def _put(store: Any, key: str, document: Any) -> None:
+    """Write one document so a fault leaves the old or the new, never a torn one."""
+    encoded = ledger_store._document_bytes(json.loads(canon(document)))
+    if not isinstance(store, ledger_store.Store):
+        store.put(key, document)  # a git ref store commits each put
+        return
+    path = Path(store.locator(key))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+    try:
+        with open(staged, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if staged.exists():
+            staged.unlink()
 
 
 def bound_receipt(store: Any, level: str, digest: Any) -> dict[str, Any]:
@@ -173,6 +229,15 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
     except Refused as exc:
         return refusal(exc)
     target = opened["organization"]
+    try:
+        return _bind_locked(target, binding, bound, hb_epoch)
+    except Refused as exc:
+        return refusal(exc)
+    except WRITE_FAULTS as exc:
+        return refusal(Refused(WRITE_FAULT, "BINDING_LEDGER_IS_WRITABLE", type(exc).__name__ + ": " + str(exc)))
+
+
+def _bind_locked(target: Any, binding: dict[str, Any], bound: list[dict[str, Any]], hb_epoch: int) -> dict[str, Any]:
     target.initialize()
     with target.exclusive():
         for digest, receipt in chain(target):
@@ -184,8 +249,10 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
             return refusal(Refused(REPLAY_MISMATCH, "ONE_PACKET_BINDS_ONE_COMMITTED_REQUEST",
                                    "receipts already bound by " + digest + " to "
                                    + json.dumps(receipt.get("committed_request"), sort_keys=True)))
-        head = target.get(HEAD)
-        org_head = target.get(ORG_HEAD)
+        head = _get(target, HEAD)
+        org_head = _get(target, ORG_HEAD)
+        if isinstance(org_head, BaseException):
+            raise Refused(RECEIPT_UNREADABLE, "ORGANIZATION_HEAD_IS_READABLE", str(org_head))
         body = {
             "schema": SCHEMA,
             "committed_request": binding,
@@ -202,23 +269,38 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
         digest = sha(body)
         receipt = {**body, "receipt_sha256": digest}
         key = PREFIX + digest[7:] + ".json"
-        existing = target.get(key)
-        if existing is not None and existing != receipt:
-            raise ValueError("ledger_receipt_collision")
-        target.put(key, receipt)
-        target.put(HEAD, {"schema": HEAD_SCHEMA, "receipt_sha256": digest})
+        existing = _get(target, key)
+        if existing is not None and existing != receipt and not isinstance(existing, BaseException):
+            return refusal(Refused(CHAIN_INVALID, "BINDING_KEY_HOLDS_ONLY_ITS_RECEIPT", key))
+        try:
+            # receipt before HEAD: a fault between them leaves an unreferenced receipt
+            # that a re-run, computing the same digest, re-puts and then references
+            _put(target, key, receipt)
+            _put(target, HEAD, {"schema": HEAD_SCHEMA, "receipt_sha256": digest})
+        except WRITE_FAULTS as exc:
+            return refusal(Refused(WRITE_FAULT, "BINDING_RECEIPT_AND_HEAD_WRITTEN", type(exc).__name__ + ": " + str(exc)))
     return {"disposition": "ALLOW", "binding_receipt_sha256": digest, "replayed": False, "binding_receipt": receipt}
 
 
 def chain(store: Any):
+    """(digest, receipt) from the bindings HEAD back; a torn or partial read is CHAIN_INVALID."""
     head = _get(store, HEAD)
-    cursor = head.get("receipt_sha256") if isinstance(head, Mapping) else None
+    if head is None:
+        return
+    if not isinstance(head, Mapping) or not (head.get("receipt_sha256") is None
+                                              or isinstance(head.get("receipt_sha256"), str)):
+        raise Refused(CHAIN_INVALID, "BINDINGS_HEAD_IS_READABLE", HEAD + ": " + repr(head)[:200])
+    cursor = head.get("receipt_sha256")
     seen = set()
-    while isinstance(cursor, str) and cursor not in seen:
+    while isinstance(cursor, str):
+        if cursor in seen or not DIGEST.fullmatch(cursor):
+            raise Refused(CHAIN_INVALID, "BINDING_CHAIN_IS_ACYCLIC_AND_ADDRESSED", cursor)
         seen.add(cursor)
         receipt = _get(store, PREFIX + cursor[7:] + ".json")
-        yield cursor, receipt if isinstance(receipt, Mapping) else {}
-        cursor = receipt.get("previous_binding_sha256") if isinstance(receipt, Mapping) else None
+        if not isinstance(receipt, Mapping):
+            raise Refused(CHAIN_INVALID, "BINDING_RECEIPT_IS_READABLE", cursor + ": " + repr(receipt)[:200])
+        yield cursor, receipt
+        cursor = receipt.get("previous_binding_sha256")
 
 
 def _org_chain(store: Any, start: Any) -> list[str]:
@@ -238,7 +320,10 @@ def _added_in(store: Any, key: str) -> str | None:
     if not hasattr(store, "_git"):
         return None
     path = store._path(key)
-    found = store._git("log", "--format=%H", "--diff-filter=A", "-1", store.ref, "--", path).stdout.decode().strip()
+    try:
+        found = store._git("log", "--format=%H", "--diff-filter=A", "-1", store.ref, "--", path).stdout.decode().strip()
+    except (OSError, RuntimeError) as exc:
+        raise Refused(CHAIN_INVALID, "LEDGER_HISTORY_IS_READABLE", str(exc)) from None
     if not found:
         raise Refused(CHAIN_INVALID, "BOUND_KEY_IS_IN_LEDGER_HISTORY", path)
     return found
@@ -299,6 +384,13 @@ def verify(request: Mapping[str, Any], ingress_result: Mapping[str, Any]) -> dic
 
 def seal(published_tip: str | None, message: str) -> dict[str, Any]:
     """Fold this run's unpublished commits on the organization ledger ref into one commit on ``published_tip``."""
+    try:
+        return _seal(published_tip, message)
+    except WRITE_FAULTS as exc:
+        return refusal(Refused(WRITE_FAULT, "LEDGER_COMMITS_SEALED_INTO_ONE", type(exc).__name__ + ": " + str(exc)))
+
+
+def _seal(published_tip: str | None, message: str) -> dict[str, Any]:
     store = ledger_store.open_store(ledger_store.parse_locator(os.environ.get("STEGVERSE_ORG_LEDGER_ROOT", "")))
     if not hasattr(store, "_git"):
         return refusal(Refused(CHAIN_INVALID, "SEAL_NEEDS_A_GIT_LEDGER_REF", str(store.locator(ORG_HEAD))))
@@ -308,10 +400,14 @@ def seal(published_tip: str | None, message: str) -> dict[str, Any]:
     if published_tip and store._git("merge-base", "--is-ancestor", published_tip, tip,
                                     check=False).returncode != 0:
         return refusal(Refused(CHAIN_INVALID, "PUBLISHED_TIP_IS_AN_ANCESTOR", published_tip))
-    tree = store._git("rev-parse", tip + "^{tree}").stdout.decode().strip()
-    args = ["commit-tree", "--no-gpg-sign", tree, "-m", message] + (["-p", published_tip] if published_tip else [])
-    sealed_commit = store._git(*args).stdout.decode().strip()
-    store._git("update-ref", store.ref, sealed_commit, tip)
+    try:
+        tree = store._git("rev-parse", tip + "^{tree}").stdout.decode().strip()
+        args = ["commit-tree", "--no-gpg-sign", tree, "-m", message] + (["-p", published_tip] if published_tip else [])
+        sealed_commit = store._git(*args).stdout.decode().strip()
+        # compare-and-swap on the unsealed tip: a fault leaves the ref unsealed, and a re-run seals it
+        store._git("update-ref", store.ref, sealed_commit, tip)
+    except WRITE_FAULTS as exc:
+        return refusal(Refused(WRITE_FAULT, "LEDGER_COMMITS_SEALED_INTO_ONE", type(exc).__name__ + ": " + str(exc)))
     return {"disposition": "ALLOW", "sealed_commit": sealed_commit, "parent": published_tip or None,
             "folded_tip": tip, "production_receipt_claimed": False}
 

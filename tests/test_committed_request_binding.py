@@ -197,6 +197,98 @@ class Binding(Ledgers):
             binding.canon({"x": float("nan")})
 
 
+class WriteFaultsAndTornReads(Ledgers):
+    """F-WRITER-TRACE: a write fault is a non-terminal retry that completes exactly once; a torn read is refused."""
+
+    def assert_retryable(self, result):
+        self.assertEqual((result["disposition"], result["failure_code"]),
+                         ("FAIL_CLOSED", "UNDETERMINED_RETRY_IS_IDEMPOTENT"), result)
+        self.assertIs(result["terminal"], False)
+        for field in SIX_FIELDS:
+            self.assertTrue(result.get(field), field)
+
+    def inject(self, fault, on_call):
+        real, calls = binding._put, []
+
+        def faulty(store, key, document):
+            calls.append(key)
+            if len(calls) == on_call:
+                raise fault
+            return real(store, key, document)
+        binding._put = faulty
+        self.addCleanup(setattr, binding, "_put", real)
+        return lambda: setattr(binding, "_put", real)
+
+    def assert_bound_once(self, closure):
+        self.assertEqual(len(self.files(binding.SCHEMA)), 1)
+        self.assertEqual(len(list(binding.chain(binding.stores()["organization"]))), 1)
+        self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
+
+    def test_a_fault_on_the_head_put_retries_to_exactly_one_binding(self):
+        closure = self.closure()
+        restore = self.inject(OSError("disk full"), on_call=2)
+        self.assert_retryable(binding.bind(REQUEST, closure, 33))
+        self.assertEqual(len(self.files(binding.SCHEMA)), 1)  # receipt written, HEAD not
+        self.assertEqual(list(binding.chain(binding.stores()["organization"])), [])
+        restore()
+        retried = binding.bind(REQUEST, closure, 33)
+        self.assertEqual((retried["disposition"], retried["replayed"]), ("ALLOW", False))
+        self.assert_bound_once(closure)
+        self.assertIs(binding.bind(REQUEST, closure, 33)["replayed"], True)
+        self.assert_bound_once(closure)
+
+    def test_a_fault_on_the_receipt_put_or_a_collision_retries_cleanly(self):
+        closure = self.closure()
+        for fault in (OSError("io"), RuntimeError("LedgerWriteFault: git update-ref failed"),
+                      ValueError("ledger_receipt_collision")):
+            restore = self.inject(fault, on_call=1)
+            self.assert_retryable(binding.bind(REQUEST, closure, 33))
+            self.assertEqual(self.files(binding.SCHEMA), [])
+            restore()
+        self.assertEqual(binding.bind(REQUEST, closure, 33)["disposition"], "ALLOW")
+        self.assert_bound_once(closure)
+
+    def test_a_torn_head_write_leaves_the_previous_head_and_never_a_partial(self):
+        first = binding.bind(REQUEST, self.closure("packet-1"), 33)
+        other = {**REQUEST, "sha256": "sha256:" + "e" * 64}
+        second_closure = self.closure("packet-2")
+        real_replace, calls = os.replace, []
+
+        def torn(source, target):
+            calls.append(target)
+            if str(target).endswith("HEAD.json"):
+                raise OSError("power lost before rename")
+            return real_replace(source, target)
+        os.replace = torn
+        try:
+            self.assert_retryable(binding.bind(other, second_closure, 33))
+        finally:
+            os.replace = real_replace
+        org_root = Path(os.environ["STEGVERSE_ORG_LEDGER_ROOT"])
+        self.assertEqual(list(org_root.rglob("*.partial")), [])
+        head = json.loads((org_root / binding.HEAD).read_text())
+        self.assertEqual(head["receipt_sha256"], first["binding_receipt_sha256"])
+        retried = binding.bind(other, second_closure, 33)
+        self.assertEqual(retried["disposition"], "ALLOW")
+        self.assertEqual(len(list(binding.chain(binding.stores()["organization"]))), 2)
+        self.assertEqual(binding.verify(other, second_closure)["disposition"], "ALLOW")
+
+    def test_a_torn_or_partial_read_is_chain_invalid_not_a_traceback(self):
+        closure = self.closure()
+        bound = binding.bind(REQUEST, closure, 33)
+        org_root = Path(os.environ["STEGVERSE_ORG_LEDGER_ROOT"])
+        receipt_path = org_root / (binding.PREFIX + bound["binding_receipt_sha256"][7:] + ".json")
+        head_path = org_root / binding.HEAD
+        good_receipt, good_head = receipt_path.read_bytes(), head_path.read_bytes()
+        for path, torn in ((head_path, good_head[:7]), (head_path, b"[]"), (receipt_path, good_receipt[:20])):
+            path.write_bytes(torn)
+            result = binding.verify(REQUEST, closure)
+            self.assert_refused(result, "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
+            self.assert_refused(binding.bind(REQUEST, closure, 33), "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
+            path.write_bytes(good_receipt if path == receipt_path else good_head)
+        self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
+
+
 class InTrIngressUnchanged(unittest.TestCase):
     """INTR_PATH_FILE_BYTE_IDENTICAL_TO_MAIN_MODULO_GRADED_EXCEPTION_FIXES.
 
@@ -272,6 +364,28 @@ class OnTheGitLedgerRef(Ledgers):
         self.assertEqual(published, first["sealed_commit"])
         self.assertEqual(self.git("rev-parse", second["sealed_commit"] + "^"), first["sealed_commit"])
         self.assertEqual(binding.verify({**REQUEST, "sha256": "sha256:" + "e" * 64}, closure)["disposition"], "ALLOW")
+
+    def test_a_seal_fault_is_retryable_and_the_retry_seals_once(self):
+        published = self.tip()
+        closure = self.closure()
+        binding.bind(REQUEST, closure, 33)
+        store_class = binding.ledger_store.GitLedgerStore
+        real_git = store_class._git
+
+        def faulty(store, *args, **kwargs):
+            if args and args[0] == "update-ref":
+                raise RuntimeError("git update-ref failed: injected")
+            return real_git(store, *args, **kwargs)
+        store_class._git = faulty
+        try:
+            result = binding.seal(published, "ledger: committed request")
+        finally:
+            store_class._git = real_git
+        self.assertEqual(result["failure_code"], "UNDETERMINED_RETRY_IS_IDEMPOTENT", result)
+        self.assertIs(result["terminal"], False)
+        self.assertEqual(binding.seal(published, "ledger: committed request")["disposition"], "ALLOW")
+        self.assertEqual(self.git("rev-list", "--count", self.REF), "1")
+        self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
 
     def test_an_unsealed_binding_is_not_in_the_same_commit_as_its_receipts(self):
         closure = self.closure()
