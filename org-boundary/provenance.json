@@ -7,7 +7,7 @@
     "artifacts": [
       {"path":"DATA_CONTINUATION_ORG_BOUNDARY_MIRROR_HANDOFF.md","blob":"2cc56387f36cf7d2418549e7dac3b116b1670aef"},
       {"path":"org-boundary/runtime/intr_transport.py","blob":"c52bde0587f3203a7d77789d8735007a25bb6267","reuse":"exact-byte"},
-      {"path":"org-boundary/runtime/process_boundary.py","blob":"6b85cd8aafd98be67cb31855e9c71346d8e96f4e","sha256":"a1fd668198d92da8c4f213699a248c6ab628b72ed057dfac561fe908439d7681","reuse":"exact-byte","source":"Data-Continuation/.github#10 @ac8d7ea","repinned_from_blob":"4a167a3af36f894e45362ee67f0a9050dca287fb"},
+      {"path":"org-boundary/runtime/process_boundary.py","blob":"6dd5e3e94b09e5fac64f5655341aa06711952671","sha256":"90ba6261096f1a5a1d60bfc5370632180187f3ec3f25b2bef1d393d6563387f2","reuse":"exact-byte","source":"Data-Continuation/.github main 1ac152e (#10 @2136a6b)","repinned_from_blob":"4a167a3af36f894e45362ee67f0a9050dca287fb"},
       {"path":"resident-runtime/org_boundary_runtime.py","blob":"257528441b0062520ffef255b23b81e1d44e8b0e","reuse":"exact-byte"}
     ]
   },

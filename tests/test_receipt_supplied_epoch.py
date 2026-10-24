@@ -585,7 +585,7 @@ class EgressAndIngestRefuseFirst(Redirected):
         self.assertIs(refused["terminal_record"]["terminal"], True)
         for field in SIX_FIELDS:
             self.assertTrue(refused["terminal_record"].get(field), field)
-        # any other exit (the canonical copy's exit 1 with a bare string): a terminal six-field refusal
+        # content faults: the canonical copy (DC main 1ac152e) exits 65 with six fields -> terminal DENY
         for mutate in (lambda e: e.pop("evidence"), lambda e: e["destination"].__setitem__("org", "Elsewhere"),
                        lambda e: e["destination"].__setitem__("service", "no-such-service")):
             other = json.loads(json.dumps(envelope))
@@ -593,10 +593,23 @@ class EgressAndIngestRefuseFirst(Redirected):
             refused = adapter.process(other)
             self.assertEqual(refused["decision"], "DENY")
             record = refused["terminal_record"]
-            self.assertEqual(record["boundary_failure_code"], "PROCESS_BOUNDARY_REFUSED_EXIT_1")
+            self.assertEqual(record["boundary_failure_code"], "PROCESS_BOUNDARY_INPUT_FAULT")
             self.assertIs(record["terminal"], True)
             for field in SIX_FIELDS:
                 self.assertTrue(record.get(field), field)
+        # any other exit (a bare-string exit 1 from a processor): still a terminal six-field refusal
+        stub = self.mesh / "process_boundary_exit_1.py"
+        stub.write_text("raise SystemExit('unexpected-refusal')\n", encoding="utf-8")
+        adapter.PROCESS = stub
+        try:
+            refused = adapter.process(envelope)
+        finally:
+            adapter.PROCESS = real
+        self.assertEqual(refused["decision"], "DENY")
+        self.assertEqual(refused["terminal_record"]["boundary_failure_code"], "PROCESS_BOUNDARY_REFUSED_EXIT_1")
+        self.assertIs(refused["terminal_record"]["terminal"], True)
+        for field in SIX_FIELDS:
+            self.assertTrue(refused["terminal_record"].get(field), field)
         # through the probe: 75 writes no evidence and exits 75; the next run writes the evidence once
         evidence = self.mesh / "evidence"
         argv = ["run_phase5_probe.py", "--request", str(ROOT / "resident-runtime/requests/phase5-allow.json"),
