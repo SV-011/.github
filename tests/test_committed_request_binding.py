@@ -198,13 +198,27 @@ class Binding(Ledgers):
 
 
 class InTrIngressUnchanged(unittest.TestCase):
+    """INTR_PATH_FILE_BYTE_IDENTICAL_TO_MAIN_MODULO_GRADED_EXCEPTION_FIXES.
+
+    The InTr ingress may differ from main only by exception-fix commits graded
+    ALLOW by V-P11 and listed in the PR body (sha, row). SV-011 has none: no
+    Claude commit touches this file on main, and this branch's 1cf198b was
+    reverted by 716b511 (not a graded fix). The allowlist is empty.
+    """
+
     #: sha256 of resident-runtime/intr_destination_ingress.py at main ecabf04 (InTr code, Grok Lane B).
     MAIN_SHA256 = "390343dc625dfe849f0dbce1bd75ae89bd4d6eccf932b985108e7ce2fe5d3eb7"
+    #: (commit sha, V-P11 row, resulting file sha256) for each graded exception fix; empty on SV-011.
+    GRADED_EXCEPTION_FIXES: tuple[tuple[str, str, str], ...] = ()
 
-    def test_the_ingress_is_byte_identical_to_main(self):
+    def test_the_allowlist_is_empty(self):
+        self.assertEqual(self.GRADED_EXCEPTION_FIXES, ())
+
+    def test_the_ingress_is_byte_identical_to_main_modulo_graded_fixes(self):
         import hashlib
         data = (ROOT / "resident-runtime/intr_destination_ingress.py").read_bytes()
-        self.assertEqual(hashlib.sha256(data).hexdigest(), self.MAIN_SHA256)
+        allowed = {self.MAIN_SHA256} | {fix[2] for fix in self.GRADED_EXCEPTION_FIXES}
+        self.assertIn(hashlib.sha256(data).hexdigest(), allowed)
 
 
 class OnTheGitLedgerRef(Ledgers):
