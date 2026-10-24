@@ -8,6 +8,7 @@ verifies it from the ledger alone. Stdlib only.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -35,7 +36,17 @@ readback = _module("organization_ledger_readback_for_binding", "resident-runtime
 REGISTRY = json.loads((ROOT / "org-boundary/registry/services.json").read_text(encoding="utf-8"))
 NAMESPACE = json.loads((ROOT / ".stegverse/transition-ledger/contract.json").read_text(
     encoding="utf-8"))["repository_ledger_location"]["namespace"]
-REQUEST = {"path": ".stegverse/transition-ledger/requests/a.json", "sha256": "sha256:" + "c" * 64}
+REQUEST_FILES = {name: json.dumps({"schema": "stegverse.org-ledger-transition-request/v1", "communication_id": "comm-1",
+                                    "packet_id": "packet-" + name, "hb_epoch": 33}).encode()
+                 for name in ("a", "d", "e", "f")}
+
+
+def request_pair(name):
+    return {"path": ".stegverse/transition-ledger/requests/" + name + ".json",
+            "sha256": "sha256:" + hashlib.sha256(REQUEST_FILES[name]).hexdigest()}
+
+
+REQUEST, REQ_D, REQ_E, REQ_F = (request_pair(name) for name in ("a", "d", "e", "f"))
 
 
 class Ledgers(unittest.TestCase):
@@ -43,10 +54,27 @@ class Ledgers(unittest.TestCase):
         self._work = tempfile.TemporaryDirectory()
         self.addCleanup(self._work.cleanup)
         self.work = Path(self._work.name)
-        previous = {name: os.environ.get(name) for name in LEDGER_ROOTS}
+        previous = {name: os.environ.get(name) for name in LEDGER_ROOTS + (binding.SOURCE_VARIABLE,)}
         self.addCleanup(lambda: [os.environ.pop(n, None) if v is None else os.environ.__setitem__(n, v)
                                  for n, v in previous.items()])
         self.use_directories()
+        self.commit_requests()
+
+    def commit_requests(self):
+        """The repository the requests are committed in; bind and verify check digests against it."""
+        source = self.work / "source"
+        for name, content in REQUEST_FILES.items():
+            path = source / ".stegverse/transition-ledger/requests" / (name + ".json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        git = ("git", "-C", str(source))
+        subprocess.run(git[:1] + ("init", "-q", str(source)), check=True)
+        subprocess.run(git + ("add", "-A"), check=True)
+        subprocess.run(git + ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "r"),
+                       check=True)
+        revision = subprocess.run(git + ("rev-parse", "HEAD"), check=True, capture_output=True,
+                                  text=True).stdout.strip()
+        os.environ[binding.SOURCE_VARIABLE] = str(source) + "#" + revision
 
     def use_directories(self):
         os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.work / "repo")
@@ -113,7 +141,7 @@ class Binding(Ledgers):
         first = binding.bind(REQUEST, closure, 33)
         replayed = self.closure()  # same packet: the ingress answers with the recorded receipts
         self.assertIs(replayed["transition_replayed"], True)
-        for other in ({**REQUEST, "sha256": "sha256:" + "d" * 64}, {**REQUEST, "path": "other.json"}):
+        for other in (REQ_D, REQ_F):
             result = binding.bind(other, replayed, 33)
             self.assert_refused(result, "COMMITTED_REQUEST_REPLAY_MISMATCH")
             self.assertIn(first["binding_receipt_sha256"], result["detail"])
@@ -142,7 +170,7 @@ class Binding(Ledgers):
 
     def test_the_bindings_chain_is_hash_linked_and_append_only(self):
         first = binding.bind(REQUEST, self.closure("packet-1"), 33)
-        other = {**REQUEST, "sha256": "sha256:" + "e" * 64}
+        other = REQ_E
         second_closure = self.closure("packet-2")
         second = binding.bind(other, second_closure, 33)
         self.assertEqual(second["binding_receipt"]["previous_binding_sha256"], first["binding_receipt_sha256"])
@@ -163,7 +191,7 @@ class Binding(Ledgers):
     def test_receipts_bound_to_another_request_are_binding_absent(self):
         closure = self.closure()
         binding.bind(REQUEST, closure, 33)
-        other = {**REQUEST, "sha256": "sha256:" + "f" * 64}
+        other = REQ_F
         self.assert_refused(binding.verify(other, closure), "COMMITTED_REQUEST_BINDING_ABSENT")
 
     def test_a_binding_whose_organization_receipt_is_gone_is_detected(self):
@@ -195,6 +223,39 @@ class Binding(Ledgers):
     def test_a_non_finite_value_is_never_written(self):
         with self.assertRaises(ValueError):
             binding.canon({"x": float("nan")})
+
+
+class ForgeryProbe(Ledgers):
+    """A committed_request whose digest is not the committed file is COMMITTED_REQUEST_DIGEST_UNVERIFIED."""
+
+    def test_a_forged_digest_is_never_bound(self):
+        closure = self.closure()
+        forged = {**REQUEST, "sha256": "sha256:" + hashlib.sha256(b'{"forged": true}').hexdigest()}
+        for pair in (forged, {**REQ_D, "path": REQUEST["path"]},
+                     {"path": ".stegverse/transition-ledger/requests/absent.json", "sha256": REQUEST["sha256"]},
+                     {"path": "elsewhere/a.json", "sha256": REQUEST["sha256"]}):
+            self.assert_refused(binding.bind(pair, closure, 33), "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
+    def test_a_rehashed_off_ledger_binding_with_a_forged_request_does_not_verify(self):
+        closure = self.closure()
+        genuine = binding.bind(REQUEST, closure, 33)["binding_receipt"]
+        forged_request = {**REQUEST, "sha256": "sha256:" + hashlib.sha256(b"forged").hexdigest()}
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        body["committed_request"] = {**forged_request, "hb_epoch_source": "COMMITTED_REQUEST"}
+        body["previous_binding_sha256"] = genuine["receipt_sha256"]
+        forged = {**body, "receipt_sha256": binding.sha(body)}  # rehashed, so it seals
+        org = binding.stores()["organization"]
+        binding._put(org, binding.PREFIX + forged["receipt_sha256"][7:] + ".json", forged)
+        binding._put(org, binding.HEAD, {"schema": binding.HEAD_SCHEMA, "receipt_sha256": forged["receipt_sha256"]})
+        self.assert_refused(binding.verify(forged_request, closure), "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        # and the genuine request no longer verifies silently: the newest binding names another request
+        self.assert_refused(binding.verify(REQUEST, closure), "COMMITTED_REQUEST_BINDING_ABSENT")
+
+    def test_no_source_means_no_binding(self):
+        os.environ.pop(binding.SOURCE_VARIABLE)
+        self.assert_refused(binding.bind(REQUEST, self.closure(), 33), "COMMITTED_REQUEST_DIGEST_UNVERIFIED")
+        self.assertEqual(self.files(binding.SCHEMA), [])
 
 
 class WriteFaultsAndTornReads(Ledgers):
@@ -250,7 +311,7 @@ class WriteFaultsAndTornReads(Ledgers):
 
     def test_a_torn_head_write_leaves_the_previous_head_and_never_a_partial(self):
         first = binding.bind(REQUEST, self.closure("packet-1"), 33)
-        other = {**REQUEST, "sha256": "sha256:" + "e" * 64}
+        other = REQ_E
         second_closure = self.closure("packet-2")
         real_replace, calls = os.replace, []
 
@@ -360,10 +421,10 @@ class OnTheGitLedgerRef(Ledgers):
 
     def test_a_second_run_seals_onto_the_published_tip(self):
         _, _, first = self.run_writer("packet-1")
-        published, closure, second = self.run_writer("packet-2", {**REQUEST, "sha256": "sha256:" + "e" * 64})
+        published, closure, second = self.run_writer("packet-2", REQ_E)
         self.assertEqual(published, first["sealed_commit"])
         self.assertEqual(self.git("rev-parse", second["sealed_commit"] + "^"), first["sealed_commit"])
-        self.assertEqual(binding.verify({**REQUEST, "sha256": "sha256:" + "e" * 64}, closure)["disposition"], "ALLOW")
+        self.assertEqual(binding.verify(REQ_E, closure)["disposition"], "ALLOW")
 
     def test_a_seal_fault_is_retryable_and_the_retry_seals_once(self):
         published = self.tip()

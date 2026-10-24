@@ -22,6 +22,11 @@ written:
   COMMITTED_REQUEST_INVALID: the committed request pair is half-set or malformed.
   BOUND_RECEIPT_UNREADABLE: a bound receipt is missing, unreadable, does not
     verify against its body, or does not have the recorded parent.
+  COMMITTED_REQUEST_DIGEST_UNVERIFIED (bind, verify): the committed request's
+    sha256 is not the sha256 of the file actually committed at that path in the
+    pushed revision (STEGVERSE_COMMITTED_REQUEST_SOURCE=<repository>#<revision>),
+    or that file cannot be read there. A forged or rehashed committed_request is
+    never bound and never verified; nothing is written.
   COMMITTED_REQUEST_REPLAY_MISMATCH: these receipts (a replayed packet) are
     already bound to a committed request with a different path or digest.
   COMMITTED_REQUEST_BINDING_ABSENT (verify): the closure's receipts have no
@@ -60,6 +65,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -74,6 +80,9 @@ GOAL = "SVORG-LLM-ORG-FOUNDATION-001"
 ENTRYPOINT = ".github/workflows/organization-ledger-transition-writer.yml (push to main of " \
              ".stegverse/transition-ledger/requests/**)"
 REQUEST_INVALID = "COMMITTED_REQUEST_INVALID"
+DIGEST_UNVERIFIED = "COMMITTED_REQUEST_DIGEST_UNVERIFIED"
+SOURCE_VARIABLE = "STEGVERSE_COMMITTED_REQUEST_SOURCE"
+REQUEST_DIR = ".stegverse/transition-ledger/requests/"
 RECEIPT_UNREADABLE = "BOUND_RECEIPT_UNREADABLE"
 REPLAY_MISMATCH = "COMMITTED_REQUEST_REPLAY_MISMATCH"
 BINDING_ABSENT = "COMMITTED_REQUEST_BINDING_ABSENT"
@@ -100,6 +109,8 @@ class Refused(Exception):
 def refusal(exc: Refused) -> dict[str, Any]:
     repair = {
         REQUEST_INVALID: "a committed request path (printable token) and sha256 (sha256:<64 hex>)",
+        DIGEST_UNVERIFIED: "the committed request path and sha256 of the file committed at that path in the "
+                           "pushed revision",
         RECEIPT_UNREADABLE: "every bound receipt present on its ledger, verifying against its body, "
                             "with the recorded parent",
         REPLAY_MISMATCH: "a new packet_id for a different committed request; the recorded binding is unchanged",
@@ -163,6 +174,27 @@ def committed_request(path: Any, digest: Any) -> dict[str, Any]:
     return {"path": path, "sha256": digest, "hb_epoch_source": SOURCE}
 
 
+def verified_request(binding: Mapping[str, Any]) -> None:
+    """The binding's sha256 is the sha256 of the request file committed at its path in the pushed revision."""
+    source = os.environ.get(SOURCE_VARIABLE, "")
+    repository, separator, revision = source.rpartition("#")
+    if not separator or not repository or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_SOURCE_SUPPLIED", SOURCE_VARIABLE + "=" + repr(source))
+    path = binding["path"]
+    if not path.startswith(REQUEST_DIR) or not path.endswith(".json") or ".." in path.split("/"):
+        raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_IS_UNDER_THE_REQUEST_DIRECTORY", path)
+    try:
+        committed = subprocess.run(["git", "-C", repository, "show", revision + ":" + path],
+                                   check=True, capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_IS_READABLE_AT_THE_REVISION",
+                      path + "@" + revision + ": " + str(exc)) from None
+    actual = "sha256:" + hashlib.sha256(committed).hexdigest()
+    if actual != binding["sha256"]:
+        raise Refused(DIGEST_UNVERIFIED, "COMMITTED_REQUEST_DIGEST_IS_THE_COMMITTED_FILE",
+                      path + "@" + revision + " is " + actual + ", not " + binding["sha256"])
+
+
 def stores() -> dict[str, Any]:
     opened = {}
     for level, variable, _ in LEVELS:
@@ -222,6 +254,7 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
     """Append the binding receipt; a replay of the same binding returns the recorded one."""
     try:
         binding = committed_request(request.get("path"), request.get("sha256"))
+        verified_request(binding)
         if type(hb_epoch) is not int or hb_epoch < 32:
             raise Refused(REQUEST_INVALID, "HB_EPOCH_IS_A_SUPPLIED_INT_AT_LEAST_32", repr(hb_epoch))
         opened = stores()
@@ -340,6 +373,7 @@ def verify(request: Mapping[str, Any], ingress_result: Mapping[str, Any]) -> dic
     """
     try:
         binding = committed_request(request.get("path"), request.get("sha256"))
+        verified_request(binding)
         opened = stores()
         org = opened["organization"]
         expected = {level: ingress_result.get(field) for level, _, field in LEVELS}

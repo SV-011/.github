@@ -27,6 +27,8 @@ MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
 WRITER_ENV = """    env:
       LEDGER_REF: refs/stegverse/organization-ledger
       BEFORE: ${{ github.event.before }}
+      # bind and verify check the committed request's digest against the file at this revision
+      STEGVERSE_COMMITTED_REQUEST_SOURCE: ${{ github.workspace }}#${{ github.sha }}
 """
 
 
