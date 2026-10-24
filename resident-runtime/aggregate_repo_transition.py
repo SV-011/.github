@@ -49,6 +49,35 @@ def ledger_root():
     return ledger_store.parse_locator(configured)
 
 
+def repository_ledger_root():
+    """The caller-supplied repository ledger locator the source receipt must be on."""
+    configured = os.getenv("STEGVERSE_REPO_LEDGER_ROOT")
+    if not configured:
+        raise ValueError("ledger_location_required_from_caller: STEGVERSE_REPO_LEDGER_ROOT")
+    return ledger_store.parse_locator(configured)
+
+
+def _source_on_ledger(source_receipt: Mapping[str, Any], source_store: Any) -> None:
+    """The source receipt is on the repository ledger, reachable from HEAD, byte-for-byte.
+
+    Unconditional: it runs for every source receipt, whether or not it carries a
+    committed_request (OFF_LEDGER_SOURCE_RECEIPT_WITHOUT_BINDING_ACCEPTED).
+    """
+    digest = source_receipt["receipt_sha256"]
+    head = source_store.get(ledger_store.HEAD_KEY)
+    for receipt in _chain(source_store, head if isinstance(head, Mapping) else None):
+        if receipt.get("receipt_sha256") == digest:
+            if receipt != dict(source_receipt) or sha({k: v for k, v in receipt.items()
+                                                       if k != "receipt_sha256"}) != digest:
+                break
+            return
+    raise ledger_store.CommittedRequestRefused(
+        "SOURCE_RECEIPT_NOT_ON_LEDGER", "SOURCE_RECEIPT_IS_ON_THE_REPOSITORY_LEDGER_REACHABLE_FROM_HEAD",
+        "source receipt " + str(digest) + " is not the receipt the repository ledger holds on its chain",
+        "aggregate only a sealed repository receipt that the repository ledger chain reaches from HEAD",
+        "resident-runtime/aggregate_repo_transition.py append")
+
+
 def _chain(target: ledger_store.Store, head: Mapping[str, Any] | None):
     cursor = (head or {}).get("receipt_sha256") if isinstance(head, Mapping) else None
     while cursor:
@@ -70,9 +99,16 @@ def _recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
 def append(source_receipt: Mapping[str, Any], org_transition_class: str,
            predecessor_state: str, successor_state: str, boundary_evidence: Mapping[str, Any],
            authority_constraint: str, hb_epoch: int | None = None,
-           store: ledger_store.Store | None = None, idempotent: bool = False) -> dict[str, Any]:
+           store: ledger_store.Store | None = None, idempotent: bool = False,
+           source_store: Any = None) -> dict[str, Any]:
     if not isinstance(source_receipt, Mapping) or not isinstance(source_receipt.get("receipt_sha256"), str):
         raise ValueError("source_receipt_required")
+    # before any write: the source must be on the repository ledger first, unconditionally,
+    # then no committed_request may ride in the evidence or the source (V-P11 rows 5 and 3)
+    _source_on_ledger(source_receipt, source_store or ledger_store.open_store(repository_ledger_root()))
+    ledger_store.refuse_injected_committed_request("resident-runtime/aggregate_repo_transition.py append",
+                                                   boundary_evidence=boundary_evidence,
+                                                   source_receipt=source_receipt)
     target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)

@@ -84,6 +84,8 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     heartbeat epoch is not compared: a retry may arrive on another tick, and
     the tick is a time constraint, not a second transition.
     """
+    # before any write: caller-supplied evidence never carries a committed_request (V-P11 row 3)
+    ledger_store.refuse_injected_committed_request(".stegverse/transition-ledger/emit.py append", evidence=evidence)
     target = store or ledger_store.open_store(lr())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)

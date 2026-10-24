@@ -39,7 +39,7 @@ jobs:
       - name: Assert no workflow triggers on manual dispatch or schedule
         run: python -m unittest tests.test_workflow_triggers -v
       - name: Assert the ledger transition writer reads a committed request
-        run: python -m unittest tests.test_transition_request tests.test_committed_request_binding -v
+        run: python -m unittest tests.test_transition_request tests.test_committed_request_binding tests.test_committed_request_library_rows -v
       - name: Assert workflow actions are pinned to commit shas
         run: python -m unittest tests.test_workflow_action_pins -v
       - name: Assert validation-only authority

@@ -1,0 +1,141 @@
+"""V-P11 rows 3-5 on the library APIs: emit.append, aggregate_repo_transition.append, egress emit.
+
+Each is a forgery probe: a refusal is six fields and terminal, raised or
+returned before any ledger write (rows 3, 5) or any frame (row 4). Stdlib only.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SIX_FIELDS = ("failure_code", "failed_predicate", "required_evidence_or_repair",
+              "retry_entrypoint", "owning_existing_goal", "next_attempt")
+LEDGER_ROOTS = ("STEGVERSE_REPO_LEDGER_ROOT", "STEGVERSE_ORG_LEDGER_ROOT")
+
+
+def _module(name, relative):
+    spec = importlib.util.spec_from_file_location(name, ROOT / relative)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+emit = _module("emit_for_rows", ".stegverse/transition-ledger/emit.py")
+aggregate = _module("aggregate_for_rows", "resident-runtime/aggregate_repo_transition.py")
+egress = _module("egress_for_rows", "resident-runtime/organization_egress_boundary.py")
+GENESIS = {"mode": "ESTABLISH_GENESIS", "node_ref": "committed-request-rows", "predecessor": None}
+HALF_SET = {"path": ".stegverse/transition-ledger/requests/a.json"}  # no sha256
+
+
+class Ledgers(unittest.TestCase):
+    def setUp(self):
+        self._work = tempfile.TemporaryDirectory()
+        self.addCleanup(self._work.cleanup)
+        self.work = Path(self._work.name)
+        previous = {name: os.environ.get(name) for name in LEDGER_ROOTS}
+        self.addCleanup(lambda: [os.environ.pop(n, None) if v is None else os.environ.__setitem__(n, v)
+                                 for n, v in previous.items()])
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.work / "repo")
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(self.work / "org")
+
+    def written(self, variable):
+        root = Path(os.environ[variable])
+        return sorted(p.name for p in root.rglob("*.json")) if root.exists() else []
+
+    def assert_six_field(self, refusal, code, disposition="FAIL_CLOSED"):
+        self.assertEqual((refusal["disposition"], refusal["failure_code"]), (disposition, code), refusal)
+        self.assertIs(refusal["terminal"], True)
+        for field in SIX_FIELDS:
+            self.assertTrue(refusal.get(field), field)
+
+    def repository_receipt(self, transition_id="t-1"):
+        return emit.append(transition_id, "TEST_TRANSITION", "sha256:" + "1" * 64, "sha256:" + "2" * 64,
+                           {"note": "genuine"}, hb_epoch=33)
+
+
+class Row3InjectedEvidence(Ledgers):
+    def test_emit_append_refuses_committed_request_at_any_depth_before_any_write(self):
+        for evidence in ({"committed_request": HALF_SET},
+                         {"outer": {"inner": [{"committed_request": HALF_SET}]}}):
+            with self.assertRaises(ValueError) as raised:
+                emit.append("t-forged", "TEST_TRANSITION", "sha256:" + "1" * 64, "sha256:" + "2" * 64,
+                            evidence, hb_epoch=33)
+            self.assert_six_field(raised.exception.refusal, "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON")
+        self.assertEqual(self.written("STEGVERSE_REPO_LEDGER_ROOT"), [])
+
+    def test_aggregate_append_refuses_committed_request_at_any_depth_before_any_write(self):
+        source = self.repository_receipt()
+        for evidence in ({"committed_request": HALF_SET}, {"a": [{"b": {"committed_request": {}}}]}):
+            with self.assertRaises(ValueError) as raised:
+                aggregate.append(source, "REPO_STATE_PROPAGATION", "p", "s", evidence, "NONE", hb_epoch=33)
+            self.assert_six_field(raised.exception.refusal, "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON")
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+
+class Row5SourceReceiptOnLedger(Ledgers):
+    """OFF_LEDGER_SOURCE_RECEIPT_WITHOUT_BINDING_ACCEPTED: the presence check is unconditional."""
+
+    def off_ledger_variants(self, genuine):
+        body = {k: v for k, v in genuine.items() if k != "receipt_sha256"}
+        plain = dict(body, evidence={"note": "fabricated"})
+        carrying = dict(body, evidence={"note": "fabricated", "committed_request": HALF_SET})
+        return {
+            "rehashed, no committed_request": {**plain, "receipt_sha256": aggregate.sha(plain)},
+            "rehashed, carrying committed_request": {**carrying, "receipt_sha256": aggregate.sha(carrying)},
+            "genuine digest, tampered body": {**genuine, "evidence": {"note": "tampered"}},
+            "genuine digest, tampered body carrying committed_request":
+                {**genuine, "evidence": {"note": "tampered", "committed_request": HALF_SET}},
+        }
+
+    def test_a_source_receipt_off_the_repository_ledger_is_never_aggregated(self):
+        genuine = self.repository_receipt()
+        for name, source in self.off_ledger_variants(genuine).items():
+            with self.assertRaises(ValueError, msg=name) as raised:
+                aggregate.append(source, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+            self.assert_six_field(raised.exception.refusal, "SOURCE_RECEIPT_NOT_ON_LEDGER")
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+        organization = aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                        hb_epoch=33)
+        self.assertEqual(organization["repo_receipt_sha256"], genuine["receipt_sha256"])
+
+    def test_a_receipt_no_longer_reachable_from_head_is_never_aggregated(self):
+        first = self.repository_receipt("t-1")
+        second = self.repository_receipt("t-2")
+        repo = Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"])
+        head = json.loads((repo / "HEAD.json").read_text())
+        (repo / "HEAD.json").write_text(json.dumps({**head, "receipt_sha256": first["receipt_sha256"]}))
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(second, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "SOURCE_RECEIPT_NOT_ON_LEDGER")
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+    def test_an_absent_repository_ledger_is_never_aggregated(self):
+        genuine = self.repository_receipt()
+        for name in ("HEAD.json",):
+            (Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"]) / name).unlink()
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "SOURCE_RECEIPT_NOT_ON_LEDGER")
+
+
+class Row4EgressPayload(Ledgers):
+    def test_a_half_set_committed_request_in_an_egress_payload_publishes_zero_frames(self):
+        mesh = self.work / "mesh"
+        payload = {"message_class": "ecosystem.communication", "communication_id": "c-1",
+                   "subject": "s", "body": {"schema": "x", "committed_request": HALF_SET}}
+        result = egress.emit("StegVerse-org", payload, standing=GENESIS, capability="intr-destination",
+                             mesh_root=mesh, hb_epoch=33)
+        # the egress records its refusals as DENY transitions (existing convention); no frame is built
+        self.assert_six_field(result, "COMMITTED_REQUEST_IN_EGRESS_PAYLOAD", disposition="DENY")
+        self.assertIs(result["emitted"], False)
+        self.assertEqual(result["frames_published"], 0)
+        self.assertEqual(list(mesh.rglob("*.json")) if mesh.exists() else [], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

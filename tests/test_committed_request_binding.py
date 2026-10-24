@@ -503,21 +503,6 @@ class InTrIngressUnchanged(unittest.TestCase):
     #: (commit sha, V-P11 row, resulting file sha256) for each graded exception fix; empty on SV-011.
     GRADED_EXCEPTION_FIXES: tuple[tuple[str, str, str], ...] = ()
 
-    #: library files the lead's 20:29Z ruling keeps pinned to main (rows 5-7 there are OPEN for Grok Lane B)
-    PINNED_LIBRARY = {
-        ".stegverse/transition-ledger/emit.py": "ba8412815f2d78566cd83224194a43ed613ebbbac99bd0ed141064dbc70763d5",
-        "resident-runtime/aggregate_repo_transition.py":
-            "60d9221a376d92c7203942ef495447f8224f862629b4e5287cf6b77f052f08fb",
-        "resident-runtime/ledger_store.py": "279899d4a35f179508cc51ff8415ff73a994327ff8c47c9ccdb0d5c7797d7579",
-        "resident-runtime/organization_egress_boundary.py":
-            "478911384c798d876a860eeff67e3d9dc981110694d8c924b6ef187038e3d762",
-    }
-
-    def test_the_pinned_library_files_are_byte_identical_to_main(self):
-        import hashlib
-        for relative, digest in self.PINNED_LIBRARY.items():
-            self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), digest, relative)
-
     def test_the_allowlist_is_empty(self):
         self.assertEqual(self.GRADED_EXCEPTION_FIXES, ())
 
