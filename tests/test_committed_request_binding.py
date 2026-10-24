@@ -107,6 +107,17 @@ class Binding(Ledgers):
         self.assertEqual(first["binding_receipt_sha256"], second["binding_receipt_sha256"])
         self.assertEqual(len(self.files(binding.SCHEMA)), 1)
 
+    def test_a_replay_under_a_different_request_is_refused(self):
+        closure = self.closure()
+        first = binding.bind(REQUEST, closure, 33)
+        replayed = self.closure()  # same packet: the ingress answers with the recorded receipts
+        self.assertIs(replayed["transition_replayed"], True)
+        for other in ({**REQUEST, "sha256": "sha256:" + "d" * 64}, {**REQUEST, "path": "other.json"}):
+            result = binding.bind(other, replayed, 33)
+            self.assert_refused(result, "COMMITTED_REQUEST_REPLAY_MISMATCH")
+            self.assertIn(first["binding_receipt_sha256"], result["detail"])
+        self.assertEqual(len(self.files(binding.SCHEMA)), 1)
+
     def test_a_tampered_bound_receipt_fails_verification(self):
         closure = self.closure()
         binding.bind(REQUEST, closure, 33)
@@ -145,6 +156,16 @@ class Binding(Ledgers):
     def test_a_non_finite_value_is_never_written(self):
         with self.assertRaises(ValueError):
             binding.canon({"x": float("nan")})
+
+
+class InTrIngressUnchanged(unittest.TestCase):
+    #: sha256 of resident-runtime/intr_destination_ingress.py at main ecabf04 (InTr code, Grok Lane B).
+    MAIN_SHA256 = "390343dc625dfe849f0dbce1bd75ae89bd4d6eccf932b985108e7ce2fe5d3eb7"
+
+    def test_the_ingress_is_byte_identical_to_main(self):
+        import hashlib
+        data = (ROOT / "resident-runtime/intr_destination_ingress.py").read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), self.MAIN_SHA256)
 
 
 class OnTheGitLedgerRef(Ledgers):

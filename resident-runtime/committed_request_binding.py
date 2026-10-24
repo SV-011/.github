@@ -22,6 +22,11 @@ written:
   COMMITTED_REQUEST_INVALID: the committed request pair is half-set or malformed.
   BOUND_RECEIPT_UNREADABLE: a bound receipt is missing, unreadable, does not
     verify against its body, or does not have the recorded parent.
+  COMMITTED_REQUEST_REPLAY_MISMATCH: these receipts (a replayed packet) are
+    already bound to a committed request with a different path or digest.
+
+A replay of the same request against the same receipts returns the recorded
+binding.
 
 No clock is read. Stdlib only.
 """
@@ -48,6 +53,7 @@ ENTRYPOINT = ".github/workflows/organization-ledger-transition-writer.yml (push 
              ".stegverse/transition-ledger/requests/**)"
 REQUEST_INVALID = "COMMITTED_REQUEST_INVALID"
 RECEIPT_UNREADABLE = "BOUND_RECEIPT_UNREADABLE"
+REPLAY_MISMATCH = "COMMITTED_REQUEST_REPLAY_MISMATCH"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LEVELS = (("repository", "STEGVERSE_REPO_LEDGER_ROOT", "repository_receipt_sha256"),
           ("organization", "STEGVERSE_ORG_LEDGER_ROOT", "organization_receipt_sha256"))
@@ -64,9 +70,12 @@ class Refused(Exception):
 
 
 def refusal(exc: Refused) -> dict[str, Any]:
-    repair = ("a committed request path (printable token) and sha256 (sha256:<64 hex>)"
-              if exc.failure_code == REQUEST_INVALID else
-              "every bound receipt present on its ledger, verifying against its body, with the recorded parent")
+    repair = {
+        REQUEST_INVALID: "a committed request path (printable token) and sha256 (sha256:<64 hex>)",
+        RECEIPT_UNREADABLE: "every bound receipt present on its ledger, verifying against its body, "
+                            "with the recorded parent",
+        REPLAY_MISMATCH: "a new packet_id for a different committed request; the recorded binding is unchanged",
+    }[exc.failure_code]
     return {
         "disposition": "FAIL_CLOSED",
         "failure_code": exc.failure_code,
@@ -149,9 +158,14 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
     target.initialize()
     with target.exclusive():
         for digest, receipt in chain(target):
-            if receipt.get("committed_request") == binding and receipt.get("bound_receipts") == bound:
+            if receipt.get("bound_receipts") != bound:
+                continue
+            if receipt.get("committed_request") == binding:
                 return {"disposition": "ALLOW", "binding_receipt_sha256": digest, "replayed": True,
                         "binding_receipt": receipt}
+            return refusal(Refused(REPLAY_MISMATCH, "ONE_PACKET_BINDS_ONE_COMMITTED_REQUEST",
+                                   "receipts already bound by " + digest + " to "
+                                   + json.dumps(receipt.get("committed_request"), sort_keys=True)))
         head = target.get(HEAD)
         body = {
             "schema": SCHEMA,
