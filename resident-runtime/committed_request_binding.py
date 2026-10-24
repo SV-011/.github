@@ -509,7 +509,10 @@ def seal(published_tip: str | None, message: str) -> dict[str, Any]:
 def _seal(published_tip: str | None, message: str) -> dict[str, Any]:
     if not os.environ.get("STEGVERSE_ORG_LEDGER_ROOT"):
         return refusal(Refused(ENVIRONMENT_UNAVAILABLE, "LEDGER_LOCATION_SUPPLIED", "STEGVERSE_ORG_LEDGER_ROOT is not set"))
-    store = ledger_store.open_store(ledger_store.parse_locator(os.environ.get("STEGVERSE_ORG_LEDGER_ROOT", "")))
+    try:
+        store = ledger_store.open_store(ledger_store.parse_locator(os.environ["STEGVERSE_ORG_LEDGER_ROOT"]))
+    except ValueError as exc:
+        return refusal(Refused(ENVIRONMENT_UNAVAILABLE, "LEDGER_LOCATION_IS_VALID", str(exc)))
     if not hasattr(store, "_git"):
         return refusal(Refused(CHAIN_INVALID, "SEAL_NEEDS_A_GIT_LEDGER_REF", str(store.locator(ORG_HEAD))))
     tip = store._tip()

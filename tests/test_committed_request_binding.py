@@ -377,6 +377,50 @@ class ValidatorRows(Ledgers):
         for field in SIX_FIELDS:
             self.assertTrue(result.get(field), field)
 
+    def test_an_unreadable_store_locator_writes_nothing_downstream(self):
+        closure = {"repository_receipt_sha256": "sha256:" + "b" * 64,
+                   "organization_receipt_sha256": "sha256:" + "c" * 64}
+        not_a_dir = self.work / "not-a-dir"
+        not_a_dir.write_text("x")
+        locators = {
+            "a regular file": (str(not_a_dir), str(not_a_dir)),
+            "an absent directory": (str(self.work / "absent"), str(self.work / "absent")),
+            "an absent git repository": ("git+" + str(self.work / "absent.git") + "#refs/x",
+                                         "git+" + str(self.work / "absent.git") + "#refs/x:ns"),
+            "a malformed git locator": ("git+" + str(self.work / "bad") + "#not-a-ref",
+                                        "git+" + str(self.work / "bad") + "#not-a-ref"),
+        }
+        before = sorted(p.name for p in self.work.iterdir())
+        for name, (org, repo) in locators.items():
+            env = {"STEGVERSE_ORG_LEDGER_ROOT": org, "STEGVERSE_REPO_LEDGER_ROOT": repo}
+            for action in ("bind", "seal", "verify"):
+                code, result = self.cli(action, self.request_doc(), closure, env=env)
+                self.assertNotEqual(code, 0, (name, action))
+                self.assertEqual(result["disposition"], "FAIL_CLOSED", (name, action))
+                for field in SIX_FIELDS:
+                    self.assertTrue(result.get(field), (name, action, field))
+        after = sorted(p.name for p in self.work.iterdir())
+        created = set(after) - set(before) - {n for n in after if n.startswith(("request-", "out-", "ingress-"))}
+        self.assertEqual(created, set())  # no ledger directory, repository or ref was created downstream
+
+    def test_deep_cli_input_is_refused_six_field_not_a_traceback(self):
+        deep = self.work / "deep.json"
+        deep.write_text("[" * 200000 + "]" * 200000)
+        for action, request_path, ingress_path in (("bind", deep, None), ("verify", None, deep),
+                                                    ("precheck", deep, None)):
+            request_file = request_path or self.work / "request-ok.json"
+            if request_path is None:
+                request_file.write_text(json.dumps(self.request_doc()))
+            args = [sys.executable, str(self.MODULE), action, "--request-result", str(request_file),
+                    "--out", str(self.work / "out-deep.json")]
+            if action != "precheck":
+                args += ["--ingress-result", str(ingress_path or self.work / "request-ok.json")]
+            completed = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            self.assertNotIn("Traceback", completed.stderr)
+            self.assert_refused(json.loads(completed.stdout), "BOUND_RECEIPT_UNREADABLE")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+
     def test_row3_git_unavailable_is_a_non_terminal_retry_with_exit_75(self):
         closure = self.closure()
         scrubbed = {"PATH": str(self.work / "no-bin")}
