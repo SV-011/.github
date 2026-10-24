@@ -1,0 +1,32 @@
+{
+  "schema_version": "stegverse.sv011.service-registry.v1",
+  "organization": "SV-011",
+  "services": [
+    {
+      "service_id": "sv-011.boundary-diagnostic",
+      "repository": "SV-011/entity",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "accepts": ["sv011.phase5.diagnostic"],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "sv-011.intr-destination",
+      "repository": "SV-011/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_authority": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "address_constrains_admission": false,
+      "selects_processing_at_this_address": false,
+      "endpoint_adapter_disposition": "FAIL_CLOSED_ENDPOINT_ADAPTER_NOT_INSTALLED"
+    }
+  ],
+  "authorized_communication_set": ["sv-011.boundary-diagnostic"],
+  "boundary_rule": "Only explicitly registered services are admissible at the SV-011 organizational boundary. Carrier presence is a time constraint. Authority stays a constraint variable. A disposition is transition evidence."
+}

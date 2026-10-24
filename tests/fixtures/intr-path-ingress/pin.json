@@ -1,0 +1,5 @@
+{
+  "schema": "stegverse.intr-path-ingress-test-pin/v1",
+  "ledger_tip": "6594bafc85d47c041424e6b3f72cfa028a87f5a5",
+  "note": "A commit on refs/stegverse/organization-ledger. tests/test_intr_path_ingress.py archives it into temporary directories and writes synthetic destination receipts there. Nothing derived from it in the tests is ledgered or authentic."
+}

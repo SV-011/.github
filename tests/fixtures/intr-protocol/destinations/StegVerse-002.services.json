@@ -1,0 +1,125 @@
+{
+  "schema_version": "stegverse-002.service-registry.v1",
+  "organization": "StegVerse-002",
+  "services": [
+    {
+      "service_id": "stegverse-002.org-control",
+      "repository": "StegVerse-002/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-002.boundary-diagnostic",
+      "repository": "StegVerse-002/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "stegverse-002.stegprofile",
+      "repository": "StegVerse-002/StegProfile",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.legacy-core-lite",
+      "repository": "StegVerse-002/legacy_core_lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.micro-node-runtime",
+      "repository": "StegVerse-002/micro-node-runtime",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.capability-registry",
+      "repository": "StegVerse-002/capability-registry",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.core-lite",
+      "repository": "StegVerse-002/core-lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.stegguardian",
+      "repository": "StegVerse-002/StegGuardian",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.admissibility-gateway",
+      "repository": "StegVerse-002/admissibility-gateway",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.stegguardian-wiki",
+      "repository": "StegVerse-002/stegguardian-wiki",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.self-characterization",
+      "repository": "StegVerse-002/micro-node-runtime",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "REQUEST_SELF_CHARACTERIZATION"
+      ],
+      "endpoint_adapter": "resident-runtime/self_characterization_surface.py",
+      "entity_binding": "resident-runtime/self-characterization/stegverse-002.json",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "stegverse-002.capability-discovery",
+      "repository": "StegVerse-002/.github",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "LIST_CAPABILITIES",
+        "SEARCH_CAPABILITIES",
+        "READ_CAPABILITY_DESCRIPTOR"
+      ],
+      "endpoint_adapter": "resident-runtime/capability_discovery_surface.py",
+      "runtime_required_for_consumption": false,
+      "authority_effect": "NONE_DISCOVERY_ONLY"
+    },
+    {
+      "service_id": "stegverse-002.intr-destination",
+      "repository": "StegVerse-002/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    }
+  ],
+  "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed."
+}

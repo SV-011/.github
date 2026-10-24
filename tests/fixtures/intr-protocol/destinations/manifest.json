@@ -1,0 +1,129 @@
+{
+  "schema": "stegverse.intr-protocol-destination-snapshot/v1",
+  "protocol": "stegverse.intr-protocol/v1",
+  "snapshot_rule": "byte copies of each organization's .github default-branch documents at source_commit; checks read these files only, never the network",
+  "authentic_receipt": false,
+  "destinations": [
+    {
+      "organization": "StegVerse-org",
+      "repository": "StegVerse-org/.github",
+      "source_commit": "40a5d235551077185d9f7849a2c866ff5acf2796",
+      "interlock": {
+        "file": "StegVerse-org.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:cecc950bf1402438a7375d6a0b96100e02387e93565bbb1a7083ff0f2ad55495"
+      },
+      "services": {
+        "file": "StegVerse-org.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:bfdaeed8b5aebc9df7893d95798ded8b57e982b6c7b95fd55ddf0c3ed9fdab41"
+      }
+    },
+    {
+      "organization": "StegVerse-Labs",
+      "repository": "StegVerse-Labs/.github",
+      "source_commit": "978b8880d238dc3e3a8b690c0675d8bb0e9d6985",
+      "interlock": {
+        "file": "StegVerse-Labs.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:6c94383c34865dc92dee3a9e724223de3c434a95180b4a27e26ebc396026eca3"
+      },
+      "services": {
+        "file": "StegVerse-Labs.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:609f8a0a04568c0edf8f8f26e985b3d3f36311f1de345c32478f8db970295e0e"
+      }
+    },
+    {
+      "organization": "SV-011",
+      "repository": "SV-011/.github",
+      "source_commit": "4e17e4eee39726aeeb288571184b361e1b199ec3",
+      "source_ref": "SV-011/.github#14 head (laneb/intr-authority-effect); not yet the default branch, so admission of this snapshot depends on SV-011/.github#14",
+      "interlock": {
+        "file": "SV-011.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:e26e7f521a2c8d99ee8031da85550a90ae8d4ae5281dadc035a87e8c32a54f7b"
+      },
+      "services": {
+        "file": "SV-011.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:fb84e00e4adccd31f3a52f251d3582826fae267c67f03883e9df2532f4c1be4f"
+      }
+    },
+    {
+      "organization": "GCAT-BCAT-Engine",
+      "repository": "GCAT-BCAT-Engine/.github",
+      "source_commit": "c3cf1b1ab171d0ea04a1d345e7567860f00519a3",
+      "interlock": {
+        "file": "GCAT-BCAT-Engine.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:77c5c988ed678fc04d3f2e66acb8ba31ae389d9e084c36f370ddeba7233585c6"
+      },
+      "services": {
+        "file": "GCAT-BCAT-Engine.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:90eb861ec2b2e8b1b7e1cdb41ab90649b290bb39a6a0fbd39f070fb04d7ffe3b"
+      }
+    },
+    {
+      "organization": "Admissible-Existence",
+      "repository": "Admissible-Existence/.github",
+      "source_commit": "6d3e4265b14f68aabe0fde0bc11d5f31ca434a12",
+      "interlock": {
+        "file": "Admissible-Existence.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:5557687d572fecf4299bed8b501f7a9ce667a39410263213532e27a35cc93274"
+      },
+      "services": {
+        "file": "Admissible-Existence.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:8537cc1089814a2865b3c2fb796d5a96b9d42e1c16c868df0543841b1391029f"
+      }
+    },
+    {
+      "organization": "StegGhost",
+      "repository": "StegGhost/.github",
+      "source_commit": "da5c94758601decb69cfea2084975b74e974bbc9",
+      "interlock": {
+        "file": "StegGhost.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:db686b84097b4f8dcad9a1a77fcfb33a1542985796136405623c54feb298c6e8"
+      },
+      "services": {
+        "file": "StegGhost.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:c539d7e3cc00dd0e90406cf2d994d055ecc77d7ee4c508fbf8c91e41683d0c62"
+      }
+    },
+    {
+      "organization": "StegVerse-002",
+      "repository": "StegVerse-002/.github",
+      "source_commit": "b122dfe4654630620cbf650661290da4518f45ba",
+      "interlock": {
+        "file": "StegVerse-002.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:967e7c5b8b4864dc7d01769f9a74caf465973eda8184e2f2f4532d7b0acbf99e"
+      },
+      "services": {
+        "file": "StegVerse-002.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:7368eb0dd28cdd3bcc8e675133e712f9cf1618d01991a342051a9f13251bd6c2"
+      }
+    },
+    {
+      "organization": "SV-LLM",
+      "repository": "SV-LLM/.github",
+      "source_commit": "398326a27bc5816a5d06bffac8894a19d997ccdf",
+      "interlock": {
+        "file": "SV-LLM.interlock-intr.json",
+        "source_path": "org-runtime/interlock-intr.json",
+        "sha256": "sha256:39994f03ec945079ec270b734891ca825899895d646224f527e210ae1ffba941"
+      },
+      "services": {
+        "file": "SV-LLM.services.json",
+        "source_path": "org-boundary/registry/services.json",
+        "sha256": "sha256:8ee45f4581907f1f1305022bb6cbf74225d827c9aca01c0c5c50aa35711a7e74"
+      }
+    }
+  ]
+}
