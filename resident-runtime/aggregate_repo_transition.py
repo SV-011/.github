@@ -76,6 +76,8 @@ def designated_source_store() -> Any:
     the receipts' repository identity in _source_on_ledger.
     """
     organization, repository = ledger_root(), repository_ledger_root()
+    for location in (organization, repository):
+        ledger_store.refuse_tracked_ledger_root(location, ENTRYPOINT)
     if isinstance(organization, ledger_store.GitLocator) or isinstance(repository, ledger_store.GitLocator):
         expected = REPOSITORY_CONTRACT["repository_ledger_location"]["namespace"]
         if not (isinstance(organization, ledger_store.GitLocator) and isinstance(repository, ledger_store.GitLocator)

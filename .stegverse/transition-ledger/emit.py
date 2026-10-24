@@ -86,7 +86,11 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     """
     # before any write: caller-supplied evidence never carries a committed_request (V-P11 row 3)
     ledger_store.refuse_injected_committed_request(".stegverse/transition-ledger/emit.py append", evidence=evidence)
-    target = store or ledger_store.open_store(lr())
+    if store is None:
+        location = lr()
+        ledger_store.refuse_tracked_ledger_root(location, ".stegverse/transition-ledger/emit.py append")
+        store = ledger_store.open_store(location)
+    target = store
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
     previous_head = expected_head if isinstance(expected_head, dict) else None

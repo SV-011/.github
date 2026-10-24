@@ -205,6 +205,54 @@ class Row9CorruptReceiptOnTheWalk(Ledgers):
         self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
 
 
+class TrackedLedgerRoot(Ledgers):
+    """LEDGER_ROOT_NOT_CONTRACT_DESIGNATED (lead 20:59Z repair (a)): a committed fake ledger is never a root."""
+
+    def checkout_with_committed_ledger(self):
+        import subprocess
+        genuine = self.repository_receipt()  # a real chain, then committed into a checkout as a fake ledger
+        checkout = self.work / "checkout"
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        fake = checkout / "fake-ledger"
+        import shutil
+        shutil.copytree(os.environ["STEGVERSE_REPO_LEDGER_ROOT"], fake)
+        subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "-m", "fake ledger"], check=True)
+        return checkout, fake, genuine
+
+    def tree(self, root):
+        return sorted(str(p.relative_to(root)) for p in Path(root).rglob("*") if ".git" not in p.parts)
+
+    def test_a_committed_fake_ledger_is_refused_with_zero_writes(self):
+        checkout, fake, genuine = self.checkout_with_committed_ledger()
+        before = self.tree(checkout)
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(fake)
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED")
+        with self.assertRaises(ValueError) as raised:
+            emit.append("t-2", "TEST_TRANSITION", "sha256:" + "1" * 64, "sha256:" + "2" * 64, {"n": 1}, hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED")
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(checkout / "org-in-checkout")
+        (checkout / "org-in-checkout").mkdir()
+        (checkout / "org-in-checkout" / "HEAD.json").write_text("{}")
+        import subprocess
+        subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.work / "repo")
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
+        self.assert_six_field(raised.exception.refusal, "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED")
+        self.assertEqual(self.tree(checkout), before + ["org-in-checkout", "org-in-checkout/HEAD.json"])
+
+    def test_an_untracked_directory_inside_a_checkout_stays_allowed(self):
+        checkout, _, genuine = self.checkout_with_committed_ledger()
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(checkout / "untracked-org")
+        organization = aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                        hb_epoch=33)
+        self.assertEqual(organization["repo_receipt_sha256"], genuine["receipt_sha256"])
+
+
 class Row4EgressPayload(Ledgers):
     def test_a_half_set_committed_request_in_an_egress_payload_publishes_zero_frames(self):
         mesh = self.work / "mesh"

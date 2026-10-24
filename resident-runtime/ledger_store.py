@@ -56,6 +56,45 @@ class CommittedRequestRefused(ValueError):
         }
 
 
+def tracked_files_under(directory: Path) -> list[str]:
+    """Git-tracked files at or under ``directory`` (none when it is in no work tree)."""
+    target = Path(os.path.realpath(directory))
+    anchor = target
+    while not anchor.is_dir():
+        if anchor.parent == anchor:
+            return []
+        anchor = anchor.parent
+    listed = subprocess.run(["git", "-C", str(anchor), "ls-files", "-z", "--", str(target)],
+                            capture_output=True)
+    if listed.returncode != 0:  # not inside a git work tree
+        return []
+    return [name for name in listed.stdout.decode("utf-8", "replace").split("\0") if name]
+
+
+def refuse_tracked_ledger_root(location: Any, retry_entrypoint: str) -> None:
+    """A plain-directory ledger root holding git-tracked files is not a designated ledger (repair (a)).
+
+    A ledger is either the contract-designated git ref or an untracked supplied
+    directory (tests, local runs). A directory committed into a checkout could
+    carry a fabricated chain, so it is refused before any read or write.
+    """
+    if isinstance(location, GitLocator):
+        return
+    try:
+        tracked = tracked_files_under(Path(location))
+    except OSError as exc:
+        raise CommittedRequestRefused(
+            "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED", "LEDGER_ROOT_TRACKING_IS_VERIFIABLE",
+            str(location) + ": " + str(exc), "git on PATH to verify the ledger root is untracked",
+            retry_entrypoint, terminal=False) from None
+    if tracked:
+        raise CommittedRequestRefused(
+            "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED", "LEDGER_ROOT_IS_THE_DESIGNATED_REF_OR_AN_UNTRACKED_DIRECTORY",
+            str(location) + " holds tracked files, e.g. " + ", ".join(tracked[:3]),
+            "the contract-designated ledger ref (git+<checkout>#<ref>[:<namespace>]) or an untracked directory",
+            retry_entrypoint)
+
+
 def committed_request_path(value: Any) -> str | None:
     """The JSON path of a committed_request key at any depth of ``value``, read without recursion."""
     stack = [("$", value)]

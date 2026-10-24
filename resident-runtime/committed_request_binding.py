@@ -106,6 +106,7 @@ GIT_UNAVAILABLE = "GIT_UNAVAILABLE_RETRY"
 ENVIRONMENT_UNAVAILABLE = "LEDGER_ENVIRONMENT_UNAVAILABLE_RETRY"
 FORGED_FROM_EVIDENCE = "FORGED_COMMITTED_REQUEST_FROM_EVIDENCE_JSON"
 NOT_DESIGNATED = "SOURCE_LEDGER_NOT_DESIGNATED"
+NOT_DESIGNATED_ROOT = "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED"
 RECEIPT_CORRUPT = "LEDGER_RECEIPT_CORRUPT"
 READ_FAULT = "LEDGER_READ_FAULT_RETRY"
 REPOSITORY_CONTRACT = json.loads((Path(__file__).resolve().parents[1] / ".stegverse/transition-ledger/contract.json")
@@ -150,6 +151,8 @@ def refusal(exc: Refused) -> dict[str, Any]:
         NOT_DESIGNATED: "this repository's own ledger: the organization ledger's repository (realpath) and ref "
                         "with the contract namespace, holding receipts that name " + REPOSITORY_CONTRACT["repository"],
         RECEIPT_CORRUPT: "repair the corrupt ledger document",
+        NOT_DESIGNATED_ROOT: "the contract-designated ledger ref or an untracked directory, never a directory "
+                             "of git-tracked files",
         READ_FAULT: "a readable ledger store; re-run",
         FORGED_FROM_EVIDENCE: "run results without any committed_request key; the binding builds it from the "
                               "verified request path and digest",
@@ -316,6 +319,15 @@ def stores() -> dict[str, Any]:
 
 def designated(organization: Any, repository: Any) -> None:
     """The repository ledger is this repository's own, never a caller-chosen one (row 8)."""
+    for location in (organization, repository):
+        try:
+            ledger_store.refuse_tracked_ledger_root(location, ENTRYPOINT)
+        except ValueError as exc:
+            refused = getattr(exc, "refusal", None)
+            if not refused:
+                raise
+            raise Refused(NOT_DESIGNATED_ROOT if refused["terminal"] else GIT_UNAVAILABLE,
+                          refused["failed_predicate"], refused["detail"]) from None
     if not (isinstance(organization, ledger_store.GitLocator) or isinstance(repository, ledger_store.GitLocator)):
         return  # a directory store (tests, local runs) is held to the receipts' repository identity
     expected = REPOSITORY_CONTRACT["repository_ledger_location"]["namespace"]

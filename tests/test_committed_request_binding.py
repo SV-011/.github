@@ -578,6 +578,33 @@ class SourceLedgerRows(Ledgers):
         self.assert_refused(result, "SOURCE_LEDGER_NOT_DESIGNATED")
         self.assertEqual(self.files(binding.SCHEMA), [])
 
+    def test_a_committed_fake_ledger_root_is_refused_through_the_cli(self):
+        closure = self.closure()
+        checkout = self.work / "checkout"
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        import shutil
+        shutil.copytree(os.environ["STEGVERSE_REPO_LEDGER_ROOT"], checkout / "fake-ledger")
+        subprocess.run(["git", "-C", str(checkout), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "-m", "fake ledger"], check=True)
+        request = self.work / "request.json"
+        request.write_text(json.dumps({"request_path": REQUEST["path"], "request_sha256": REQUEST["sha256"],
+                                       "hb_epoch": 33}))
+        ingress = self.work / "ingress.json"
+        ingress.write_text(json.dumps(closure))
+        env = {**os.environ, "STEGVERSE_REPO_LEDGER_ROOT": str(checkout / "fake-ledger")}
+        for action in ("bind", "verify"):
+            out = self.work / (action + ".json")
+            completed = subprocess.run([sys.executable, str(ROOT / "resident-runtime/committed_request_binding.py"),
+                                        action, "--request-result", str(request), "--ingress-result", str(ingress),
+                                        "--out", str(out)], capture_output=True, text=True, env=env)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            self.assert_refused(json.loads(out.read_text()), "LEDGER_ROOT_NOT_CONTRACT_DESIGNATED")
+        self.assertEqual(self.files(binding.SCHEMA), [])
+        status = subprocess.run(["git", "-C", str(checkout), "status", "--porcelain"], capture_output=True,
+                                text=True, check=True).stdout
+        self.assertEqual(status, "")  # 0 writes into the committed fake ledger
+
     def test_row9_a_corrupt_receipt_on_the_walk_is_terminal_and_a_read_fault_is_a_retry(self):
         closure = self.closure()
         repo_root = Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"])
