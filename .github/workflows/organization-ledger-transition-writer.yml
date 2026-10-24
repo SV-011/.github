@@ -10,9 +10,11 @@ name: Organization Ledger Transition Writer
 # then performs the intr-destination diagnostic self-closure: it appends the
 # repository receipt and the organization receipt (both carry communication_id)
 # to refs/stegverse/organization-ledger, pushes that ref fast-forward only, and
-# reads both receipts back from a fresh fetch. The request digest is recorded in
-# this run's request.json evidence and step summary; the ingress receipt
-# payload is unchanged.
+# reads both receipts back from a fresh fetch. The ingress (InTr code) is
+# unchanged; resident-runtime/committed_request_binding.py appends a companion
+# binding receipt to the same ledger ref that records the committed request
+# {path, sha256, hb_epoch_source: COMMITTED_REQUEST} and the digest and parent
+# of both receipts, and the readback verifies it from the fresh fetch.
 # This workflow has no pull_request trigger, so no PR-triggered job holds
 # contents: write. The PR-facing checks are
 # .github/workflows/organization-ledger-transition.yml (read-only).
@@ -123,6 +125,18 @@ jobs:
           python3 -c 'import json,os,sys; x=json.load(open(sys.argv[1])); assert x["disposition"]=="ALLOW", x; assert x.get("communication_id"); assert x["repository_receipt_observed"] is True; assert x["organization_receipt_observed"] is True; assert x["production_receipt_claimed"] is False; assert x["communication_id"]==os.environ["STEGVERSE_COMMUNICATION_ID"]; print("closure", x["communication_id"], x["repository_receipt_sha256"], x["organization_receipt_sha256"])' \
             "$RUNNER_TEMP/results/ingress.json"
 
+      - name: Bind the committed request to the closure's receipts
+        if: env.REQUEST_DISPOSITION == 'ALLOW'
+        run: |
+          set -euo pipefail
+          locators=$(python3 resident-runtime/organization_ledger_readback.py --designated-locators "$GITHUB_WORKSPACE")
+          export STEGVERSE_ORG_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["organization_locator"])' "$locators")
+          export STEGVERSE_REPO_LEDGER_ROOT=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["repository_locator"])' "$locators")
+          python3 resident-runtime/committed_request_binding.py bind \
+            --request-result "$RUNNER_TEMP/results/request.json" \
+            --ingress-result "$RUNNER_TEMP/results/ingress.json" \
+            --out "$RUNNER_TEMP/results/binding.json"
+
       - name: Publish the ledger ref (fast-forward only)
         if: env.REQUEST_DISPOSITION == 'ALLOW'
         run: |
@@ -153,6 +167,12 @@ jobs:
             --repository-namespace "$REPO_LEDGER_NAMESPACE" \
             --ingress-result "$RUNNER_TEMP/results/ingress.json" \
             --out "$RUNNER_TEMP/results/readback.json"
+          STEGVERSE_ORG_LEDGER_ROOT="git+$fresh#$LEDGER_REF" \
+          STEGVERSE_REPO_LEDGER_ROOT="git+$fresh#$LEDGER_REF:$REPO_LEDGER_NAMESPACE" \
+            python3 resident-runtime/committed_request_binding.py verify \
+            --request-result "$RUNNER_TEMP/results/request.json" \
+            --ingress-result "$RUNNER_TEMP/results/ingress.json" \
+            --out "$RUNNER_TEMP/results/binding-verify.json"
           {
             echo '### organization ledger readback'
             echo '```json'

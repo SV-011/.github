@@ -96,6 +96,7 @@ class WriterSplit(unittest.TestCase):
             "      - name: Bind the designated organization ledger ref",
             "      - name: Read the committed request",
             "      - name: Append the intr-destination diagnostic self-closure",
+            "      - name: Bind the committed request to the closure's receipts",
             "      - name: Publish the ledger ref (fast-forward only)",
             "      - name: Read the organization and repository ledgers back from a fresh fetch",
             "      - name: Retain the run's evidence",
@@ -103,6 +104,8 @@ class WriterSplit(unittest.TestCase):
         self.assertIn('git push origin "$LEDGER_REF:$LEDGER_REF"', self.writer)
         self.assertNotRegex(self.writer, r"git push[^\n]*\+")
         self.assertIn("intr_destination_ingress.py --self-closure", self.writer)
+        self.assertIn("committed_request_binding.py bind", self.writer)
+        self.assertIn("committed_request_binding.py verify", self.writer)
         self.assertIn("organization_ledger_readback.py \\\n            --location \"git+$fresh#$LEDGER_REF\"",
                       self.writer)
 
