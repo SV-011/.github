@@ -3,16 +3,14 @@
 resident-runtime/transition_request.py gates the request a push to main
 commits under .stegverse/transition-ledger/requests/: absent -> NOT_SUPPLIED,
 contradicted -> INVALID, no default epoch, no clock. An accepted request's
-digest is recorded on the self-closure's repository receipt. Stdlib only.
+digest is recorded in the writer run's evidence and step summary. Stdlib only.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
-import re
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,8 +29,6 @@ def _module(name, relative):
 
 
 tr = _module("transition_request_under_test", "resident-runtime/transition_request.py")
-ingress = _module("intr_destination_ingress_for_request", "resident-runtime/intr_destination_ingress.py")
-REGISTRY = json.loads((ROOT / "org-boundary/registry/services.json").read_text(encoding="utf-8"))
 
 
 def request(**overrides):
@@ -141,29 +137,6 @@ class PushSelection(unittest.TestCase):
         self.assertEqual(tr.select("0" * 40, after, None)["disposition"], "ALLOW")
 
 
-class RequestDigestOnTheReceipt(unittest.TestCase):
-    def setUp(self):
-        self._work = tempfile.TemporaryDirectory()
-        self.addCleanup(self._work.cleanup)
-        for name in ("STEGVERSE_REPO_LEDGER_ROOT", "STEGVERSE_ORG_LEDGER_ROOT"):
-            previous = os.environ.get(name)
-            os.environ[name] = str(Path(self._work.name) / name.lower())
-            self.addCleanup(lambda n=name, v=previous: os.environ.pop(n, None) if v is None
-                            else os.environ.__setitem__(n, v))
-
-    def test_the_repository_receipt_carries_the_request_digest(self):
-        digest = "sha256:" + "a" * 64
-        result = ingress.self_closure("comm-1", registry=REGISTRY, packet_id="packet-digest",
-                                      hb_epoch=33, request_sha256=digest)
-        self.assertEqual(result["disposition"], "ALLOW", result)
-        found = [json.loads(p.read_text()) for p in Path(os.environ["STEGVERSE_REPO_LEDGER_ROOT"]).rglob("*.json")]
-        receipts = [r for r in found if r.get("schema") == "stegverse.repo-transition-receipt/v1"]
-        self.assertEqual([r["evidence"]["request_sha256"] for r in receipts], [digest])
-
-    def test_a_closure_without_a_request_is_unchanged(self):
-        self.assertNotIn("request_sha256", ingress.diagnostic_payload("comm-1")["body"])
-
-
 class WriterTrigger(unittest.TestCase):
     def test_the_writer_runs_on_a_committed_request_and_takes_no_input(self):
         text = WRITER.read_text(encoding="utf-8")
@@ -174,6 +147,7 @@ class WriterTrigger(unittest.TestCase):
             self.assertNotIn(word, text.split("\njobs:", 1)[0].split("\non:\n", 1)[1], word)
         self.assertNotIn("inputs.", text)
         self.assertIn("resident-runtime/transition_request.py --before \"$BEFORE\" --after \"$GITHUB_SHA\"", text)
+        self.assertIn('cat "$RUNNER_TEMP/results/request.json"', text)
         self.assertNotRegex(text, r"(?i)\bdate\b|now\(|time\.time")
 
 

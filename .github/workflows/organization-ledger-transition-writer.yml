@@ -8,9 +8,11 @@ name: Organization Ledger Transition Writer
 # the epoch's lower bound from the ledger head. A missing field is NOT_SUPPLIED,
 # a contradicted one INVALID, each six fields, and nothing is written. The run
 # then performs the intr-destination diagnostic self-closure: it appends the
-# repository receipt (it carries communication_id and the request digest) and
-# the organization receipt that preserves it to refs/stegverse/organization-ledger, pushes that ref
-# fast-forward only, and reads both receipts back from a fresh fetch.
+# repository receipt and the organization receipt (both carry communication_id)
+# to refs/stegverse/organization-ledger, pushes that ref fast-forward only, and
+# reads both receipts back from a fresh fetch. The request digest is recorded in
+# this run's request.json evidence and step summary; the ingress receipt
+# payload is unchanged.
 # This workflow has no pull_request trigger, so no PR-triggered job holds
 # contents: write. The PR-facing checks are
 # .github/workflows/organization-ledger-transition.yml (read-only).
@@ -84,6 +86,12 @@ jobs:
               print("STEGVERSE_HB_EPOCH=" + str(x["hb_epoch"]))
               print("STEGVERSE_REQUEST_SHA256=" + x["request_sha256"])
           PY
+          {
+            echo '### committed request'
+            echo '```json'
+            cat "$RUNNER_TEMP/results/request.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Append the intr-destination diagnostic self-closure
         if: env.REQUEST_DISPOSITION == 'ALLOW'
@@ -91,7 +99,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import os, sys
-          for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID", "STEGVERSE_HB_EPOCH", "STEGVERSE_REQUEST_SHA256"):
+          for name in ("STEGVERSE_COMMUNICATION_ID", "STEGVERSE_PACKET_ID", "STEGVERSE_HB_EPOCH"):
               value = os.environ.get(name, "")
               if not value.strip() or any(ord(character) < 32 or ord(character) > 126 for character in value):
                   print("FAIL_CLOSED: " + name + "_NOT_A_PRINTABLE_TOKEN")

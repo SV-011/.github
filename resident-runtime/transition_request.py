@@ -19,7 +19,7 @@ refusal; nothing is written either way:
     request.
 
 An accepted request carries ``request_sha256`` (sha256 of the committed bytes),
-which the self-closure records in both receipts. Stdlib only.
+recorded in the writer run's request.json evidence and step summary. Stdlib only.
 """
 from __future__ import annotations
 
