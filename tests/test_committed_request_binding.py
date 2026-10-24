@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -132,6 +133,44 @@ class Binding(Ledgers):
         (path, receipt), = self.files(binding.SCHEMA)
         receipt["hb_epoch"] = 99
         path.write_text(json.dumps(receipt))
+        self.assert_refused(binding.verify(REQUEST, closure), "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
+
+    def test_each_binding_records_the_organization_head_at_append(self):
+        closure = self.closure()
+        receipt = binding.bind(REQUEST, closure, 33)["binding_receipt"]
+        self.assertEqual(receipt["organization_head_sha256"], closure["organization_receipt_sha256"])
+
+    def test_the_bindings_chain_is_hash_linked_and_append_only(self):
+        first = binding.bind(REQUEST, self.closure("packet-1"), 33)
+        other = {**REQUEST, "sha256": "sha256:" + "e" * 64}
+        second_closure = self.closure("packet-2")
+        second = binding.bind(other, second_closure, 33)
+        self.assertEqual(second["binding_receipt"]["previous_binding_sha256"], first["binding_receipt_sha256"])
+        self.assertEqual([digest for digest, _ in binding.chain(binding.stores()["organization"])],
+                         [second["binding_receipt_sha256"], first["binding_receipt_sha256"]])
+        self.assertEqual(binding.verify(other, second_closure)["bindings_chain_length"], 2)
+        # an earlier binding rewritten in place breaks the chain for every later verify
+        (path, older), = [(p, r) for p, r in self.files(binding.SCHEMA)
+                          if r["receipt_sha256"] == first["binding_receipt_sha256"]]
+        older["committed_request"]["path"] = "rewritten.json"
+        path.write_text(json.dumps(older))
+        self.assert_refused(binding.verify(other, second_closure), "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
+
+    def test_receipts_without_a_binding_are_binding_absent_never_allow(self):
+        closure = self.closure()
+        self.assert_refused(binding.verify(REQUEST, closure), "COMMITTED_REQUEST_BINDING_ABSENT")
+
+    def test_receipts_bound_to_another_request_are_binding_absent(self):
+        closure = self.closure()
+        binding.bind(REQUEST, closure, 33)
+        other = {**REQUEST, "sha256": "sha256:" + "f" * 64}
+        self.assert_refused(binding.verify(other, closure), "COMMITTED_REQUEST_BINDING_ABSENT")
+
+    def test_a_binding_whose_organization_receipt_is_gone_is_detected(self):
+        closure = self.closure()
+        binding.bind(REQUEST, closure, 33)
+        (path, _), = self.files("stegverse.organization-transition-receipt/v1")
+        path.unlink()
         self.assert_refused(binding.verify(REQUEST, closure), "BOUND_RECEIPT_UNREADABLE")
 
     def test_a_malformed_or_half_set_request_is_terminal_and_writes_nothing(self):
@@ -169,19 +208,63 @@ class InTrIngressUnchanged(unittest.TestCase):
 
 
 class OnTheGitLedgerRef(Ledgers):
+    REF = "refs/stegverse/organization-ledger"
+
     def use_directories(self):
-        ref = "refs/stegverse/organization-ledger"
-        self.location = "git+" + str(self.work / "ledger.git") + "#" + ref
+        self.repository = self.work / "ledger.git"
+        self.location = "git+" + str(self.repository) + "#" + self.REF
         os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = self.location
         os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = self.location + ":" + NAMESPACE
 
-    def test_the_binding_sits_on_the_ref_and_the_readback_still_verifies(self):
-        closure = self.closure()
-        self.assertEqual(binding.bind(REQUEST, closure, 33)["disposition"], "ALLOW")
-        self.assertEqual(binding.verify(REQUEST, closure)["disposition"], "ALLOW")
+    def git(self, *args):
+        return subprocess.run(("git", "--git-dir", str(self.repository)) + args, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def tip(self):
+        result = subprocess.run(("git", "--git-dir", str(self.repository), "rev-parse", "--verify", "--quiet",
+                                 self.REF), capture_output=True, text=True)
+        return result.stdout.strip() or None
+
+    def run_writer(self, packet="packet-1", request=REQUEST):
+        published = self.tip()
+        closure = self.closure(packet)
+        self.assertEqual(binding.bind(request, closure, 33)["disposition"], "ALLOW")
+        sealed = binding.seal(published, "ledger: committed request")
+        self.assertEqual(sealed["disposition"], "ALLOW", sealed)
+        return published, closure, sealed
+
+    def test_the_binding_is_one_commit_with_its_receipts_and_the_readback_stays_allow(self):
+        published, closure, sealed = self.run_writer()
+        self.assertEqual(self.tip(), sealed["sealed_commit"])
+        self.assertEqual(self.git("rev-list", "--count", self.REF), "1")
+        added = set(self.git("show", "--format=", "--name-only", sealed["sealed_commit"]).splitlines())
+        (_, receipt), = [(None, json.loads(self.git("show", self.REF + ":" + name)))
+                         for name in added if name.startswith(binding.PREFIX) and not name.endswith("HEAD.json")]
+        for level, digest in (("repository", closure["repository_receipt_sha256"]),
+                              ("organization", closure["organization_receipt_sha256"])):
+            prefix = NAMESPACE + "/" if level == "repository" else ""
+            self.assertIn(prefix + "receipts/" + digest[7:] + ".json", added)
+        verified = binding.verify(REQUEST, closure)
+        self.assertEqual(verified["disposition"], "ALLOW", verified)
+        self.assertEqual(verified["ledger_commit"], sealed["sealed_commit"])
+        self.assertEqual(verified["bindings_head_sha256"], receipt["receipt_sha256"])
+        self.assertEqual(verified["organization_head_sha256"], closure["organization_receipt_sha256"])
         result = readback.readback(self.location, closure, NAMESPACE)
         self.assertEqual(result["disposition"], "ALLOW", result)
-        self.assertEqual(result["organization_receipt_sha256"], closure["organization_receipt_sha256"])
+
+    def test_a_second_run_seals_onto_the_published_tip(self):
+        _, _, first = self.run_writer("packet-1")
+        published, closure, second = self.run_writer("packet-2", {**REQUEST, "sha256": "sha256:" + "e" * 64})
+        self.assertEqual(published, first["sealed_commit"])
+        self.assertEqual(self.git("rev-parse", second["sealed_commit"] + "^"), first["sealed_commit"])
+        self.assertEqual(binding.verify({**REQUEST, "sha256": "sha256:" + "e" * 64}, closure)["disposition"], "ALLOW")
+
+    def test_an_unsealed_binding_is_not_in_the_same_commit_as_its_receipts(self):
+        closure = self.closure()
+        binding.bind(REQUEST, closure, 33)
+        result = binding.verify(REQUEST, closure)
+        self.assert_refused(result, "COMMITTED_REQUEST_BINDING_CHAIN_INVALID")
+        self.assertEqual(result["failed_predicate"], "BINDING_IS_COMMITTED_WITH_THE_RECEIPTS_IT_BINDS")
 
 
 if __name__ == "__main__":

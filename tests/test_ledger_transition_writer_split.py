@@ -105,6 +105,7 @@ class WriterSplit(unittest.TestCase):
         self.assertNotRegex(self.writer, r"git push[^\n]*\+")
         self.assertIn("intr_destination_ingress.py --self-closure", self.writer)
         self.assertIn("committed_request_binding.py bind", self.writer)
+        self.assertIn("committed_request_binding.py seal --published-tip", self.writer)
         self.assertIn("committed_request_binding.py verify", self.writer)
         self.assertIn("organization_ledger_readback.py \\\n            --location \"git+$fresh#$LEDGER_REF\"",
                       self.writer)

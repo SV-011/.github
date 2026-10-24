@@ -24,6 +24,17 @@ written:
     verify against its body, or does not have the recorded parent.
   COMMITTED_REQUEST_REPLAY_MISMATCH: these receipts (a replayed packet) are
     already bound to a committed request with a different path or digest.
+  COMMITTED_REQUEST_BINDING_ABSENT (verify): the closure's receipts have no
+    binding, or are bound to a different committed request; never a silent ALLOW.
+  COMMITTED_REQUEST_BINDING_CHAIN_INVALID (verify): a binding on the chain does
+    not verify against its body, is not linked to its predecessor, or was not
+    committed in the same ledger commit as the receipts it binds.
+
+Each binding also records the organization chain HEAD at the moment of append
+(organization_head_sha256), cross-linking the two chains. ``seal`` folds the
+run's unpublished ledger commits into one commit on the published tip, so the
+receipts and their binding are published in the same commit and the same
+fast-forward push.
 
 A replay of the same request against the same receipts returns the recorded
 binding.
@@ -54,6 +65,9 @@ ENTRYPOINT = ".github/workflows/organization-ledger-transition-writer.yml (push 
 REQUEST_INVALID = "COMMITTED_REQUEST_INVALID"
 RECEIPT_UNREADABLE = "BOUND_RECEIPT_UNREADABLE"
 REPLAY_MISMATCH = "COMMITTED_REQUEST_REPLAY_MISMATCH"
+BINDING_ABSENT = "COMMITTED_REQUEST_BINDING_ABSENT"
+CHAIN_INVALID = "COMMITTED_REQUEST_BINDING_CHAIN_INVALID"
+ORG_HEAD = "HEAD.json"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LEVELS = (("repository", "STEGVERSE_REPO_LEDGER_ROOT", "repository_receipt_sha256"),
           ("organization", "STEGVERSE_ORG_LEDGER_ROOT", "organization_receipt_sha256"))
@@ -75,6 +89,10 @@ def refusal(exc: Refused) -> dict[str, Any]:
         RECEIPT_UNREADABLE: "every bound receipt present on its ledger, verifying against its body, "
                             "with the recorded parent",
         REPLAY_MISMATCH: "a new packet_id for a different committed request; the recorded binding is unchanged",
+        BINDING_ABSENT: "a binding receipt for exactly this committed request and these receipts, "
+                        "committed with them",
+        CHAIN_INVALID: "every binding verifies against its body, links to its predecessor and is committed "
+                       "in the same ledger commit as the receipts it binds",
     }[exc.failure_code]
     return {
         "disposition": "FAIL_CLOSED",
@@ -167,6 +185,7 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
                                    "receipts already bound by " + digest + " to "
                                    + json.dumps(receipt.get("committed_request"), sort_keys=True)))
         head = target.get(HEAD)
+        org_head = target.get(ORG_HEAD)
         body = {
             "schema": SCHEMA,
             "committed_request": binding,
@@ -177,6 +196,7 @@ def bind(request: Mapping[str, Any], ingress_result: Mapping[str, Any], hb_epoch
             "time_constraint": "HEARTBEAT_EPOCH",
             "disposition_is_transition_evidence": True,
             "production_receipt_claimed": False,
+            "organization_head_sha256": org_head.get("receipt_sha256") if isinstance(org_head, Mapping) else None,
             "previous_binding_sha256": head.get("receipt_sha256") if isinstance(head, Mapping) else None,
         }
         digest = sha(body)
@@ -201,35 +221,105 @@ def chain(store: Any):
         cursor = receipt.get("previous_binding_sha256") if isinstance(receipt, Mapping) else None
 
 
+def _org_chain(store: Any, start: Any) -> list[str]:
+    """Organization receipt digests from ``start`` back through previous_receipt_sha256, each sealed."""
+    digests, cursor = [], start
+    while isinstance(cursor, str) and cursor not in digests:
+        receipt = _get(store, ledger_store.receipt_key(cursor))
+        if not sealed(receipt, cursor):
+            raise Refused(RECEIPT_UNREADABLE, "ORGANIZATION_CHAIN_VERIFIES_FROM_THE_RECORDED_HEAD", cursor)
+        digests.append(cursor)
+        cursor = receipt.get("previous_receipt_sha256")
+    return digests
+
+
+def _added_in(store: Any, key: str) -> str | None:
+    """The ledger commit that added ``key`` (git ref stores); None for a directory store."""
+    if not hasattr(store, "_git"):
+        return None
+    path = store._path(key)
+    found = store._git("log", "--format=%H", "--diff-filter=A", "-1", store.ref, "--", path).stdout.decode().strip()
+    if not found:
+        raise Refused(CHAIN_INVALID, "BOUND_KEY_IS_IN_LEDGER_HISTORY", path)
+    return found
+
+
 def verify(request: Mapping[str, Any], ingress_result: Mapping[str, Any]) -> dict[str, Any]:
-    """VERIFIED from the ledger alone: the binding for this request and these receipts is recorded and holds."""
+    """ALLOW only when, from the ledger alone, these receipts carry this committed request's binding.
+
+    The whole binding chain is checked (sealed, schema, hash-linked); the
+    binding's bound receipts verify with their recorded parents; its recorded
+    organization HEAD is on the organization chain and reaches the bound
+    organization receipt; and on a git ref the binding was added in the same
+    commit as both receipts.
+    """
     try:
         binding = committed_request(request.get("path"), request.get("sha256"))
         opened = stores()
+        org = opened["organization"]
         expected = {level: ingress_result.get(field) for level, _, field in LEVELS}
-        for digest, receipt in chain(opened["organization"]):
+        links = list(chain(org))
+        found = None
+        for index, (digest, receipt) in enumerate(links):
             if not sealed(receipt, digest) or receipt.get("schema") != SCHEMA:
-                raise Refused(RECEIPT_UNREADABLE, "BINDING_RECEIPT_VERIFIES_AGAINST_ITS_BODY", digest)
-            if receipt.get("committed_request") != binding:
-                continue
+                raise Refused(CHAIN_INVALID, "BINDING_RECEIPT_VERIFIES_AGAINST_ITS_BODY", digest)
+            successor = links[index - 1][1] if index else None
+            if successor is not None and successor.get("previous_binding_sha256") != digest:
+                raise Refused(CHAIN_INVALID, "BINDING_CHAIN_IS_HASH_LINKED", digest)
             recorded = {entry.get("level"): entry for entry in receipt.get("bound_receipts") or []}
-            if {level: entry.get("receipt_sha256") for level, entry in recorded.items()} != expected:
-                continue
-            for level, entry in recorded.items():
-                if bound_receipt(opened[level], level, entry.get("receipt_sha256")) != entry:
-                    raise Refused(RECEIPT_UNREADABLE, "BOUND_RECEIPT_HAS_THE_RECORDED_PARENT", level)
-            return {"disposition": "ALLOW", "verified": True, "binding_receipt_sha256": digest,
-                    "committed_request": binding, "bound_receipts": list(recorded.values()),
-                    "production_receipt_claimed": False}
-        raise Refused(RECEIPT_UNREADABLE, "BINDING_RECEIPT_IS_ON_THE_LEDGER",
-                      "no binding for " + binding["path"] + " " + binding["sha256"])
+            if found is None and {lv: e.get("receipt_sha256") for lv, e in recorded.items()} == expected:
+                found = (digest, receipt, recorded)
+        if found is None:
+            raise Refused(BINDING_ABSENT, "CLOSURE_RECEIPTS_CARRY_A_BINDING",
+                          "no binding names " + json.dumps(expected, sort_keys=True))
+        digest, receipt, recorded = found
+        if receipt.get("committed_request") != binding:
+            raise Refused(BINDING_ABSENT, "BINDING_NAMES_THIS_COMMITTED_REQUEST",
+                          digest + " binds " + json.dumps(receipt.get("committed_request"), sort_keys=True))
+        for level, entry in recorded.items():
+            if bound_receipt(opened[level], level, entry.get("receipt_sha256")) != entry:
+                raise Refused(RECEIPT_UNREADABLE, "BOUND_RECEIPT_HAS_THE_RECORDED_PARENT", level)
+        if expected["organization"] not in _org_chain(org, receipt.get("organization_head_sha256")):
+            raise Refused(BINDING_ABSENT, "RECORDED_ORGANIZATION_HEAD_REACHES_THE_BOUND_RECEIPT",
+                          str(receipt.get("organization_head_sha256")))
+        commits = {_added_in(org, PREFIX + digest[7:] + ".json"),
+                   _added_in(org, ledger_store.receipt_key(expected["organization"])),
+                   _added_in(opened["repository"], ledger_store.receipt_key(expected["repository"]))}
+        if len(commits) != 1:
+            raise Refused(CHAIN_INVALID, "BINDING_IS_COMMITTED_WITH_THE_RECEIPTS_IT_BINDS", ",".join(
+                sorted(str(commit) for commit in commits)))
+        return {"disposition": "ALLOW", "verified": True, "binding_receipt_sha256": digest,
+                "bindings_head_sha256": links[0][0], "bindings_chain_length": len(links),
+                "organization_head_sha256": receipt.get("organization_head_sha256"),
+                "ledger_commit": commits.pop(), "committed_request": binding,
+                "bound_receipts": list(recorded.values()), "production_receipt_claimed": False}
     except Refused as exc:
         return refusal(exc)
 
 
+def seal(published_tip: str | None, message: str) -> dict[str, Any]:
+    """Fold this run's unpublished commits on the organization ledger ref into one commit on ``published_tip``."""
+    store = ledger_store.open_store(ledger_store.parse_locator(os.environ.get("STEGVERSE_ORG_LEDGER_ROOT", "")))
+    if not hasattr(store, "_git"):
+        return refusal(Refused(CHAIN_INVALID, "SEAL_NEEDS_A_GIT_LEDGER_REF", str(store.locator(ORG_HEAD))))
+    tip = store._tip()
+    if tip is None or tip == published_tip:
+        return refusal(Refused(CHAIN_INVALID, "RUN_APPENDED_TO_THE_REF", "tip " + str(tip)))
+    if published_tip and store._git("merge-base", "--is-ancestor", published_tip, tip,
+                                    check=False).returncode != 0:
+        return refusal(Refused(CHAIN_INVALID, "PUBLISHED_TIP_IS_AN_ANCESTOR", published_tip))
+    tree = store._git("rev-parse", tip + "^{tree}").stdout.decode().strip()
+    args = ["commit-tree", "--no-gpg-sign", tree, "-m", message] + (["-p", published_tip] if published_tip else [])
+    sealed_commit = store._git(*args).stdout.decode().strip()
+    store._git("update-ref", store.ref, sealed_commit, tip)
+    return {"disposition": "ALLOW", "sealed_commit": sealed_commit, "parent": published_tip or None,
+            "folded_tip": tip, "production_receipt_claimed": False}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=("bind", "verify"))
+    parser.add_argument("action", choices=("bind", "seal", "verify"))
+    parser.add_argument("--published-tip", default="", help="seal: the ledger ref tip before this run")
     parser.add_argument("--request-result", type=Path, required=True, help="transition_request.py output")
     parser.add_argument("--ingress-result", type=Path, required=True, help="intr_destination_ingress.py output")
     parser.add_argument("--out", type=Path, required=True)
@@ -243,6 +333,9 @@ def main() -> int:
         pair = {"path": request.get("request_path"), "sha256": request.get("request_sha256")}
         if args.action == "bind":
             result = bind(pair, ingress_result, request.get("hb_epoch"))
+        elif args.action == "seal":
+            result = seal(args.published_tip or None,
+                          "ledger: committed request " + str(pair["path"]) + " " + str(pair["sha256"]))
         else:
             result = verify(pair, ingress_result)
     args.out.parent.mkdir(parents=True, exist_ok=True)
