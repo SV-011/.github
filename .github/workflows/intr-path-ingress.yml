@@ -11,8 +11,10 @@ name: InTr Mesh Path Ingress
 # two-level append (operation ORGANIZATION_INTR_DESTINATION_INGRESS, supplied
 # epoch on the ledger head, no clock); the receipts carry both source seals. A
 # row already ledgered is answered from the ledger. The carried pair's inclusion
-# in the source ledger is not readable with GITHUB_TOKEN and is recorded
-# FAIL_CLOSED INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED (class B, TV/TVC).
+# in the source ledger is read from the source organization's public ledger,
+# fetched anonymously (no credential, no auth header) before consume; a source
+# that is not anonymously readable stays FAIL_CLOSED
+# INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED (class B, TV/TVC).
 #
 # Writer only. The PR-facing checks are intr-path-transfer-validation.yml.
 on:
@@ -51,6 +53,19 @@ jobs:
           git fetch --no-tags origin "+$LEDGER_REF:$LEDGER_REF"
           echo "ledger tip: $(git rev-parse "$LEDGER_REF")"
           mkdir -p "$RUNNER_TEMP/results"
+
+      - name: Read each inbound row's source ledger anonymously (public sources only; no credential)
+        run: |
+          set -euo pipefail
+          pub="$RUNNER_TEMP/public-ledgers"; mkdir -p "$pub"; echo "STEGVERSE_INTR_PUBLIC_LEDGERS=$pub" >> "$GITHUB_ENV"
+          [ -f .stegverse/intr-path-transfer/inbound.json ] || exit 0
+          for org in $(python3 -c 'import json; print(" ".join(sorted({r["path_id"].split("->")[0] for r in json.load(open(".stegverse/intr-path-transfer/inbound.json"))["transfers"]})))'); do
+            git init -q --bare "$pub/$org.git"
+            if ! GIT_TERMINAL_PROMPT=0 git --git-dir="$pub/$org.git" -c credential.helper= -c http.https://github.com/.extraheader= \
+                fetch -q --no-tags "https://github.com/$org/.github" "+$LEDGER_REF:$LEDGER_REF"; then
+              rm -rf "$pub/$org.git"; echo "NOT_ANONYMOUSLY_READABLE $org (TV/TVC route applies; FAIL_CLOSED until a TVC read receipt verifies)"
+            fi
+          done
 
       - name: Consume each inbound row through the destination ingress
         run: |

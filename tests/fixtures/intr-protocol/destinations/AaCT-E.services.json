@@ -1,0 +1,70 @@
+{
+  "schema_version": "aact-e.service-registry.v1",
+  "organization": "AaCT-E",
+  "services": [
+    {
+      "service_id": "aact-e.org-control",
+      "repository": "AaCT-E/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "aact-e.boundary-diagnostic",
+      "repository": "AaCT-E/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "aact-e.demo",
+      "repository": "AaCT-E/demo",
+      "profile": "../profiles/demo.json",
+      "accepts": [
+        "aact-e.evaluation.request",
+        "aact-e.procurement-evidence.request"
+      ],
+      "produces": [
+        "aact-e.evaluation.result",
+        "aact-e.procurement-evidence.result"
+      ],
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "aact-e.telemetry",
+      "repository": "AaCT-E/telemetry",
+      "profile": null,
+      "accepts": [
+        "aact-e.telemetry.record"
+      ],
+      "produces": [
+        "aact-e.telemetry.receipt"
+      ],
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "aact-e.intr-destination",
+      "repository": "AaCT-E/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    }
+  ]
+}
