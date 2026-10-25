@@ -1,0 +1,68 @@
+{
+  "schema_version": "infrastructure-continuity-ventures.service-registry.v1",
+  "organization": "Infrastructure-Continuity-Ventures",
+  "services": [
+    {
+      "service_id": "infrastructure-continuity-ventures.org-control",
+      "repository": "Infrastructure-Continuity-Ventures/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.boundary-diagnostic",
+      "repository": "Infrastructure-Continuity-Ventures/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-docs",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-docs",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-demo",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-demo",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-workflows",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-workflows",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-engine",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-engine",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-jurisdictions",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-jurisdictions",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.infrastructure-continuity-core-lite",
+      "repository": "Infrastructure-Continuity-Ventures/infrastructure-continuity-core-lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    }
+  ],
+  "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed."
+}

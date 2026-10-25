@@ -1,0 +1,85 @@
+{
+  "schema_version": "data-continuation.service-registry.v1",
+  "organization": "Data-Continuation",
+  "services": [
+    {
+      "service_id": "data-continuation.org-control",
+      "repository": "Data-Continuation/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "data-continuation.boundary-diagnostic",
+      "repository": "Data-Continuation/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "data-continuation.core-lite",
+      "repository": "Data-Continuation/core-lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.stegclaw",
+      "repository": "Data-Continuation/StegClaw",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.products",
+      "repository": "Data-Continuation/products",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.rtg-tests",
+      "repository": "Data-Continuation/RTG-Tests",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.formalism-tests",
+      "repository": "Data-Continuation/formalism-tests",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.formalisms",
+      "repository": "Data-Continuation/formalisms",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "data-continuation.intr-destination",
+      "repository": "Data-Continuation/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    }
+  ],
+  "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed."
+}

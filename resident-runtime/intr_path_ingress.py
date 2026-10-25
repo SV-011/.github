@@ -29,12 +29,24 @@ TVC transition. ``verify_end_to_end`` turns ALLOW only from readbacks of both
 ledgers: the source ledger's sealed path receipts and this ledger's sealed
 ingress receipts linking them; ``end_to_end_via_tvc`` reads this ledger itself
 and the other organization's from its verified TVC read receipt.
+
+Public-ledger route (E0, no credential, least privilege): when the other
+organization's .github repository is public, its ledger ref is readable with no
+credential at all. intr-path-ingress.yml (and the PR-facing validation) fetch
+it anonymously, before any verifier runs, into
+$STEGVERSE_INTR_PUBLIC_LEDGERS/<Organization>.git; the verifiers here only read
+that local copy (no network, no clock). A ledger the anonymous fetch could not
+read is simply absent, and the predicate falls back to the TV/TVC route above,
+which stays FAIL_CLOSED with the six fields until a TVC read receipt verifies.
+Every outcome is terminal at E0: ALLOW, DENY, or FAIL_CLOSED with the six fields.
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -82,6 +94,10 @@ LINK_UNVERIFIED = "INTR_PATH_DESTINATION_RECEIPT_LINK_UNVERIFIED"
 CREDENTIAL_NOT_ISSUED = "INTR_PATH_CROSS_ORG_READ_CREDENTIAL_NOT_ISSUED"
 SOURCE_NOT_LEDGERED = "INTR_PATH_RECEIPT_NOT_LEDGERED"
 SOURCE_LINK_UNVERIFIED = "INTR_PATH_RECEIPT_LINK_UNVERIFIED"
+PUBLIC_LEDGERS_ENV = "STEGVERSE_INTR_PUBLIC_LEDGERS"
+LEDGER_REF = "refs/stegverse/organization-ledger"
+PUBLIC_STATE = "VERIFIED_BY_ANONYMOUS_PUBLIC_LEDGER_READ"
+TVC_STATE = "VERIFIED_BY_TVC_READ_RECEIPT"
 
 sha = ingress.sha
 sealed = mt.sealed
@@ -188,10 +204,95 @@ def tvc_readback(path_id: str, communication_id: str, other_repository: str,
     return rb, None
 
 
-def source_inclusion(checked: Mapping[str, Any], directory: Path | str | None = None) -> dict[str, Any]:
-    """The carried source organization receipt on the source chain, read through TV/TVC."""
+def public_ledger_dir(other_repository: str, public_ledgers: Path | str | None = None) -> Path | None:
+    """The anonymously fetched copy of ``other_repository``'s ledger, or None when none was fetched."""
+    root = public_ledgers if public_ledgers is not None else os.environ.get(PUBLIC_LEDGERS_ENV)
+    org = str(other_repository).split("/")[0]
+    if not root or not org or "/" in org or org.startswith("."):
+        return None
+    candidate = Path(root) / (org + ".git")
+    return candidate if candidate.is_dir() else None
+
+
+def _git_tip(git_dir: Path) -> str | None:
+    done = subprocess.run(["git", "--git-dir=" + str(git_dir), "rev-parse", "--verify", "-q", LEDGER_REF + "^{commit}"],
+                          capture_output=True, text=True, check=False)
+    tip = done.stdout.strip()
+    return tip if done.returncode == 0 and len(tip) == 40 else None
+
+
+def _git_json(git_dir: Path, tip: str, path: str) -> Any:
+    """One JSON document at ``tip:path`` of the local copy, or None (no network: the copy is already local)."""
+    done = subprocess.run(["git", "--git-dir=" + str(git_dir), "cat-file", "blob", tip + ":" + path],
+                          capture_output=True, check=False)
+    if done.returncode != 0:
+        return None
+    try:
+        return json.loads(done.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _key(digest: Any) -> str | None:
+    if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+        return None
+    hexpart = digest.split(":", 1)[1]
+    return hexpart + ".json" if all(c in "0123456789abcdef" for c in hexpart) else None
+
+
+def public_readback(path_id: str, communication_id: str, other_repository: str,
+                    public_ledgers: Path | str | None = None) -> dict[str, Any] | None:
+    """The other organization's ledger readback from its anonymous (no-credential) copy, or None if absent.
+
+    Reads only the local copy (HEAD.json, receipts/<hex>.json, repository-ledger/<repo>/receipts/<hex>.json at the
+    fetched tip): no network, no clock, no credential. Seals are checked by the verifiers that consume it."""
+    git_dir = public_ledger_dir(other_repository, public_ledgers)
+    tip = _git_tip(git_dir) if git_dir is not None else None
+    if tip is None:
+        return None
+    purpose = _purpose(path_id, other_repository)
+    operation = SOURCE_OPERATION if purpose == "source_inclusion" else OPERATION
+    head = _git_json(git_dir, tip, "HEAD.json")
+    digest = head.get("receipt_sha256") if isinstance(head, Mapping) else None
+    chain, seen, found = [], set(), None
+    while _key(digest) and digest not in seen:
+        seen.add(digest)
+        receipt = _git_json(git_dir, tip, "receipts/" + _key(digest))
+        if not isinstance(receipt, Mapping):
+            break
+        chain.append(receipt)
+        b = mt._boundary(receipt)  # either receipt generation: boundary_evidence, or evidence (SV-011)
+        if b.get("operation") == operation and b.get("path_id") == path_id \
+                and b.get("communication_id") == communication_id:
+            found = receipt
+            break
+        digest = receipt.get("previous_receipt_sha256")
+    repo_key = _key(found.get("repo_receipt_sha256")) if found else None
+    repo_receipt = (_git_json(git_dir, tip, "repository-ledger/" + str(other_repository) + "/receipts/" + repo_key)
+                    if repo_key else None)
+    return {"schema": READBACK_SCHEMA, "repository": str(other_repository), "ledger_tip": tip,
+            "head_receipt_sha256": chain[0].get("receipt_sha256") if chain else None,
+            "chain": chain if found is not None else [], "organization_receipt": found,
+            "repository_receipt": repo_receipt, "read_route": "ANONYMOUS_PUBLIC_LEDGER_READ"}
+
+
+def other_readback(path_id: str, communication_id: str, other_repository: str, directory: Path | str | None = None,
+                   public_ledgers: Path | str | None = None) -> tuple[Any, dict[str, Any] | None, str]:
+    """TVC read receipt first; else the anonymous public copy; else the TVC route's six-field refusal."""
+    rb, refused = tvc_readback(path_id, communication_id, other_repository, directory)
+    if refused is None:
+        return rb, None, TVC_STATE
+    public = public_readback(path_id, communication_id, other_repository, public_ledgers)
+    if public is not None:
+        return public, None, PUBLIC_STATE
+    return None, refused, ""
+
+
+def source_inclusion(checked: Mapping[str, Any], directory: Path | str | None = None,
+                     public_ledgers: Path | str | None = None) -> dict[str, Any]:
+    """The carried source organization receipt on the source chain: TV/TVC, or an anonymous public-ledger read."""
     pid, cid, src = checked["path_id"], checked["communication_id"], checked["source_repository"]
-    rb, refused = tvc_readback(pid, cid, src, directory)
+    rb, refused, state = other_readback(pid, cid, src, directory, public_ledgers)
     if refused is not None:
         return refused
     carried = {"receipt_sha256": checked["source_organization_receipt_sha256"]}
@@ -200,13 +301,14 @@ def source_inclusion(checked: Mapping[str, Any], directory: Path | str | None = 
     if found.get("receipt_sha256") != carried["receipt_sha256"] or not _included(rb, found) \
             or found_repo.get("receipt_sha256") != checked["source_repository_receipt_sha256"]:
         return refusal(DENY, SOURCE_LINK_UNVERIFIED, "SOURCE_RECEIPT_IS_INCLUDED_IN_THE_SOURCE_LEDGER",
-                       "the carried source receipts must be the ones on the source chain read through TV/TVC",
+                       "the carried source receipts must be the ones on the source chain (TV/TVC or public read)",
                        "inspect the carried copies against the source ledger; the carried pair is not verified",
                        path_id=pid, communication_id=cid, source_ledger_tip=rb.get("ledger_tip"))
-    return {"schema": RESULT_SCHEMA, "disposition": ALLOW, "state": "VERIFIED_BY_TVC_READ_RECEIPT",
+    return {"schema": RESULT_SCHEMA, "disposition": ALLOW, "state": state,
             "path_id": pid, "communication_id": cid, "source_ledger_tip": rb.get("ledger_tip"),
             "source_ledger_head_epoch": rb.get("ledger_head_epoch"),
-            "tvc_read_receipt": tvc_read.receipt_file(pid, "source_inclusion", ".").name}
+            "tvc_read_receipt": (tvc_read.receipt_file(pid, "source_inclusion", ".").name if state == TVC_STATE
+                                 else None)}
 
 
 # -- consume (append) -----------------------------------------------------------
@@ -418,8 +520,9 @@ def readback(path_id: str, communication_id: str, operation: str, ledger_tip: st
 
 
 def end_to_end_via_tvc(path_id: str, communication_id: str, directory: Path | str | None = None,
-                       ledger_tip: str | None = None) -> dict[str, Any]:
-    """This organization's half from its own ledger; the other organization's from its verified TVC read receipt."""
+                       ledger_tip: str | None = None, public_ledgers: Path | str | None = None) -> dict[str, Any]:
+    """This organization's half from its own ledger; the other organization's from its verified TVC read receipt,
+    or from an anonymous copy of its public ledger."""
     ends = str(path_id).split(":")[0].split("->")
     if len(ends) != 2 or organization() not in ends:
         return refusal(FAIL_CLOSED, NOT_LEDGERED, "THIS_ORGANIZATION_IS_AN_END_OF_THE_PATH",
@@ -427,7 +530,7 @@ def end_to_end_via_tvc(path_id: str, communication_id: str, directory: Path | st
                        "re-run in an end organization", path_id=path_id, communication_id=communication_id)
     here_is_source = organization() == ends[0]
     other = (ends[1] if here_is_source else ends[0]) + "/.github"
-    remote, refused = tvc_readback(path_id, communication_id, other, directory)
+    remote, refused, _ = other_readback(path_id, communication_id, other, directory, public_ledgers)
     if refused is not None:   # the other organization's half first: nothing local is read without it
         return {**refused, "half": "destination" if here_is_source else "source", "path": "UNVERIFIED"}
     try:
@@ -469,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--communication-id", required=True)
     t.add_argument("--receipts", default=None)
     t.add_argument("--ledger-tip")
+    t.add_argument("--public-ledgers", default=None)
     t.add_argument("--out")
     args = parser.parse_args(argv)
     if args.command == "consume":
@@ -481,7 +585,8 @@ def main(argv: list[str] | None = None) -> int:
         result = readback(args.path_id, args.communication_id, args.operation, args.ledger_tip)
         code = 0
     elif args.command == "end-to-end-via-tvc":
-        result = end_to_end_via_tvc(args.path_id, args.communication_id, args.receipts, args.ledger_tip)
+        result = end_to_end_via_tvc(args.path_id, args.communication_id, args.receipts, args.ledger_tip,
+                                    args.public_ledgers)
         code = 0 if result["disposition"] == ALLOW else 1
     else:
         load = lambda p: json.loads(Path(p).read_text(encoding="utf-8")) if p and Path(p).is_file() else None
