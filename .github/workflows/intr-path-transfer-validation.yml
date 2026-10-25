@@ -92,17 +92,54 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "+$LEDGER_REF:$DRY_RUN_REF"
           echo "published ledger tip: $(git rev-parse "$DRY_RUN_REF")"
+          echo "PUBLISHED_TIP=$(git rev-parse "$DRY_RUN_REF")" >> "$GITHUB_ENV"
           namespace=$(python3 -c 'import json; print(json.load(open(".stegverse/transition-ledger/contract.json"))["repository_ledger_location"]["namespace"])')
           echo "REPO_LEDGER_NAMESPACE=$namespace" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/results"
 
-      - name: "Real state, read-only: every declared path is FAIL_CLOSED (no path receipt)"
+      - name: "Real state, read-only: every declared path matches its ledgered state and is terminal at E0"
+        # Not a blanket FAIL_CLOSED (as StegVerse-Labs/.github#3318, GCAT-BCAT-Engine/.github#22): a source half is
+        # ALLOW exactly when the scratch copy of the published ledger (read with git only; no network) carries this
+        # organization's INTR_MESH_PATH_TRANSFER ALLOW receipt for that path, and FAIL_CLOSED otherwise. Every path
+        # that is not ALLOW names failure_code and failed_predicate.
         run: |
           set -euo pipefail
           export STEGVERSE_ORG_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF"
           export STEGVERSE_REPO_LEDGER_ROOT="git+$GITHUB_WORKSPACE#$DRY_RUN_REF:$REPO_LEDGER_NAMESPACE"
-          python3 resident-runtime/intr_path_transfer.py verify --expect-source FAIL_CLOSED --out "$RUNNER_TEMP/results/real-state.json" > /dev/null
-          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["counts"]["ALLOW"] == 0, r["counts"]; print("INTR_PATH_REAL_STATE", json.dumps(r["counts"]))' "$RUNNER_TEMP/results/real-state.json"
+          python3 resident-runtime/intr_path_transfer.py verify --out "$RUNNER_TEMP/results/real-state.json" > /dev/null
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          git = ["git"]
+          ref = os.environ["DRY_RUN_REF"]
+          me = "SV-011"
+          names = subprocess.run(git + ["ls-tree", "-r", "--name-only", ref, "receipts/"], check=True,
+                                 capture_output=True, text=True).stdout.split()
+          ledgered = set()
+          for name in names:
+              receipt = json.loads(subprocess.run(git + ["cat-file", "blob", ref + ":" + name], check=True,
+                                                  capture_output=True, text=True).stdout)
+              # the boundary record as merge_transfer._boundary reads it (boundary_evidence, else evidence)
+              b = receipt.get("boundary_evidence", receipt.get("evidence")) or {}
+              if b.get("operation") == "INTR_MESH_PATH_TRANSFER" and b.get("disposition") == "ALLOW" \
+                      and b.get("repository") == me + "/.github" and b.get("path_id"):
+                  ledgered.add(b["path_id"])
+          state = json.loads((Path(os.environ["RUNNER_TEMP"]) / "results/real-state.json").read_text())
+          paths = state["paths"]
+          assert sum(state["counts"].values()) == len(paths) and len(paths) > 0, state["counts"]
+          own = [p for p in paths if p["path_id"].startswith(me + "->")]
+          assert own, "no path sourced here was examined"
+          mismatch = [(p["path_id"], p["halves"]["source"], p["path_id"] in ledgered) for p in own
+                      if p["halves"]["source"] != ("ALLOW" if p["path_id"] in ledgered else "FAIL_CLOSED")]
+          assert not mismatch, ("source half does not match the ledgered state", mismatch)
+          stray = sorted(ledgered - {p["path_id"] for p in own})
+          assert not stray, ("ledgered path receipt for an undeclared path", stray)
+          assert all(p["disposition"] == "ALLOW" or (p.get("failure_code") and p.get("failed_predicate"))
+                     for p in paths), state["counts"]
+          assert all(p["disposition"] != "ALLOW" or set(p["halves"].values()) == {"ALLOW"} for p in paths)
+          print("INTR_PATH_REAL_STATE", json.dumps(state["counts"]), "sourced_here", len(own),
+                "source_ALLOW_ledgered", len(ledgered))
+          PY
 
       - name: The writer's append on the scratch ref, linked to the last ledgered main merge
         run: |
@@ -121,5 +158,7 @@ jobs:
           python3 resident-runtime/intr_path_transfer.py append --transfer-commit "$base" --out "$RUNNER_TEMP/results/replay.json" > /dev/null
           test "$(git rev-parse "$DRY_RUN_REF")" = "$tip"
           python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert all(x.get("replayed") is True for x in r), r' "$RUNNER_TEMP/results/replay.json"
-          test "$(git rev-parse "$DRY_RUN_REF")" != "$(git ls-remote origin "$LEDGER_REF" | cut -f1)"
+          # A previously ledgered path replays without moving the scratch tip (the source receipts may already be
+          # ledgered). The published ref is unchanged by this read-only dry run.
+          test "$(git ls-remote origin "$LEDGER_REF" | cut -f1)" = "$PUBLISHED_TIP"
           python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print("INTR_PATH_DRY_RUN", json.dumps(r["counts"]))' "$RUNNER_TEMP/results/verify.json"
