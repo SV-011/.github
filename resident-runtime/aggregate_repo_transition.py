@@ -67,26 +67,91 @@ def _not_designated(detail: str) -> ledger_store.CommittedRequestRefused:
         ENTRYPOINT)
 
 
-def designated_source_store() -> Any:
-    """This repository's own ledger, never a caller-chosen one (SOURCE_LEDGER_OVERRIDE_LAUNDERS_FABRICATED_RECEIPT).
+CONTRACT_NAMESPACE = REPOSITORY_CONTRACT["repository_ledger_location"]["namespace"]
+LEDGER_VARIABLES = ("STEGVERSE_ORG_LEDGER_ROOT", "STEGVERSE_REPO_LEDGER_ROOT")
 
-    On a git ref the repository ledger must be the organization ledger's own
-    repository (realpath, so a symlink resolves to what it names), the same ref,
-    and the contract namespace. A directory store (tests, local runs) is held to
-    the receipts' repository identity in _source_on_ledger.
+
+def _caller_chosen(detail: str) -> ledger_store.CommittedRequestRefused:
+    return ledger_store.CommittedRequestRefused(
+        "CALLER_CHOSEN_SOURCE_LEDGER_REJECTED", "SOURCE_LEDGER_IS_THE_CONTRACT_DESIGNATED_SUBTREE_OF_THE_TARGET",
+        detail,
+        "no override: the source ledger is the contract-designated subtree (" + CONTRACT_NAMESPACE + ") of the "
+        "organization ledger this call writes; an override is admissible only as a verified same-kind pair of "
+        + " and ".join(LEDGER_VARIABLES) + " whose organization root is that ledger (realpath)",
+        ENTRYPOINT)
+
+
+def _realpath(location: Any) -> Any:
+    if isinstance(location, ledger_store.GitLocator):
+        return ledger_store.GitLocator(Path(os.path.realpath(location.repository)), location.ref, location.namespace)
+    return Path(os.path.realpath(location))
+
+
+def _store_location(store: Any) -> Any:
+    """The realpath location of an organization store a caller passed as ``store=``."""
+    if isinstance(store, ledger_store.GitLedgerStore):
+        return _realpath(ledger_store.GitLocator(store.repository, store.ref, store.namespace))
+    if isinstance(store, ledger_store.Store):
+        return _realpath(store.root)
+    raise _caller_chosen("store= is a " + type(store).__name__ + ", not a ledger store")
+
+
+def _designated_subtree(organization: Any) -> Any:
+    """The contract-designated repository ledger inside an organization ledger (CALLER_CHOSEN_SOURCE_LEDGER_REJECTED)."""
+    if isinstance(organization, ledger_store.GitLocator):
+        if organization.namespace is not None:
+            raise _caller_chosen("organization ledger " + str(organization) + " is itself a subtree")
+        return ledger_store.GitLocator(organization.repository, organization.ref, CONTRACT_NAMESPACE)
+    return organization / CONTRACT_NAMESPACE
+
+
+def resolve_ledgers(store: Any = None) -> tuple[Any, Any]:
+    """(the organization ledger written, the repository ledger the source must be on).
+
+    The source ledger is the contract-designated subtree of the organization
+    ledger written, never a caller's choice. An environment override is
+    admissible only as a same-kind pair: on a git ref the repository ledger is the
+    organization ledger's own repository (realpath), ref and the contract
+    namespace; a directory pair holds no tracked files. ``store=`` must be the
+    organization ledger the pair names (realpath), and its repository ledger
+    must be that store's designated subtree. A lone override, a mixed pair or a
+    disagreeing ``store=`` is refused before any write.
     """
-    organization, repository = ledger_root(), repository_ledger_root()
+    supplied = {name: os.getenv(name) for name in LEDGER_VARIABLES}
+    present = [name for name, value in supplied.items() if value]
+    if len(present) == 1:
+        raise _caller_chosen("lone override: only " + present[0] + " is set")
+    if not present:
+        if store is None:
+            raise ValueError("ledger_location_required_from_caller: " + " and ".join(LEDGER_VARIABLES))
+        organization = _store_location(store)
+        if not isinstance(organization, ledger_store.GitLocator):
+            raise _caller_chosen("a directory store= without the verified pair designates no repository ledger")
+        return store, ledger_store.open_store(_designated_subtree(organization))
+    organization = ledger_store.parse_locator(supplied["STEGVERSE_ORG_LEDGER_ROOT"])
+    repository = ledger_store.parse_locator(supplied["STEGVERSE_REPO_LEDGER_ROOT"])
     for location in (organization, repository):
         ledger_store.refuse_tracked_ledger_root(location, ENTRYPOINT)
-    if isinstance(organization, ledger_store.GitLocator) or isinstance(repository, ledger_store.GitLocator):
-        expected = REPOSITORY_CONTRACT["repository_ledger_location"]["namespace"]
-        if not (isinstance(organization, ledger_store.GitLocator) and isinstance(repository, ledger_store.GitLocator)
-                and organization.namespace is None
-                and os.path.realpath(organization.repository) == os.path.realpath(repository.repository)
-                and organization.ref == repository.ref and repository.namespace == expected):
-            raise _not_designated("repository ledger " + str(repository) + " is not " + str(organization)
-                                  + ":" + expected)
-    return ledger_store.open_store(repository)
+    if isinstance(organization, ledger_store.GitLocator) != isinstance(repository, ledger_store.GitLocator):
+        raise _caller_chosen("mixed pair: " + str(organization) + " and " + str(repository))
+    if isinstance(organization, ledger_store.GitLocator):
+        if _realpath(repository) != _realpath(_designated_subtree(organization)):
+            raise _caller_chosen("repository ledger " + str(repository) + " is not "
+                                 + str(_designated_subtree(organization)))
+    if store is None:
+        return ledger_store.open_store(organization), ledger_store.open_store(repository)
+    if _store_location(store) != _realpath(organization):
+        raise _caller_chosen("store= " + str(_store_location(store)) + " is not the organization ledger "
+                             + str(organization) + " the pair names")
+    if _realpath(repository) != _realpath(_designated_subtree(_store_location(store))):
+        raise _caller_chosen("repository ledger " + str(repository) + " is not the designated subtree of store= "
+                             + str(_store_location(store)))
+    return store, ledger_store.open_store(repository)
+
+
+def designated_source_store() -> Any:
+    """This repository's own ledger, never a caller-chosen one (SOURCE_LEDGER_OVERRIDE_LAUNDERS_FABRICATED_RECEIPT)."""
+    return resolve_ledgers()[1]
 
 
 def _read(store: Any, key: str) -> Any:
@@ -169,11 +234,12 @@ def append(source_receipt: Mapping[str, Any], org_transition_class: str,
         raise ValueError("source_receipt_required")
     # before any write: the source must be on the repository ledger first, unconditionally,
     # then no committed_request may ride in the evidence or the source (V-P11 rows 5 and 3)
-    _source_on_ledger(source_receipt, designated_source_store())
+    # the source ledger is derived from the ledger written, never chosen by the caller (row 8)
+    target, source_store = resolve_ledgers(store)
+    _source_on_ledger(source_receipt, source_store)
     ledger_store.refuse_injected_committed_request("resident-runtime/aggregate_repo_transition.py append",
                                                    boundary_evidence=boundary_evidence,
                                                    source_receipt=source_receipt)
-    target = store or ledger_store.open_store(ledger_root())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
     head = expected_head if isinstance(expected_head, dict) else None

@@ -156,7 +156,7 @@ class Row8DesignatedSourceLedger(Ledgers):
             for source in (minted, genuine):
                 with self.assertRaises(ValueError) as raised:
                     aggregate.append(source, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
-                self.assert_six_field(raised.exception.refusal, "SOURCE_LEDGER_NOT_DESIGNATED")
+                self.assert_six_field(raised.exception.refusal, "CALLER_CHOSEN_SOURCE_LEDGER_REJECTED")
         self.use_git(designated)
         organization = aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
                                         hb_epoch=33)
@@ -171,6 +171,86 @@ class Row8DesignatedSourceLedger(Ledgers):
             aggregate.append(foreign, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33)
         self.assert_six_field(raised.exception.refusal, "SOURCE_LEDGER_NOT_DESIGNATED")
         self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+
+class Row8StoreFollowsTheDesignationNotTheEnvironment(Ledgers):
+    """SOURCE_LEDGER_DESIGNATION_FOLLOWS_CALLER_ENV: the source ledger is the designated subtree of the ledger written."""
+
+    REF, NAMESPACE = Row8DesignatedSourceLedger.REF, Row8DesignatedSourceLedger.NAMESPACE
+    use_git = Row8DesignatedSourceLedger.use_git
+    REJECTED = "CALLER_CHOSEN_SOURCE_LEDGER_REJECTED"
+
+    def setUp(self):
+        super().setUp()
+        self.real = self.work / "real.git"
+        self.use_git(self.real)
+        self.genuine = self.repository_receipt("t-genuine")
+        self.store = aggregate.ledger_store.open_store("git+" + str(self.real) + "#" + self.REF)
+
+    def tip(self):
+        import subprocess
+        return subprocess.run(["git", "--git-dir", str(self.real), "rev-parse", "--verify", "--quiet", self.REF],
+                              capture_output=True, text=True).stdout.strip()
+
+    def refused(self, source, store):
+        before = self.tip()
+        with self.assertRaises(ValueError) as raised:
+            aggregate.append(source, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33,
+                             store=store)
+        self.assert_six_field(raised.exception.refusal, self.REJECTED)
+        self.assertEqual(self.tip(), before, "the real organization ledger ref moved")
+
+    def test_both_variables_on_an_attacker_git_ledger_with_store_the_real_ledger_is_refused(self):
+        attacker = self.work / "attacker.git"
+        self.use_git(attacker)
+        fabricated = self.repository_receipt("t-fabricated")  # minted on the attacker's own chain
+        for source in (fabricated, self.genuine):
+            self.refused(source, self.store)
+
+    def test_both_variables_on_attacker_untracked_directories_with_store_the_real_ledger_is_refused(self):
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(self.work / "attacker-org")
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.work / "attacker-repo")
+        fabricated = self.repository_receipt("t-fabricated")
+        for source in (fabricated, self.genuine):
+            self.refused(source, self.store)
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+    def test_a_directory_store_must_be_the_pair_and_hold_the_designated_subtree(self):
+        os.environ["STEGVERSE_ORG_LEDGER_ROOT"] = str(self.work / "org")
+        os.environ["STEGVERSE_REPO_LEDGER_ROOT"] = str(self.work / "repo")
+        genuine = self.repository_receipt("t-dir")
+        for store in (aggregate.ledger_store.Store(self.work / "org"),          # repo is not org/<namespace>
+                      aggregate.ledger_store.Store(self.work / "other-org")):   # store is not the pair
+            with self.assertRaises(ValueError) as raised:
+                aggregate.append(genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE", hb_epoch=33,
+                                 store=store)
+            self.assert_six_field(raised.exception.refusal, self.REJECTED)
+        self.assertEqual(self.written("STEGVERSE_ORG_LEDGER_ROOT"), [])
+
+    def test_a_lone_variable_is_refused_with_zero_writes(self):
+        attacker = "git+" + str(self.work / "attacker.git") + "#" + self.REF
+        for kept, value in (("STEGVERSE_REPO_LEDGER_ROOT", attacker + ":" + self.NAMESPACE),
+                            ("STEGVERSE_ORG_LEDGER_ROOT", attacker)):
+            for name in LEDGER_ROOTS:
+                os.environ.pop(name, None)
+            os.environ[kept] = value
+            for store in (None, self.store):
+                self.refused(self.genuine, store)
+        self.assertFalse((self.work / "attacker.git").exists())
+
+    def test_the_designated_harness_pair_is_accepted_with_or_without_store(self):
+        before = self.tip()
+        organization = aggregate.append(self.genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                        hb_epoch=33, store=self.store)
+        self.assertEqual(organization["repo_receipt_sha256"], self.genuine["receipt_sha256"])
+        self.assertNotEqual(self.tip(), before)
+        again = aggregate.append(self.genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                 hb_epoch=33, idempotent=True)
+        self.assertEqual(again, organization)
+        for name in LEDGER_ROOTS:  # no override at all: the designation is derived from store= alone
+            os.environ.pop(name)
+        self.assertEqual(aggregate.append(self.genuine, "REPO_STATE_PROPAGATION", "p", "s", {"op": "x"}, "NONE",
+                                          hb_epoch=33, store=self.store, idempotent=True), organization)
 
 
 class Row9CorruptReceiptOnTheWalk(Ledgers):
