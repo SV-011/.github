@@ -117,8 +117,10 @@ The unit test's far side is this repository's `kernel.receipt` and
 `build_control_response`. That is a fabricated answer in a temporary mesh. It
 is not a live peer, and it is not an authentic production receipt.
 
-A live round-trip with StegVerse-org needs a resident runtime on both sides.
-This repository does not claim that observation.
+A round-trip with StegVerse-org is observed when the far side has recorded its
+own receipt for this `communication_id` on its own ledger, as a committed state
+transition there. It does not depend on a live, resident or always-on receiver
+on either side. This repository does not claim that observation.
 
 ## Verified
 

@@ -338,6 +338,21 @@ def emit(destination_organization: Any, payload: Mapping[str, Any], *,
          hb_epoch: int | None = None) -> dict[str, Any]:
     """Emit an outbound crossing to a declared peer and record the disposition."""
     origin = this_organization(root)
+    injected = ledger_store.committed_request_path(payload)
+    if injected is not None:
+        # V-P11 row 4: refused before any frame is built or published
+        record = emit_refusal_record("EGRESS_PAYLOAD_CARRIES_NO_COMMITTED_REQUEST",
+                                     "payload carries " + injected, destination_organization, origin, payload)
+        appended = _record(EMIT_REFUSED_CLASS + ":" + sha(record)[7:23], EMIT_REFUSED_CLASS,
+                           record["payload_sha256"], sha(record), record, hb_epoch)
+        return {**_refusal_result(record, appended),
+                "failure_code": "COMMITTED_REQUEST_IN_EGRESS_PAYLOAD",
+                "required_evidence_or_repair": "an egress payload without a committed_request key; a committed "
+                                               "request is bound only on this organization's ledger",
+                "retry_entrypoint": "resident-runtime/organization_egress_boundary.py emit",
+                "owning_existing_goal": ledger_store.COMMITTED_REQUEST_GOAL,
+                "next_attempt": "none for this payload: 0 frames were published",
+                "terminal": True, "frames_published": 0}
     try:
         unclosable = closability_refusal(payload or {})
         if unclosable is not None:
