@@ -82,7 +82,7 @@ class DeclaredPaths(unittest.TestCase):
     def test_paths_are_ordered_pairs_of_conformant_organizations(self):
         paths = pt.declared_paths()
         orgs = sorted({p["source"] for p in paths})
-        self.assertEqual(len(orgs), 8)
+        self.assertEqual(len(orgs), 13)
         self.assertEqual(len(paths), len(orgs) * (len(orgs) - 1))
         self.assertEqual(len({p["path_id"] for p in paths}), len(paths))
         for p in paths:
@@ -108,7 +108,7 @@ class RealState(unittest.TestCase):
             state = pt.real_state()
         finally:
             ledger.close()
-        self.assertEqual(state["counts"], {"ALLOW": 0, "DENY": 0, "FAIL_CLOSED": 56})
+        self.assertEqual(state["counts"], {"ALLOW": 0, "DENY": 0, "FAIL_CLOSED": 156})
         self.assertEqual(state["paths"], EXPECTED["paths"])
         self.assertEqual(state["counts"], EXPECTED["counts"])
 
@@ -123,7 +123,7 @@ class Append(unittest.TestCase):
     def test_append_links_the_transfer_and_the_source_half_verifies(self):
         before = self.ledger.files()
         results = pt.append_transfers(TRANSFER)
-        self.assertEqual([r["disposition"] for r in results], ["ALLOW"] * 7, results)
+        self.assertEqual([r["disposition"] for r in results], ["ALLOW"] * 12, results)
         after = self.ledger.files()
         for name, data in before.items():
             if not name.endswith("HEAD.json"):
@@ -203,8 +203,8 @@ class Append(unittest.TestCase):
 
     def test_contradicted_path_receipts_are_denied(self):
         cases = {
-            "path": lambda e: e.update(destination_organization="AaCT-E"),
-            "address": lambda e: e.update(destination_address="aact-e.intr-destination"),
+            "path": lambda e: e.update(destination_organization="Triad-Test"),
+            "address": lambda e: e.update(destination_address="triad-test.intr-destination"),
             "transfer": lambda e: e.update(transfer_commit=UNLEDGERED),
             "message": lambda e: e["message"].update(communication_id="other"),
         }

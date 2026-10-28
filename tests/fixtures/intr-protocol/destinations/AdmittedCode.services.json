@@ -1,0 +1,69 @@
+{
+  "schema_version": "admittedcode.service-registry.v1",
+  "organization": "AdmittedCode",
+  "services": [
+    {
+      "service_id": "admittedcode.org-control",
+      "repository": "AdmittedCode/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "admittedcode.boundary-diagnostic",
+      "repository": "AdmittedCode/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "admittedcode.code-admit-gate",
+      "repository": "AdmittedCode/code-admit-gate",
+      "role": "INTERNAL_REVIEW_ENDPOINT"
+    },
+    {
+      "service_id": "admittedcode.coherency-scanner",
+      "repository": "AdmittedCode/coherency-scanner",
+      "role": "INTERNAL_REVIEW_ENDPOINT"
+    },
+    {
+      "service_id": "admittedcode.admissibility-receipt",
+      "repository": "AdmittedCode/admissibility-receipt",
+      "role": "INTERNAL_REVIEW_ENDPOINT"
+    },
+    {
+      "service_id": "admittedcode.provider-harness",
+      "repository": "AdmittedCode/provider-harness",
+      "role": "INTERNAL_REVIEW_ENDPOINT"
+    },
+    {
+      "service_id": "admittedcode.fleet-status",
+      "repository": "AdmittedCode/fleet-status",
+      "role": "INTERNAL_STATUS_ENDPOINT"
+    },
+    {
+      "service_id": "admittedcode.intr-destination",
+      "repository": "AdmittedCode/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
+    }
+  ],
+  "review_authority": "NONE",
+  "notes": "Review outputs remain evidence and governance inputs. Organization routing does not grant downstream execution authority."
+}

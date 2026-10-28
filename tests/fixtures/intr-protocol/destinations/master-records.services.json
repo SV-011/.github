@@ -1,0 +1,94 @@
+{
+  "schema_version": "master-records.service-registry.v1",
+  "organization": "master-records",
+  "services": [
+    {
+      "service_id": "master-records.org-control",
+      "repository": "master-records/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CONTROL",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ecosystem.communication",
+        "ecosystem.monitor.request",
+        "ecosystem.work.request"
+      ],
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "master-records.boundary-diagnostic",
+      "repository": "master-records/.github",
+      "boundary_role": "BOUNDARY_LOCAL_DIAGNOSTIC",
+      "profile_status": "ACTIVE",
+      "runtime_required_for_consumption": false
+    },
+    {
+      "service_id": "master-records.orchestration",
+      "repository": "master-records/orchestration",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "organization.ecosystem-transition-ledger",
+      "legacy_service_ids": [
+        "master-records.ecosystem-transition-ledger"
+      ],
+      "legacy_reference": "MASTER-RECORDS-BULK-SEMANTIC-REMEDIATION-002",
+      "repository": "master-records/orchestration",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ORGANIZATION_RECORD_ORGANIZATION_TRANSITION",
+        "CUSTODY_ORGANIZATION_TRANSITION"
+      ],
+      "endpoint_adapter": "resident-runtime/ecosystem_transition_intake.py",
+      "runtime_required_for_consumption": true,
+      "record_role": "RECORDER_OF_RELEASED_ORGANIZATION_BATCH_RECEIPTS",
+      "release_predecessor": "VERIFIED_ORGANIZATION_RECEIPT_CHAIN_SEGMENT",
+      "evidence_custody": "ORIGINATING_ORGANIZATION",
+      "transition_authority": "NONE",
+      "runtime_reality_authority": false,
+      "gates_organizations": false
+    },
+    {
+      "service_id": "master-records.monitoring",
+      "repository": "master-records/monitoring",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "master-records.core-lite",
+      "repository": "master-records/core-lite",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "master-records.telemetry",
+      "repository": "master-records/telemetry",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
+      "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "master-records.sv002-self-characterization-reconstruction",
+      "repository": "master-records/orchestration",
+      "boundary_role": "INTERNAL_ENDPOINT",
+      "profile_status": "ACTIVE",
+      "accepts": [
+        "ORGANIZATION_RECORD_SV002_SELF_CHARACTERIZATION",
+        "CUSTODY_SV002_SELF_CHARACTERIZATION"
+      ],
+      "endpoint_adapter": "resident-runtime/sv002_self_characterization_intake.py",
+      "runtime_required_for_consumption": true,
+      "record_role": "RECORDER_OF_RELEASED_ORGANIZATION_BATCH_RECEIPTS",
+      "release_predecessor": "ORGANIZATION_LEDGER_ROOT_BOUND_ARTIFACT_SET",
+      "evidence_custody": "ORIGINATING_ORGANIZATION",
+      "transition_authority": "NONE",
+      "runtime_reality_authority": false,
+      "gates_organizations": false
+    }
+  ],
+  "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed. Master Records records released organization batch receipts only; it holds no transition or runtime-reality authority and no organization awaits it."
+}

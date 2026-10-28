@@ -1,0 +1,36 @@
+{
+  "schema": "stegverse.organization-interlock-intr-boundary/v1",
+  "organization": "formalism-tests",
+  "owner_repository": "formalism-tests/.github",
+  "communication_policy": "ALL_ORGANIZATION_INGRESS_EGRESS_GENERATED_AT_ORG_DOT_GITHUB_BOUNDARY",
+  "generator": "org-runtime/runtime_boundary.py",
+  "ingress": {
+    "interlock_required": true,
+    "intr_required": true,
+    "direction": "INGRESS",
+    "standing_resolution": "APPLICABLE_TRANSITION_ELEMENTS"
+  },
+  "egress": {
+    "interlock_required": true,
+    "intr_required": true,
+    "direction": "EGRESS",
+    "standing_resolution": "APPLICABLE_TRANSITION_ELEMENTS"
+  },
+  "heartbeat_derived_carrier": {
+    "reference_frequency_hz": 100,
+    "heartbeat_period_ms": 10,
+    "progression_dependency": "OSCILLATOR_ONLY",
+    "carrier_role": "SYNCHRONIZATION_AND_PACKET_CARRIER",
+    "carrier_grants_admission_authority": false,
+    "carrier_grants_execution_authority": false,
+    "carrier_grants_credential_authority": false,
+    "carrier_grants_routing_authority": false,
+    "carrier_grants_transition_authority": false,
+    "carrier_grants_receiving_authority": false
+  },
+  "credential_authority": "TV/TVC",
+  "github_token_runtime_authority": "NONE",
+  "authority_transfer_assumed": false,
+  "authority_effect_resolution": "DERIVED_FROM_APPLICABLE_TRANSITION_ELEMENTS",
+  "repository_endpoint_rule": "APPLICATION_REPOSITORIES_EXPOSE_PROFILES_ONLY_ORG_DOT_GITHUB_OWNS_ORG_COMMUNICATION"
+}

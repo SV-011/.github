@@ -1,0 +1,93 @@
+{
+  "schema": "stegverse.organization-interlock-intr-boundary/v1",
+  "organization": "Triad-Test",
+  "owner_repository": "Triad-Test/.github",
+  "communication_policy": "ALL_ORGANIZATION_INGRESS_EGRESS_GENERATED_AT_ORG_DOT_GITHUB_BOUNDARY",
+  "generator": "org-runtime/runtime_boundary.py",
+  "ingress": {
+    "interlock_required": true,
+    "intr_required": true,
+    "direction": "INGRESS",
+    "standing_resolution": "APPLICABLE_TRANSITION_ELEMENTS",
+    "capability_endpoint_bindings": [
+      {
+        "profile_id": "intr-destination",
+        "profile_name": "InTr:Destination",
+        "operation": "DIAGNOSTIC_CROSSING",
+        "payload_schema": "stegverse.org-intr-destination-diagnostic/v1",
+        "submission_reader": "ECOSYSTEM_COMMUNICATION",
+        "capability_declaration_owner": "Triad-Test/.github",
+        "capability_binding_owner": "Triad-Test/.github",
+        "receiving_operation": {
+          "owner_repository": "Triad-Test/.github",
+          "operation_id": "ORGANIZATION_INTR_DESTINATION_INGRESS",
+          "operation": "resident-runtime/intr_destination_ingress.py",
+          "addressed_service": "triad-test.intr-destination",
+          "addressed_service_boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+          "address_resolution": "org-boundary/runtime/capability_ingress.py::receive",
+          "address_is_resolvable_from_the_service_registry": true,
+          "selects_processing_at_the_capability_address": false,
+          "admission": "resident-runtime/intr_destination_ingress.py::receive",
+          "receipt_append": "resident-runtime/aggregate_repo_transition.py::append",
+          "emits": "stegverse.organization-transition-receipt/v1",
+          "transport": "INTERLOCK_INTR",
+          "address_form": "REPOSITORY_OWNED_OPERATION_NOT_HOST_OR_URL",
+          "host_required": false,
+          "environment_url_required": false,
+          "credential_authority": "TV/TVC",
+          "github_token_runtime_authority": "NONE",
+          "routing_authority_constraint": "CONSTRAINT_VARIABLE",
+          "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+          "execution_authority_constraint": "CONSTRAINT_VARIABLE",
+          "time_constraint": "CONSTRAINT_VARIABLE",
+          "disposition_role": "TRANSITION_EVIDENCE_ONLY"
+        },
+        "binding_role": "ORGANIZATION_RECEIVING_OPERATION_RESOLUTION",
+        "authority_effect": "NONE_BINDING_ONLY",
+        "routing_authority_constraint": "CONSTRAINT_VARIABLE",
+        "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+        "execution_authority_constraint": "CONSTRAINT_VARIABLE",
+        "time_constraint": "CONSTRAINT_VARIABLE",
+        "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+        "environment_selected_ingress": false
+      }
+    ],
+    "capability_endpoint_binding_rule": "REGISTERED_CAPABILITY_RESOLVES_TO_ONE_ORGANIZATION_RECEIVING_OPERATION_OWNED_HERE",
+    "capability_address_rule": "A_BOUND_RECEIVING_OPERATION_IS_ADDRESSABLE_IN_THE_SERVICE_REGISTRY_OR_IT_IS_UNREACHABLE"
+  },
+  "egress": {
+    "interlock_required": true,
+    "intr_required": true,
+    "direction": "EGRESS",
+    "standing_resolution": "APPLICABLE_TRANSITION_ELEMENTS",
+    "peer_capability_resolution": {
+      "address_form": "ORGANIZATION_SLUG_DOT_CAPABILITY_PROFILE_ID",
+      "derivation": "org-kernel/kernel.py::organization_slug",
+      "capability_must_be_declared_in_this_organizations_overlay": true,
+      "capability_profile_source": "ORGANIZATION_CAPABILITY_OVERLAY",
+      "derivation_is_the_same_one_this_organization_answers_at": true,
+      "proven_on_this_organization": "triad-test.intr-destination",
+      "peer_declares_its_capability_services_in_the_peer_directory": false,
+      "peer_serves_this_capability_is_proven_here": false,
+      "unserved_capability_address_is_observable_as_an_unclosed_crossing": true,
+      "default_without_a_declared_capability": "ORG_CONTROL_SERVICE"
+    }
+  },
+  "heartbeat_derived_carrier": {
+    "reference_frequency_hz": 100,
+    "heartbeat_period_ms": 10,
+    "progression_dependency": "OSCILLATOR_ONLY",
+    "carrier_role": "SYNCHRONIZATION_AND_PACKET_CARRIER",
+    "carrier_grants_admission_authority": false,
+    "carrier_grants_execution_authority": false,
+    "carrier_grants_credential_authority": false,
+    "carrier_grants_routing_authority": false,
+    "carrier_grants_transition_authority": false,
+    "carrier_grants_receiving_authority": false
+  },
+  "credential_authority": "TV/TVC",
+  "github_token_runtime_authority": "NONE",
+  "authority_transfer_assumed": false,
+  "authority_effect_resolution": "DERIVED_FROM_APPLICABLE_TRANSITION_ELEMENTS",
+  "repository_endpoint_rule": "APPLICATION_REPOSITORIES_EXPOSE_PROFILES_ONLY_ORG_DOT_GITHUB_OWNS_ORG_COMMUNICATION"
+}
