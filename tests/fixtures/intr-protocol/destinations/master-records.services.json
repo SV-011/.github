@@ -88,6 +88,23 @@
       "transition_authority": "NONE",
       "runtime_reality_authority": false,
       "gates_organizations": false
+    },
+    {
+      "service_id": "master-records.intr-destination",
+      "repository": "master-records/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
     }
   ],
   "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed. Master Records records released organization batch receipts only; it holds no transition or runtime-reality authority and no organization awaits it."

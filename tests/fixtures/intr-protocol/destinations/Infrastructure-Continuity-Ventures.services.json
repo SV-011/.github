@@ -62,6 +62,23 @@
       "boundary_role": "INTERNAL_ENDPOINT",
       "profile_status": "NEEDS_REPOSITORY_HANDOFF_RECONCILIATION",
       "runtime_required_for_consumption": true
+    },
+    {
+      "service_id": "infrastructure-continuity-ventures.intr-destination",
+      "repository": "Infrastructure-Continuity-Ventures/.github",
+      "boundary_role": "BOUNDARY_LOCAL_CAPABILITY_INGRESS",
+      "profile_status": "ACTIVE",
+      "capability_profile_id": "intr-destination",
+      "capability_binding_document": "org-runtime/interlock-intr.json",
+      "accepts": [
+        "ecosystem.communication",
+        "stegverse.org-intr-destination-diagnostic/v1"
+      ],
+      "runtime_required_for_consumption": true,
+      "admission_authority_constraint": "CONSTRAINT_VARIABLE",
+      "time_constraint": "CONSTRAINT_VARIABLE",
+      "disposition_role": "TRANSITION_EVIDENCE_ONLY",
+      "selects_processing_at_this_address": false
     }
   ],
   "boundary_rule": "Cross-organization ingress/egress semantics are defined by the organization boundary; endpoint authority remains transition-governed."

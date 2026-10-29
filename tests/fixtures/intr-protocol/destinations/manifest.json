@@ -230,28 +230,18 @@
     {
       "organization": "Infrastructure-Continuity-Ventures",
       "repository": "Infrastructure-Continuity-Ventures/.github",
-      "source_commit": "c727be53148d1a802305b83c40432f345d61c1a1",
-      "source_ref": "default branch (main) at source_commit",
+      "source_commit": "a6e89e25ac29a182841c307d41d5e798ab9b68a3",
+      "source_ref": "default branch (main) at source_commit (Infrastructure-Continuity-Ventures/.github installed the receiving operation, ledger and intr-destination row; lane-b-91117956)",
       "interlock": {
         "file": "Infrastructure-Continuity-Ventures.interlock-intr.json",
         "source_path": "org-runtime/interlock-intr.json",
-        "sha256": "sha256:c6fa3068ff6d06cacd1230e97ad9904daefade7cef2adc53cb896e940c4801a9"
+        "sha256": "sha256:6d816a4e75bb44d074a5a93b96eb3b17e25e39405724b3b7e188e24df3883ab8"
       },
       "services": {
         "file": "Infrastructure-Continuity-Ventures.services.json",
         "source_path": "org-boundary/registry/services.json",
-        "sha256": "sha256:b2683a2ec8eabd01b6d8750181ac909a186586870898fbaf399d9726dcce369b"
-      },
-      "observed_gaps": [
-        "no intr-destination ingress binding (INTR_DESTINATION_ENTRY_ABSENT)",
-        "egress.peer_capability_resolution absent",
-        "egress.emitting_operation absent",
-        "services.json serves no intr-destination row",
-        "resident-runtime/intr_destination_ingress.py absent (receiving operation / ledger not installed)",
-        ".stegverse/transition-ledger/emit.py absent (receiving operation / ledger not installed)",
-        "resident-runtime/ledger_store.py absent (receiving operation / ledger not installed)"
-      ],
-      "classification": "B (missing capability: the receiving operation and ledger are not installed; a destination entry alone would declare a receiver that does not exist)"
+        "sha256": "sha256:e464497080dd64743299f008cfb7e279dc47e31c52ef04798935c3f6dacd1d0f"
+      }
     },
     {
       "organization": "Triad-Test",
@@ -282,53 +272,34 @@
     {
       "organization": "formalism-tests",
       "repository": "formalism-tests/.github",
-      "source_commit": "f76f3b0681e136cb4d5475a3fc6d01a74acb58a6",
-      "source_ref": "default branch (main) at source_commit",
+      "source_commit": "b83f465cdb965cd161f7cd7e28938c8d1af2caf6",
+      "source_ref": "default branch (main) at source_commit (formalism-tests/.github installed the receiving operation, ledger and intr-destination row; lane-b-91117956)",
       "interlock": {
         "file": "formalism-tests.interlock-intr.json",
         "source_path": "org-runtime/interlock-intr.json",
-        "sha256": "sha256:a19f04835b33f398245b476e095020b8185834f4a5b24fbf85db476d5ad7294d"
+        "sha256": "sha256:06605c7d41629689591f8b538600549884a1b68baf98f7fd4b4d44d57b1515a8"
       },
       "services": {
         "file": "formalism-tests.services.json",
         "source_path": "org-boundary/registry/services.json",
-        "sha256": "sha256:26e44b0888968b8416198f60bf45f15af16bddf92e9afe5aed1a34cdfd4f1ca1"
-      },
-      "observed_gaps": [
-        "no intr-destination ingress binding (INTR_DESTINATION_ENTRY_ABSENT)",
-        "egress.peer_capability_resolution absent",
-        "egress.emitting_operation absent",
-        "services.json serves no intr-destination row",
-        "resident-runtime/intr_destination_ingress.py absent (receiving operation / ledger not installed)",
-        ".stegverse/transition-ledger/emit.py absent (receiving operation / ledger not installed)",
-        "resident-runtime/ledger_store.py absent (receiving operation / ledger not installed)"
-      ],
-      "classification": "B (missing capability: the receiving operation and ledger are not installed; a destination entry alone would declare a receiver that does not exist)"
+        "sha256": "sha256:e947d859cf0cb037729190a5f2a16e335e0258d4306bad03c83fe00087401a35"
+      }
     },
     {
       "organization": "master-records",
       "repository": "master-records/.github",
-      "source_commit": "a5f82152b105a0547bc007fed3d636dcd9087dde",
-      "source_ref": "default branch (main) at source_commit",
+      "source_commit": "e2db4e0d67188ae89201d27b1407da9aee043f11",
+      "source_ref": "default branch (main) at source_commit (master-records/.github installed the receiving operation, ledger and intr-destination row; lane-b-91117956)",
       "interlock": {
         "file": "master-records.interlock-intr.json",
         "source_path": "org-runtime/interlock-intr.json",
-        "sha256": "sha256:49b6e41cf3f46e05b1361b6b05ffbaff5e8f4cafbcd60eb2eb01a5a845f106ec"
+        "sha256": "sha256:9e8592c641e6d2dad8bd127b9b109bec406e71260031ae5956a25cd6b379fd12"
       },
       "services": {
         "file": "master-records.services.json",
         "source_path": "org-boundary/registry/services.json",
-        "sha256": "sha256:bb64e211feecf5148d65242c2106edb6cdf9af2d50c597567819996929172307"
-      },
-      "observed_gaps": [
-        "no intr-destination ingress binding (INTR_DESTINATION_ENTRY_ABSENT)",
-        "egress.peer_capability_resolution absent",
-        "egress.emitting_operation absent",
-        "services.json serves no intr-destination row",
-        "resident-runtime/intr_destination_ingress.py absent (receiving operation / ledger not installed)",
-        "resident-runtime/ledger_store.py absent (receiving operation / ledger not installed)"
-      ],
-      "classification": "B (missing capability: the receiving operation and ledger are not installed; a destination entry alone would declare a receiver that does not exist)"
+        "sha256": "sha256:bbcaab1f76418eadc4218cedce4a110ec148a75153d1652f43b459d5af763f32"
+      }
     }
   ],
   "organization_source": {
