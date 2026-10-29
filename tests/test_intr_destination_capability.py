@@ -38,7 +38,7 @@ BYTE_COPIES = {
     "org-boundary/runtime/intr_transport.py":
         "0f48bb46617aeba98b750eecd406d9ab157eb9e473aae583105dafd52ed7205c",
     "org-boundary/runtime/process_boundary.py":
-        "a5af99cbf166422e1c40c72eaafb64342c731398a6d434a055ea485aa3782d0e",
+        "90ba6261096f1a5a1d60bfc5370632180187f3ec3f25b2bef1d393d6563387f2",  # Data-Continuation/.github main 1ac152e (#10 @2136a6b)
     "resident-runtime/org_boundary_runtime.py":
         "1fedfdf46e854935e60260dab839ebd17d23df538ddfd1d0948828e1a978fa0b",
 }
@@ -385,16 +385,18 @@ class AddressedAndClosedTests(RedirectedLedgers):
 
     def test_the_phase5_diagnostic_role_is_not_this_capability(self):
         self.publish(diagnostic("phase5-role"), "sv-011.boundary-diagnostic", "phase5-role")
-        with self.assertRaises(ValueError) as refused:
-            self.consume()
-        self.assertIn("endpoint_adapter_not_installed", str(refused.exception))
+        # B-P36o: an adapter error is quarantined as FRAME_INGEST_FAILED; the batch is not aborted
+        result, = self.consume()
+        self.assertEqual(result["result"]["failure_code"], "FRAME_REFUSED_QUARANTINED")
+        self.assertEqual(result["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertIn("endpoint_adapter_not_installed", result["result"]["detail"])
 
     def test_a_body_under_another_schema_is_refused_at_the_address(self):
         self.publish(diagnostic("other-schema", schema="stegverse.org-not-a-destination-diagnostic/v1"),
                      ADDRESS, "other-schema")
-        with self.assertRaises(ValueError) as refused:
-            self.consume()
-        self.assertIn("SUBMISSION_BODY_DECLARES_THE_BOUND_PAYLOAD_SCHEMA", str(refused.exception))
+        result, = self.consume()
+        self.assertEqual(result["result"]["refusal_failure_code"], "FRAME_INGEST_FAILED")
+        self.assertIn("SUBMISSION_BODY_DECLARES_THE_BOUND_PAYLOAD_SCHEMA", result["result"]["detail"])
 
     def test_outbound_resolution_derives_the_peer_address_and_does_not_prove_it_serves(self):
         resolved = egress.resolve_destination(PEER, capability=PROFILE_ID)

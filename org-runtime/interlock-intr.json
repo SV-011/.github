@@ -31,6 +31,43 @@
           "address_is_resolvable_from_the_service_registry": true,
           "selects_processing_at_the_capability_address": false,
           "admission": "resident-runtime/intr_destination_ingress.py::receive",
+          "hb_epoch_binding": {
+            "required": true,
+            "rule": "org-kernel/kernel.py::supplied_epoch_failure",
+            "sources": [
+              {
+                "from": "carrier_frame",
+                "via": "org-kernel/kernel.py::ingest_frame",
+                "field": "heartbeat_reference.epoch",
+                "passes_as": "hb_epoch",
+                "accepts_carried_crossings": false,
+                "carried_refusal": "CARRIED_NOT_ACCEPTED_BY_DESTINATION",
+                "dispatch": {
+                  "kind": "LIBRARY_API",
+                  "entrypoint": false,
+                  "api": "org-kernel/kernel.py::consume_addressed_frames",
+                  "in_tree_callers": [],
+                  "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml",
+                  "dispatcher": {
+                    "status": "PENDING_IN_TREE",
+                    "pending": "SV-011#11"
+                  }
+                }
+              },
+              {
+                "from": "dispatch_input",
+                "dispatcher": ".github/workflows/organization-ledger-transition-writer.yml",
+                "input": "hb_epoch",
+                "env": "STEGVERSE_HB_EPOCH",
+                "entrypoint": "resident-runtime/intr_destination_ingress.py --self-closure",
+                "dispatch": {
+                  "kind": "IN_TREE_DISPATCHER",
+                  "entrypoint": true,
+                  "trigger": "workflow_dispatch"
+                }
+              }
+            ]
+          },
           "receipt_append": "resident-runtime/aggregate_repo_transition.py::append",
           "emits": "stegverse.organization-transition-receipt/v1",
           "transport": "INTERLOCK_INTR",
@@ -83,6 +120,31 @@
       "emission": "resident-runtime/organization_egress_boundary.py::emit",
       "closure": "resident-runtime/organization_egress_boundary.py::close",
       "carrier": "org-kernel/kernel.py::publish_packet",
+      "hb_epoch_binding": {
+        "required": true,
+        "rule": "org-kernel/kernel.py::supplied_epoch_failure",
+        "sources": [
+          {
+            "from": "caller_argument",
+            "parameter": "hb_epoch",
+            "entrypoints": [
+              "resident-runtime/organization_egress_boundary.py::emit",
+              "resident-runtime/organization_egress_boundary.py::close"
+            ]
+          }
+        ],
+        "dispatch": {
+          "kind": "LIBRARY_API",
+          "entrypoint": false,
+          "api": "resident-runtime/organization_egress_boundary.py",
+          "in_tree_callers": [],
+          "dispatcher_pending": "SV-011/.github#11 .github/workflows/intr-destination-hop.yml",
+          "dispatcher": {
+            "status": "PENDING_IN_TREE",
+            "pending": "SV-011#11"
+          }
+        }
+      },
       "receipt_append": "resident-runtime/aggregate_repo_transition.py::append",
       "emits": "stegverse.organization-transition-receipt/v1",
       "transport": "INTERLOCK_INTR",

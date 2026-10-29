@@ -219,12 +219,17 @@ def self_closure(communication_id: str, *, registry: Mapping[str, Any], packet_i
 
 def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
             hb_epoch: int | None, *, operation: str = OPERATION_ID, profile_id: str = PROFILE_ID,
-            boundary_extra: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
+            boundary_extra: Mapping[str, Any] | None = None,
+            hb_provenance: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], bool]:
     """Append at both levels. A replay of the same packet returns the recorded pair.
 
     ``operation``, ``profile_id`` and ``boundary_extra`` name another operation
     on the same two-level append (resident-runtime/merge_transfer.py); their
     defaults are this ingress, so its receipts are unchanged.
+
+    ``hb_provenance`` records where a carried epoch came from (merge_transfer:
+    the organization ledger head) on both receipts' ``hb_reference``; a supplied
+    epoch carries none.
 
     The repository locator and the organization locator are caller-supplied.
     On the published ref they are the same git ref: the organization chain at
@@ -241,17 +246,22 @@ def _append(transition_class: str, packet_id: str, evidence: Mapping[str, Any],
     prior = repository_ledger.recorded(store, head, transition_id, transition_class)
     repository_receipt = repository_ledger.append(
         transition_id, transition_class, predecessor, successor, dict(evidence),
-        "NONE", hb_epoch=hb_epoch,
+        "NONE", hb_epoch=hb_epoch, hb_provenance=hb_provenance,
         idempotent_on=("communication_id", "payload_sha256", "disposition"))
-    epoch = repository_receipt["hb_reference"]["epoch"]
+    # The organization receipt references the epoch this call was supplied, never
+    # one read back from the repository receipt: a replayed repository receipt may
+    # carry an older or clock-derived epoch.
     organization_receipt = organization_ledger.append(
         repository_receipt, "REPO_STATE_PROPAGATION", predecessor, successor,
         {"operation": operation, "profile_id": profile_id,
          "disposition": evidence["disposition"],
          "communication_id": evidence.get("communication_id"), **dict(boundary_extra or {})},
-        "NONE", hb_epoch=epoch, idempotent=True)
+        "NONE", hb_epoch=hb_epoch, idempotent=True, hb_provenance=hb_provenance)
     return ({"repository_receipt": repository_receipt,
              "organization_receipt": organization_receipt}, prior is not None)
+
+
+PACKET_ID_RECEIPT_COLLISION = "PACKET_ID_RECEIPT_COLLISION"
 
 
 def _recorded(disposition: str, payload: Any, packet_id: str, hb_epoch: int | None, *,
@@ -262,12 +272,21 @@ def _recorded(disposition: str, payload: Any, packet_id: str, hb_epoch: int | No
     try:
         appended, replayed = _append(transition_class, packet_id, evidence, hb_epoch)
     except ValueError as exc:
-        if str(exc) != "ledger_receipt_collision":
+        # A store-side collision is a fault writing our own state, not this packet's: it propagates.
+        if str(exc) != "ledger_receipt_collision" or getattr(exc, "ledger_write_fault", False) is True:
             raise
         collided = _evidence(payload, packet_id, FAIL_CLOSED,
                              failed_predicate="ONE_PACKET_ID_BINDS_ONE_DIAGNOSTIC",
                              detail=str(exc))
-        return _result(collided, None, replayed=False, received=False)
+        # A content conflict: refused before anything is written, terminal, named for the collision.
+        # A byte-identical replay is answered above by the idempotent append, not refused.
+        return {**_result(collided, None, replayed=False, received=False),
+                "failure_code": PACKET_ID_RECEIPT_COLLISION, "terminal": True,
+                "required_evidence_or_repair": "a new packet id for a different diagnostic; "
+                                               "the recorded receipt for this packet id is unchanged",
+                "retry_entrypoint": "org-kernel/kernel.py::publish_frame with a new packet_id",
+                "owning_existing_goal": repository_ledger.kernel.HB_EPOCH_OWNING_EXISTING_GOAL,
+                "next_attempt": "none for this packet id: retrying the same content never clears a collision"}
     return _result(evidence, appended, replayed=replayed, received=disposition == ALLOW)
 
 
@@ -292,6 +311,13 @@ def receive(payload: Any, *, registry: Mapping[str, Any], standing: Mapping[str,
     return _recorded(ALLOW, payload, packet_id, hb_epoch)
 
 
+INGRESS_WRITE_FAILED = "INTR_INGRESS_WRITE_FAILED"
+RESULT_WRITE_FAILED = "INTR_INGRESS_RESULT_WRITE_FAILED"
+CLI_ENTRYPOINT = "resident-runtime/intr_destination_ingress.py (--self-closure | --payload) --hb-epoch <same>"
+CLI_EPOCH_RETRY_ENTRYPOINT = ("resident-runtime/intr_destination_ingress.py --hb-epoch <digits >= 32> "
+                              "(or STEGVERSE_HB_EPOCH)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--self-closure", action="store_true",
@@ -300,31 +326,76 @@ def main() -> int:
     parser.add_argument("--payload", type=Path, default=None)
     parser.add_argument("--registry", type=Path, required=True)
     parser.add_argument("--packet-id", default=os.environ.get("STEGVERSE_PACKET_ID"))
-    parser.add_argument("--hb-epoch", type=int, default=None)
+    # Read as text and checked by the shared rule: argparse's int() would admit
+    # "+33", " 33" or a fullwidth "３３" as 33.
+    parser.add_argument("--hb-epoch", type=str, default=None,
+                        help="the supplied heartbeat epoch: ASCII digits >= 32 (or STEGVERSE_HB_EPOCH)")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
-    registry = json.loads(args.registry.read_text(encoding="utf-8"))
-    hb_epoch = args.hb_epoch
-    if hb_epoch is None and os.environ.get("STEGVERSE_HB_EPOCH"):
-        hb_epoch = int(os.environ["STEGVERSE_HB_EPOCH"])
-    if args.self_closure:
-        if not args.communication_id or not args.packet_id:
-            parser.error("--self-closure requires communication_id and packet_id")
-        result = self_closure(args.communication_id, registry=registry,
-                              packet_id=args.packet_id, hb_epoch=hb_epoch)
-    else:
-        if args.payload is None:
-            parser.error("--payload is required")
-        result = receive(
-            json.loads(args.payload.read_text(encoding="utf-8")),
-            registry=registry,
-            packet_id=args.packet_id or "organization-intr-destination",
-            hb_epoch=hb_epoch)
+    kernel = repository_ledger.kernel
+    # One input stage: a supplied file that cannot be read or parsed is terminal six fields; nothing is written.
+    try:
+        registry = json.loads(args.registry.read_text(encoding="utf-8"))
+        if not isinstance(registry, dict):
+            raise ValueError("the registry is a " + type(registry).__name__ + ", not a JSON object")
+    except kernel.INPUT_FAULTS as exc:
+        print(json.dumps(kernel.input_refusal("INTR_INGRESS", "--registry", exc, CLI_ENTRYPOINT), sort_keys=True))
+        return 5
+    # A set variable is a supplied value, "" included; only an unset one is absent.
+    from_env = os.environ.get("STEGVERSE_HB_EPOCH") if "STEGVERSE_HB_EPOCH" in os.environ else None
+    hb_epoch = args.hb_epoch if args.hb_epoch is not None else from_env
+    refusal = repository_ledger.kernel.writer_epoch_refusal(
+        hb_epoch, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is None and args.hb_epoch is not None and from_env is not None:
+        # Both inputs present: they must name the same epoch, or nothing is written.
+        other = repository_ledger.kernel.supplied_epoch_failure(from_env)
+        if other is not None or int(from_env) != int(args.hb_epoch):
+            refusal = repository_ledger.kernel.writer_epoch_refusal(None, retry_entrypoint=CLI_EPOCH_RETRY_ENTRYPOINT)
+            refusal["failure_code"] = "HB_EPOCH_CONFLICT"
+            refusal["detail"] = ("--hb-epoch " + repr(args.hb_epoch) + " and STEGVERSE_HB_EPOCH "
+                                 + repr(from_env) + " are both supplied and differ")
+    if refusal is not None:
+        print(json.dumps(refusal, sort_keys=True))
+        return 2
+    if args.self_closure and (not args.communication_id or not args.packet_id):
+        parser.error("--self-closure requires communication_id and packet_id")
+    if not args.self_closure and args.payload is None:
+        parser.error("--payload is required")
+    if not args.self_closure:
+        try:
+            payload = json.loads(args.payload.read_text(encoding="utf-8"))
+        except kernel.INPUT_FAULTS as exc:
+            print(json.dumps(kernel.input_refusal("INTR_INGRESS", "--payload", exc, CLI_ENTRYPOINT), sort_keys=True))
+            return 5
+    try:
+        if args.self_closure:
+            result = self_closure(args.communication_id, registry=registry,
+                                  packet_id=args.packet_id, hb_epoch=hb_epoch)
+        else:
+            result = receive(
+                payload,
+                registry=registry,
+                packet_id=args.packet_id or "organization-intr-destination",
+                hb_epoch=hb_epoch)
+    except Exception as exc:
+        # F-WRITER-TRACE: a fault writing our own ledger is six fields and non-zero, never a traceback.
+        if not repository_ledger.kernel.is_own_state_fault(exc):
+            raise
+        print(json.dumps(repository_ledger.kernel.own_state_write_refusal(
+            exc, INGRESS_WRITE_FAILED, CLI_ENTRYPOINT, "re-run the same invocation with the same hb_epoch"),
+            sort_keys=True))
+        return 3
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(rendered, encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
+    if args.out:
+        try:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            # The appends are committed; only the result file failed. Six fields, never a traceback.
+            print(json.dumps(repository_ledger.kernel.result_write_refusal(
+                exc, RESULT_WRITE_FAILED, CLI_ENTRYPOINT + " --out <writable path>"), sort_keys=True))
+            return 4
     return 0 if result.get("disposition") == ALLOW else 1
 
 

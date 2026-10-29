@@ -138,6 +138,11 @@ class RealStateAndAppend(unittest.TestCase):
                 head_receipt = json.loads(before[key(json.loads(tip_head)["receipt_sha256"])])
                 self.assertEqual(org["hb_reference"]["epoch"], head_receipt["hb_reference"]["epoch"])
                 self.assertIs(org["hb_reference"]["derived_from_clock"], False)
+                # a CARRIED epoch: both receipts record its source and the head receipt that carried it
+                for written in (org, rep):
+                    self.assertEqual(written["hb_reference"]["source"], "ORGANIZATION_LEDGER_HEAD")
+                    self.assertEqual(written["hb_reference"]["head_receipt_sha"], json.loads(tip_head)["receipt_sha256"])
+                    self.assertIs(written["hb_reference"]["derived_from_clock"], False)
                 # append-only: nothing that was there changed except the two HEADs
                 after = ledger.files()
                 for name, data in before.items():
@@ -190,7 +195,8 @@ class Refusals(unittest.TestCase):
         return key, ledger.read(key)
 
     def test_a_clock_derived_or_unsealed_head_epoch_is_unobserved(self):
-        for mutate in ("clock", "missing", "bool", "below_anchor", "unsealed"):
+        for mutate in ("clock", "clock_flag_absent", "missing", "bool", "below_anchor", "string", "float",
+                       "unsealed"):
             ledger = Ledger(self.fixture)
             try:
                 key, receipt = self._head_receipt(ledger)
@@ -202,13 +208,20 @@ class Refusals(unittest.TestCase):
                     receipt["hb_reference"]["epoch"] = True
                 elif mutate == "below_anchor":
                     receipt["hb_reference"]["epoch"] = 31
+                elif mutate == "clock_flag_absent":
+                    receipt["hb_reference"].pop("derived_from_clock")
+                elif mutate == "string":
+                    receipt["hb_reference"]["epoch"] = "40"
+                elif mutate == "float":
+                    receipt["hb_reference"]["epoch"] = 32.0
                 if mutate == "unsealed":
                     receipt["tampered"] = True  # the seal no longer verifies
                     ledger.write(key, receipt)
                 else:
                     ledger.write(key, reseal(receipt))
                 before = ledger.files()
-                self._six(mt.append_merge_transfer(self.fixture["commit"]), mt.EPOCH_UNOBSERVED)
+                self._six(mt.append_merge_transfer(self.fixture["commit"]),
+                          mt.PROVENANCE_UNMARKED if mutate == "clock_flag_absent" else mt.EPOCH_UNOBSERVED)
                 self.assertEqual(ledger.files(), before, mutate)
             finally:
                 ledger.close()
@@ -229,6 +242,267 @@ class Refusals(unittest.TestCase):
             self.assertEqual(ledger.files(), before)
         finally:
             ledger.close()
+
+    def test_a_ledger_write_fault_is_six_fields_not_a_traceback(self):
+        """V-P11 F-MT-TRACE: a lost comparison or store collision on either append is MERGE_TRANSFER_WRITE_FAILED,
+        non-terminal; the next run appends once."""
+        from unittest import mock
+        writers = (mt.ingress.repository_ledger.ledger_store, mt.ingress.organization_ledger.ledger_store)
+        for fault in ("lost_comparison", "store_collision"):
+            for fail_at in (1, 2):
+                with self.subTest(fault=fault, fail_at=fail_at):
+                    ledger = Ledger(self.fixture)
+                    try:
+                        calls = []
+                        patches = []
+                        for module in writers:
+                            for cls in (module.Store, module.GitLedgerStore):
+                                original = cls.append_transaction
+
+                                def append_transaction(store, *args, _original=original, _module=module, **kwargs):
+                                    calls.append(1)
+                                    if len(calls) == fail_at:
+                                        if fault == "store_collision":
+                                            raise _module.LedgerStoreCollision("ledger_receipt_collision")
+                                        return False
+                                    return _original(store, *args, **kwargs)
+                                patches.append(mock.patch.object(cls, "append_transaction", append_transaction))
+                        for patch in patches:
+                            patch.start()
+                        try:
+                            failed = mt.append_merge_transfer(self.fixture["commit"])
+                        finally:
+                            for patch in patches:
+                                patch.stop()
+                        self._six(failed, mt.WRITE_FAILED)
+                        self.assertIs(failed["terminal"], False)
+                        self.assertEqual(failed["retry_entrypoint"], "resident-runtime/merge_transfer.py append")
+                        self.assertEqual(failed["next_attempt"], "the next push or dispatch of the merge-transfer transition")
+                        again = mt.append_merge_transfer(self.fixture["commit"])
+                        self.assertEqual(again["disposition"], "ALLOW", again)
+                        once = ledger.files()
+                        self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                        self.assertEqual(ledger.files(), once)
+                        verified = mt.verify_merge_transfer(self.repo, self.merge)
+                        self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                    finally:
+                        ledger.close()
+
+    def test_an_os_error_at_any_put_is_six_fields_not_a_traceback(self):
+        """V-P11 F-MT-TRACE-OS: a one-shot OSError at each of the append's four puts is MERGE_TRANSFER_WRITE_FAILED,
+        non-terminal; the next run appends once and verifies."""
+        real_write = Path.write_bytes
+        for fail_at in (1, 2, 3, 4):
+            with self.subTest(fail_at=fail_at):
+                ledger = Ledger(self.fixture)
+                try:
+                    root = ledger.root.resolve()
+                    writes = []
+
+                    def failing(path, data, _real=real_write):
+                        if root in Path(path).resolve().parents:
+                            writes.append(path)
+                            if len(writes) == fail_at:
+                                raise OSError(28, "No space left on device")
+                        return _real(path, data)
+                    Path.write_bytes = failing
+                    try:
+                        failed = mt.append_merge_transfer(self.fixture["commit"])
+                    finally:
+                        Path.write_bytes = real_write
+                    self.assertEqual(len(writes), fail_at)
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertIs(failed["terminal"], False)
+                    self.assertEqual(failed["failed_predicate"], "MERGE_TRANSFER_WRITES_THIS_REPOSITORYS_LEDGER:OSError")
+                    again = mt.append_merge_transfer(self.fixture["commit"])
+                    self.assertEqual(again["disposition"], "ALLOW", again)
+                    once = ledger.files()
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                    verified = mt.verify_merge_transfer(self.repo, self.merge)
+                    self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                finally:
+                    ledger.close()
+
+    def test_the_append_cli_tearing_any_put_is_six_fields_without_a_traceback(self):
+        """F-WRITER-TRACE: `merge_transfer.py append` (the push workflow's step) with any of its 4 puts torn prints
+        six-field MERGE_TRANSFER_WRITE_FAILED, exits non-zero with no traceback; the re-run appends once."""
+        driver = (
+            "import os, pathlib, runpy, sys\n"
+            "root = pathlib.Path(os.environ['STEGVERSE_ORG_LEDGER_ROOT']).resolve()\n"
+            "step = int(os.environ['TEAR_AT']); seen = []; real = pathlib.Path.write_bytes\n"
+            "def tear(path, data):\n"
+            "    if root in pathlib.Path(path).resolve().parents:\n"
+            "        seen.append(path)\n"
+            "        if len(seen) == step:\n"
+            "            real(path, data[: len(data) // 2]); raise OSError(28, 'No space left on device')\n"
+            "    return real(path, data)\n"
+            "pathlib.Path.write_bytes = tear\n"
+            "sys.argv = sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        command = [str(ROOT / "resident-runtime/merge_transfer.py"), "append", "--commit", self.merge]
+        for step in (1, 2, 3, 4):
+            with self.subTest(step=step):
+                ledger = Ledger(self.fixture)
+                try:
+                    torn = subprocess.run([sys.executable, "-c", driver, *command], capture_output=True, text=True,
+                                          env={**os.environ, "TEAR_AT": str(step)}, cwd=ROOT)
+                    self.assertEqual(torn.returncode, 1, torn.stderr)
+                    self.assertNotIn("Traceback", torn.stderr)
+                    [failed] = json.loads(torn.stdout)
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertIs(failed["terminal"], False)
+                    rerun = subprocess.run([sys.executable, *command], capture_output=True, text=True,
+                                           env=dict(os.environ), cwd=ROOT)
+                    self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+                    once = ledger.files()
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                    verified = mt.verify_merge_transfer(self.repo, self.merge)
+                    self.assertEqual((verified["disposition"], verified["transfer"]), ("ALLOW", "VERIFIED"))
+                finally:
+                    ledger.close()
+
+    def test_an_unwritable_out_file_is_six_fields_not_a_traceback(self):
+        ledger = Ledger(self.fixture)
+        try:
+            command = [sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), "append",
+                       "--commit", self.merge, "--out", str(ledger.root)]  # a directory
+            ran = subprocess.run(command, capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+            self.assertEqual(ran.returncode, 1, ran.stderr)
+            self.assertNotIn("Traceback", ran.stderr)
+            decoder, text = json.JSONDecoder(), ran.stdout.strip()
+            results, index = decoder.raw_decode(text)
+            refusal = json.loads(text[index:])
+            self.assertEqual(results[0]["disposition"], "ALLOW")
+            self.assertEqual(refusal["failure_code"], mt.RESULT_WRITE_FAILED)
+            self.assertEqual(refusal["failed_predicate"], "OUT_FILE_ACCEPTS_THE_RESULT:IsADirectoryError")
+            self.assertIs(refusal["terminal"], False)
+            for field in mt.SIX_FIELDS:
+                self.assertTrue(refusal[field], field)
+            once = ledger.files()
+            self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+            self.assertEqual(ledger.files(), once)
+        finally:
+            ledger.close()
+
+    def test_a_commit_not_in_the_clone_is_six_fields_terminal_not_a_traceback(self):
+        """V-P11: `append` / `verify` naming a commit absent from the clone is MERGE_TRANSFER_COMMIT_NOT_IN_REPOSITORY,
+        terminal, non-zero (even under verify --expect FAIL_CLOSED), no traceback, nothing written."""
+        missing = "0123456789abcdef0123456789abcdef01234567"
+        for command in (["append"], ["verify"], ["verify", "--expect", "FAIL_CLOSED"]):
+            with self.subTest(command=command):
+                ledger = Ledger(self.fixture)
+                try:
+                    before = ledger.files()
+                    ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), *command,
+                                          "--commit", missing], capture_output=True, text=True,
+                                         env=dict(os.environ), cwd=ROOT)
+                    self.assertEqual(ran.returncode, 1, ran.stderr)
+                    self.assertNotIn("Traceback", ran.stderr)
+                    [refused] = json.loads(ran.stdout)
+                    self._six(refused, mt.COMMIT_NOT_IN_REPOSITORY)
+                    self.assertIs(refused["terminal"], True)
+                    self.assertEqual(refused["required_evidence_or_repair"], "supply a commit present in the clone")
+                    self.assertEqual(ledger.files(), before)
+                finally:
+                    ledger.close()
+
+    def test_an_oversized_or_malformed_commit_token_is_terminal_before_any_git_call(self):
+        """V-P11 D-3: a ~200 KB token (or any non-hex token) in --commits-file / --commit is a terminal six-field
+        MERGE_TRANSFER_INPUT_INVALID before git runs: no E2BIG traceback, nothing written."""
+        for token in ("f" * 200000, "HEAD; rm -rf /", "ABCDEF01", "abc"):
+            with self.subTest(token=token[:12]):
+                ledger = Ledger(self.fixture)
+                try:
+                    before = ledger.files()
+                    listing = ledger.root / "commits.txt"
+                    listing.write_text(token + "\n", encoding="utf-8")
+                    for command in (["append"], ["verify"], ["verify", "--expect", "FAIL_CLOSED"]):
+                        ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"),
+                                              *command, "--commits-file", str(listing)],
+                                             capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+                        self.assertEqual(ran.returncode, 1, ran.stderr[-400:])
+                        self.assertNotIn("Traceback", ran.stderr)
+                        refusals = json.loads(ran.stdout)
+                        self.assertEqual(len(refusals), len(token.split()))
+                        for refused in refusals:
+                            self._six(refused, mt.INPUT_INVALID)
+                            self.assertIs(refused["terminal"], True)
+                    listing.unlink()
+                    self.assertEqual(ledger.files(), before)
+                finally:
+                    ledger.close()
+
+    def test_an_os_error_reading_the_clone_is_non_terminal_exit_75(self):
+        from unittest import mock
+        with mock.patch.object(mt, "commit_facts", side_effect=OSError(7, "Argument list too long")), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(mt.main(["append", "--commit", self.merge]), 75)
+        [record] = json.loads(printed.call_args_list[0].args[0])
+        self._six(record, mt.GIT_READ_FAILED)
+        self.assertIs(record["terminal"], False)
+
+    def test_verify_with_an_unwritable_out_is_six_fields_not_a_traceback(self):
+        ledger = Ledger(self.fixture)
+        try:
+            ran = subprocess.run([sys.executable, str(ROOT / "resident-runtime/merge_transfer.py"), "verify",
+                                  "--commit", self.merge, "--expect", "FAIL_CLOSED", "--out", str(ledger.root)],
+                                 capture_output=True, text=True, env=dict(os.environ), cwd=ROOT)
+            self.assertEqual(ran.returncode, 1, ran.stderr)
+            self.assertNotIn("Traceback", ran.stderr)
+            text = ran.stdout.strip()
+            _results, index = json.JSONDecoder().raw_decode(text)
+            refusal = json.loads(text[index:])
+            self._six(refusal, mt.RESULT_WRITE_FAILED)
+            self.assertIs(refusal["terminal"], False)
+        finally:
+            ledger.close()
+
+    def test_a_fault_after_head_is_replaced_appends_no_second_receipt(self):
+        """F-POST-HEAD: an OSError after HEAD's replace; the record does not claim nothing was written, and the
+        re-run returns the recorded receipt and appends no second one."""
+        real_replace = os.replace
+        for fail_at in (1, 2):
+            with self.subTest(fail_at=fail_at):
+                ledger = Ledger(self.fixture)
+                try:
+                    root, heads = ledger.root.resolve(), []
+
+                    def replace_then_fault(source, target, _real=real_replace):
+                        _real(source, target)
+                        target = Path(target).resolve()
+                        if target.name == "HEAD.json" and root in target.parents:
+                            heads.append(target)
+                            if len(heads) == fail_at:
+                                raise OSError(5, "Input/output error (directory fsync)")
+                    os.replace = replace_then_fault
+                    try:
+                        failed = mt.append_merge_transfer(self.fixture["commit"])
+                    finally:
+                        os.replace = real_replace
+                    self._six(failed, mt.WRITE_FAILED)
+                    self.assertNotEqual(failed["consequence_committed"], False)
+                    self.assertIn("may be committed", failed["detail"])
+                    again = mt.append_merge_transfer(self.fixture["commit"])
+                    self.assertEqual(again["disposition"], "ALLOW", again)
+                    self.assertTrue(again["replayed"])
+                    once = ledger.files()
+                    org = [k for k, v in once.items() if k.startswith("receipts/")
+                           and json.loads(v).get("repo_receipt_sha256") == again["repository_receipt_sha256"]]
+                    self.assertEqual(len(org), 1)
+                    self.assertTrue(mt.append_merge_transfer(self.fixture["commit"])["replayed"])
+                    self.assertEqual(ledger.files(), once)
+                finally:
+                    ledger.close()
+
+    def test_the_cli_exits_non_zero_on_a_write_fault(self):
+        from unittest import mock
+        failed = mt.refusal(mt.WRITE_FAILED, "P", "R", "N", terminal=False)
+        with mock.patch.object(mt, "append_merge_transfer", return_value=failed), \
+                mock.patch.object(mt, "commit_facts", return_value={}), \
+                mock.patch("builtins.print"):
+            self.assertEqual(mt.main(["append", "--commit", self.merge]), 1)
 
     def _appended(self, ledger):
         result = mt.append_merge_transfer(self.fixture["commit"])

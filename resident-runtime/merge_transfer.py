@@ -71,6 +71,13 @@ EPOCH_UNOBSERVED = "HB_EPOCH_SOURCE_UNOBSERVED"
 FACTS_INVALID = "MERGE_COMMIT_FACTS_INVALID"
 COLLISION = "MERGE_TRANSFER_RECEIPT_COLLISION"
 WRITER_REFUSED = "LEDGER_WRITER_REFUSED"
+WRITE_FAILED = "MERGE_TRANSFER_WRITE_FAILED"
+RESULT_WRITE_FAILED = "MERGE_TRANSFER_RESULT_WRITE_FAILED"
+COMMIT_NOT_IN_REPOSITORY = "MERGE_TRANSFER_COMMIT_NOT_IN_REPOSITORY"
+INPUT_INVALID = "MERGE_TRANSFER_INPUT_INVALID"
+GIT_READ_FAILED = "MERGE_TRANSFER_GIT_READ_FAILED"
+COMMIT_TOKEN = re.compile(r"[0-9a-f]{4,40}")
+APPEND_ENTRYPOINT = "resident-runtime/merge_transfer.py append"
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_SUBJECT = re.compile(r"Merge pull request #([0-9]+) from \S+")
@@ -178,8 +185,18 @@ def store_module() -> Any:
     return ingress.repository_ledger.ledger_store
 
 
+HEAD_EPOCH_SOURCE = "ORGANIZATION_LEDGER_HEAD"
+PROVENANCE_UNMARKED = "HB_EPOCH_PROVENANCE_UNMARKED"
+
+
 def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
-    """The supplied epoch on the ledger head receipt, or a FAIL_CLOSED refusal."""
+    """The epoch the ledger head receipt carries, or a FAIL_CLOSED refusal.
+
+    It is a CARRIED epoch, not a supplied one: it must pass the shared rule
+    (kernel.supplied_epoch_failure, with the head reference, so derived_from_clock
+    must be exactly false), and the receipts written at it record their
+    provenance (``head_provenance``).
+    """
     def unobserved(detail: str) -> tuple[None, dict[str, Any]]:
         return None, refusal(EPOCH_UNOBSERVED, "MERGE_TRANSFER_EPOCH_IS_THE_LEDGER_HEAD_SUPPLIED_EPOCH",
                              "the organization ledger head receipt must be sealed and carry hb_reference.epoch, "
@@ -194,9 +211,25 @@ def head_epoch(store: Any) -> tuple[int | None, dict[str, Any] | None]:
         return unobserved("the organization ledger head receipt is absent or unsealed")
     reference = receipt.get("hb_reference")
     epoch = reference.get("epoch") if isinstance(reference, Mapping) else None
-    if type(epoch) is not int or epoch < 32 or reference.get("derived_from_clock") is not False:
-        return unobserved("head hb_reference " + repr(reference) + " is not a supplied epoch")
+    if not isinstance(reference, dict) or type(epoch) is not int:
+        return unobserved("head hb_reference " + repr(reference) + " carries no int epoch")
+    failure = ingress.repository_ledger.kernel.supplied_epoch_failure(epoch, reference)
+    if failure is not None and failure[0] == PROVENANCE_UNMARKED:
+        return None, refusal(PROVENANCE_UNMARKED, "MERGE_TRANSFER_EPOCH_IS_THE_LEDGER_HEAD_SUPPLIED_EPOCH",
+                             "the organization ledger head receipt's hb_reference must say derived_from_clock "
+                             "exactly false; an unmarked one is never a carried epoch",
+                             "re-run the push's merge-transfer workflow once the head is marked; nothing was written",
+                             detail="head hb_reference: " + failure[1])
+    if failure is not None:
+        return unobserved("head hb_reference " + repr(reference) + " is not a carried supplied-rule epoch: "
+                          + failure[1])
     return epoch, None
+
+
+def head_provenance(store: Any) -> dict[str, str]:
+    """The provenance a receipt written at the head epoch records: source and head receipt."""
+    head = _get(store, store_module().HEAD_KEY)
+    return {"source": HEAD_EPOCH_SOURCE, "head_receipt_sha": head["receipt_sha256"]}
 
 
 def org_chain(store: Any) -> Iterable[Any]:
@@ -296,15 +329,30 @@ def append_merge_transfer(facts: Mapping[str, Any]) -> dict[str, Any]:
         return refusal(FACTS_INVALID, "MERGE_COMMIT_FACTS_ARE_READ_FROM_THE_COMMIT_OBJECT",
                        "pass the commit's tree, parents and subject as git cat-file reads them",
                        "re-run on the pushed commit; nothing was written", repository=repo, detail=bad)
-    epoch, failed = head_epoch(org_store())
+    store = org_store()
+    epoch, failed = head_epoch(store)
     if failed is not None:
         return {**failed, "repository": repo, "merge_commit": facts["merge_commit"]}
+    provenance = head_provenance(store)
     evidence = merge_evidence(repo, facts)
     try:
         appended, replayed = ingress._append(
             TRANSITION_CLASS, facts["merge_commit"], evidence, epoch, operation=OPERATION, profile_id=PROFILE_ID,
-            boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]})
-    except ValueError as exc:
+            boundary_extra={"repository": repo, "merge_commit": facts["merge_commit"]},
+            hb_provenance=provenance)
+    except Exception as exc:
+        if isinstance(exc, OSError) or getattr(exc, "ledger_write_fault", False) is True:
+            # A fault writing our own ledger (lost comparison, contention, store collision): six fields, not a
+            # traceback, and not terminal. The writers are idempotent, so the next run resumes without a duplicate.
+            return refusal(WRITE_FAILED, "MERGE_TRANSFER_WRITES_THIS_REPOSITORYS_LEDGER:" + type(exc).__name__,
+                           "the organization ledger store accepts the append",
+                           "the next push or dispatch of the merge-transfer transition", repository=repo,
+                           merge_commit=facts["merge_commit"], retry_entrypoint=APPEND_ENTRYPOINT,
+                           terminal=False, consequence_committed="UNDETERMINED_RETRY_IS_IDEMPOTENT",
+                           detail=type(exc).__name__ + ": " + str(exc) + "; part of the append may be committed "
+                           "(a receipt or HEAD); the retry is idempotent and returns the recorded receipt")
+        if not isinstance(exc, ValueError):
+            raise
         code = COLLISION if str(exc) == "ledger_receipt_collision" else WRITER_REFUSED
         return refusal(code, "ONE_MERGE_COMMIT_BINDS_ONE_TRANSFER_RECEIPT",
                        "the ledger already binds this merge commit to different evidence, or the writer refused: " + str(exc),
@@ -362,6 +410,15 @@ def pushed_commits(before: str, after: str, pending_path: Path | str | None, git
     return out
 
 
+def selection_refusal(message: str, retry_entrypoint: str) -> dict[str, Any]:
+    """Six fields for a commit selection refused by ``pending`` or ``pushed_commits`` (terminal)."""
+    code = message.split(":", 1)[-1].strip().split(" ", 1)[0] or "COMMIT_SELECTION_REFUSED"
+    return refusal(code, "THE_PUSH_NAMES_A_READABLE_SELECTION_OF_COMMITS_ON_MAIN",
+                   "supply a pending manifest of this repository and a pushed range on main",
+                   "none with this input; nothing was written", retry_entrypoint=retry_entrypoint,
+                   terminal=True, detail=message)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -377,29 +434,90 @@ def main(argv: list[str] | None = None) -> int:
         if name == "verify":
             p.add_argument("--expect", choices=(ALLOW, FAIL_CLOSED), default=ALLOW)
     args = parser.parse_args(argv)
+    kernel = ingress.repository_ledger.kernel
+    retry = "resident-runtime/merge_transfer.py " + args.command
     if args.command == "commits":
-        print("\n".join(pushed_commits(args.before, args.after, args.pending)))
+        try:
+            selected = pushed_commits(args.before, args.after, args.pending)
+        except (*kernel.INPUT_FAULTS, KeyError, TypeError, AttributeError) as exc:
+            # stdout is the commit list a workflow redirects; the six-field record goes to stderr.
+            print(json.dumps(kernel.input_refusal("MERGE_TRANSFER", "--pending", exc, retry + " --pending <file>"),
+                             sort_keys=True), file=sys.stderr)
+            return 1
+        except SystemExit as exc:
+            if not isinstance(exc.code, str):
+                raise
+            print(json.dumps(selection_refusal(exc.code, retry), sort_keys=True), file=sys.stderr)
+            return 1
+        print("\n".join(selected))
         return 0
     commits = list(args.commit)
     if args.commits_file:
-        commits += Path(args.commits_file).read_text(encoding="utf-8").split()
+        try:
+            commits += Path(args.commits_file).read_text(encoding="utf-8").split()
+        except kernel.INPUT_FAULTS as exc:
+            print(json.dumps([kernel.input_refusal("MERGE_TRANSFER", "--commits-file", exc,
+                                                   retry + " --commits-file <file>")], indent=2, sort_keys=True))
+            return 1
     if not commits:
         print(json.dumps(refusal(FACTS_INVALID, "A_PUSH_NAMES_ITS_COMMITS", "name at least one commit",
                                  "re-run with --commit or --commits-file; nothing was done"), indent=2))
         return 1
     results = []
     for commit in commits:
+        if not COMMIT_TOKEN.fullmatch(commit):
+            # Checked before any git call: an oversized or malformed token never reaches argv (E2BIG).
+            results.append(refusal(INPUT_INVALID, "SUPPLIED_COMMIT_IS_A_HEX_OBJECT_NAME",
+                                   "supply commits as 4-40 lowercase hex characters",
+                                   "none with this input; nothing was read or written",
+                                   repository=repository(), terminal=True,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command
+                                   + " --commit <hex commit>",
+                                   detail="commit token of " + str(len(commit)) + " characters: "
+                                   + repr(commit[:64]) + ("..." if len(commit) > 64 else "")))
+            continue
+        try:
+            facts = commit_facts(commit)
+        except OSError as exc:
+            # Our own fault reading the clone (git missing, E2BIG, EIO): non-terminal, exit 75.
+            results.append(refusal(GIT_READ_FAILED, "THIS_CLONE_ANSWERS_GIT_CAT_FILE:" + type(exc).__name__,
+                                   "a clone and a git executable this run can read",
+                                   "re-run the same invocation; nothing was read or written",
+                                   repository=repository(), merge_commit=commit, terminal=False,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command,
+                                   detail=type(exc).__name__ + ": " + str(exc)))
+            continue
+        except subprocess.CalledProcessError as exc:
+            # An input defect: the commit is not in this clone. Six fields, terminal, never a traceback.
+            results.append(refusal(COMMIT_NOT_IN_REPOSITORY, "THE_NAMED_COMMIT_IS_IN_THE_CLONE",
+                                   "supply a commit present in the clone",
+                                   "none for this commit in this clone; nothing was read or written",
+                                   repository=repository(), merge_commit=commit, terminal=True,
+                                   retry_entrypoint="resident-runtime/merge_transfer.py " + args.command
+                                   + " --commit <a commit present in the clone>",
+                                   detail="git cat-file commit " + commit + " exited " + str(exc.returncode)
+                                   + ": " + (exc.stderr or "").strip()))
+            continue
         if args.command == "append":
-            results.append(append_merge_transfer(commit_facts(commit)))
+            results.append(append_merge_transfer(facts))
         else:
-            results.append(verify_merge_transfer(repository(), commit_facts(commit)["merge_commit"]))
+            results.append(verify_merge_transfer(repository(), facts["merge_commit"]))
     text = json.dumps(results, indent=2, sort_keys=True)
-    if args.out:
-        Path(args.out).write_text(text + "\n", encoding="utf-8")
     print(text)
+    if args.out:
+        try:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            # The appends are committed; only the result file failed. Six fields, never a traceback.
+            print(json.dumps(ingress.repository_ledger.kernel.result_write_refusal(
+                exc, RESULT_WRITE_FAILED, "resident-runtime/merge_transfer.py " + args.command
+                + " --out <writable path>", committed=args.command == "append"), indent=2, sort_keys=True))
+            return 1
+    if any(result.get("failure_code") == GIT_READ_FAILED for result in results):
+        return 75
     expected = args.expect if args.command == "verify" else ALLOW
     for result in results:
-        if result["disposition"] != expected:
+        if result["disposition"] != expected or result.get("failure_code") in (COMMIT_NOT_IN_REPOSITORY, INPUT_INVALID):
             return 1
         if expected == FAIL_CLOSED and not all(result.get(f) for f in SIX_FIELDS):
             return 1

@@ -71,11 +71,22 @@ def recorded(target: ledger_store.Store, head: Mapping[str, Any] | None,
     return None
 
 
+EPOCH_RETRY_ENTRYPOINT = ".stegverse/transition-ledger/emit.py::append (hb_epoch=)"
+
+
+def _organization_store():
+    """The organization ledger a CARRIED head is verified against, or None when none is located."""
+    configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
+    return ledger_store.open_store(ledger_store.parse_locator(configured)) if configured else None
+RepoLedgerEpochRefused = kernel.SuppliedEpochRefused
+
+
 def append(transition_id: str, transition_class: str, predecessor_state_sha256: str,
            successor_state_sha256: str, evidence: Mapping[str, Any] | None = None,
            authority_constraint: str = "NONE", hb_epoch: int | None = None,
            store: ledger_store.Store | None = None,
-           idempotent_on: tuple[str, ...] | None = None) -> dict[str, Any]:
+           idempotent_on: tuple[str, ...] | None = None,
+           hb_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Append one repository receipt, or return the one this transition already has.
 
     With ``idempotent_on``, a transition the chain already records is returned.
@@ -83,7 +94,12 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     constraint, or named evidence field is ``ledger_receipt_collision``. The
     heartbeat epoch is not compared: a retry may arrive on another tick, and
     the tick is a time constraint, not a second transition.
+
+    An absent or invalid ``hb_epoch`` is refused FAIL_CLOSED with six fields
+    (``RepoLedgerEpochRefused``) before the store is opened. No clock is read.
     """
+    hb = kernel.supplied_hb_reference(hb_epoch, retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+    hb = kernel.with_epoch_provenance(hb, hb_provenance)
     target = store or ledger_store.open_store(lr())
     target.initialize()
     expected_head = target.get(ledger_store.HEAD_KEY)
@@ -100,6 +116,12 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
                 or any(theirs.get(key, _ABSENT) != mine.get(key, _ABSENT) for key in idempotent_on)):
             raise ValueError("ledger_receipt_collision")
         return prior
+    if hb_provenance is not None:
+        refused = kernel.carried_provenance_refusal(
+            hb_provenance, hb, _organization_store(), ledger_store.receipt_key, ledger_store.HEAD_KEY,
+            retry_entrypoint=EPOCH_RETRY_ENTRYPOINT)
+        if refused is not None:
+            raise RepoLedgerEpochRefused(refused)
     body = {
         "schema": "stegverse.repo-transition-receipt/v1",
         "repository": C["repository"],
@@ -112,7 +134,7 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
         "time_constraint": "HEARTBEAT_EPOCH",
         "disposition_is_transition_evidence": True,
         "production_receipt_claimed": False,
-        "hb_reference": kernel.hb_reference(epoch=hb_epoch) if hb_epoch is not None else kernel.hb_reference(),
+        "hb_reference": hb,
         "previous_receipt_sha256": previous,
     }
     digest = sha(body)
@@ -124,4 +146,4 @@ def append(transition_id: str, transition_class: str, predecessor_state_sha256: 
     }
     if target.append_transaction(ledger_store.receipt_key(digest), receipt, previous_head, new_head):
         return receipt
-    raise RuntimeError("ledger_append_lost_comparison")
+    raise ledger_store.LedgerWriteFault("ledger_append_lost_comparison")

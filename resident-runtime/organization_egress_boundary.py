@@ -47,6 +47,7 @@ CLOSURE_REFUSED_CLASS = "ORGANIZATION_EGRESS_CLOSURE_REFUSED"
 
 ALLOW = "ALLOW"
 DENY = "DENY"
+FAIL_CLOSED = "FAIL_CLOSED"
 PENDING = "PENDING"
 
 ACK_CLASSES = frozenset({"ecosystem.monitor.response", "ecosystem.work.ack",
@@ -304,7 +305,8 @@ def _record(transition_id: str, transition_class: str, predecessor: str, success
          "intended_action": record["intended_action"],
          "disposition": record["disposition"],
          "crossed_an_organization_boundary": record["crossed_an_organization_boundary"]},
-        "NONE", hb_epoch=repository_receipt["hb_reference"]["epoch"] if idempotent else hb_epoch,
+        # The supplied epoch, never one read back from the repository receipt.
+        "NONE", hb_epoch=hb_epoch,
         idempotent=idempotent)
     return {"repository_receipt": repository_receipt,
             "organization_receipt": organization_receipt}
@@ -331,12 +333,86 @@ def _refusal_result(record: Mapping[str, Any], appended: Mapping[str, Any]) -> d
     }
 
 
+EMIT_EPOCH_RETRY_ENTRYPOINT = "resident-runtime/organization_egress_boundary.py::emit (hb_epoch=)"
+EMIT_PACKET_ID_COLLISION = "EMIT_PACKET_ID_COLLISION"
+
+
+def emission_collision(packet: Mapping[str, Any], frame: Mapping[str, Any],
+                       mesh_root: Path | None) -> dict[str, Any] | None:
+    """The six-field content refusal when this packet id already went out in a different frame, or None.
+
+    Nothing is published or written. A frame and emission receipt that match
+    byte for byte are a replay, answered by the write-once publish and the
+    idempotent append.
+    """
+    packet_id = packet["packet_id"]
+    prior_frames = [item.get("frame_sha256") for item in kernel.frames_for_packet(packet_id, root=mesh_root)]
+    store = repository_ledger.ledger_store.open_store(repository_ledger.lr())
+    head = store.get(repository_ledger.ledger_store.HEAD_KEY)
+    prior = repository_ledger.recorded(store, head if isinstance(head, dict) else None,
+                                       EMITTED_CLASS + ":" + packet_id, EMITTED_CLASS)
+    recorded = ((prior or {}).get("evidence") or {}).get("frame_sha256")
+    others = sorted({sha_ for sha_ in prior_frames + [recorded] if sha_ and sha_ != frame["frame_sha256"]})
+    if not others:
+        return None
+    return {
+        "schema": RESULT_SCHEMA, "operation": OPERATION_ID, "disposition": FAIL_CLOSED,
+        "disposition_is_transition_evidence": True, "emitted": False, "packet_id": packet_id,
+        "failure_code": EMIT_PACKET_ID_COLLISION, "terminal": True,
+        "failed_predicate": "ONE_PACKET_ID_PUBLISHES_ONE_FRAME",
+        "detail": "packet " + packet_id + " already went out as " + ", ".join(others)
+                  + "; this emission's frame is " + frame["frame_sha256"],
+        "required_evidence_or_repair": "re-emit with the epoch of the published frame, or emit a new packet",
+        "retry_entrypoint": EMIT_EPOCH_RETRY_ENTRYPOINT,
+        "owning_existing_goal": kernel.HB_EPOCH_OWNING_EXISTING_GOAL,
+        "next_attempt": "none for this packet id with different content; nothing was published or written",
+        "authority_constraint": "NONE_RECORD_ONLY", "time_constraint": "HEARTBEAT_EPOCH",
+        "production_receipt_claimed": False, "derived_from_clock": False, "consequence_committed": False,
+    }
+
+
+EMIT_WRITE_FAILED = "EMIT_WRITE_FAILED"
+
+
 def emit(destination_organization: Any, payload: Mapping[str, Any], *,
          standing: Mapping[str, Any], capability: str | None = None,
          transition_reference: str = "ecosystem.transition.interorg.v1",
          root: Path | None = None, mesh_root: Path | None = None,
          hb_epoch: int | None = None) -> dict[str, Any]:
-    """Emit an outbound crossing to a declared peer and record the disposition."""
+    """Emit, or answer a fault writing our own frame or ledger with six fields (F-WRITER-TRACE), not a traceback.
+
+    The fault is not terminal: the frame publish is atomic and write-once and
+    the appends are idempotent, so the same emission retried completes once.
+    """
+    try:
+        return _emit(destination_organization, payload, standing=standing, capability=capability,
+                     transition_reference=transition_reference, root=root, mesh_root=mesh_root,
+                     hb_epoch=hb_epoch)
+    except Exception as exc:
+        if not kernel.is_own_state_fault(exc):
+            raise
+        return {"schema": RESULT_SCHEMA, "operation": OPERATION_ID, "disposition_is_transition_evidence": True,
+                "emitted": False,
+                **kernel.own_state_write_refusal(exc, EMIT_WRITE_FAILED, EMIT_EPOCH_RETRY_ENTRYPOINT,
+                                                 "the same emission retried with the same hb_epoch")}
+
+
+def _emit(destination_organization: Any, payload: Mapping[str, Any], *,
+          standing: Mapping[str, Any], capability: str | None = None,
+          transition_reference: str = "ecosystem.transition.interorg.v1",
+          root: Path | None = None, mesh_root: Path | None = None,
+          hb_epoch: int | None = None) -> dict[str, Any]:
+    """Emit an outbound crossing to a declared peer and record the disposition.
+
+    ``hb_epoch`` is checked first: an absent or invalid one is
+    ``SuppliedEpochRefused`` (six-field FAIL_CLOSED) before anything is built,
+    published or recorded. The frame references the supplied epoch; no clock is
+    read.
+    """
+    refusal = kernel.writer_epoch_refusal(hb_epoch, retry_entrypoint=EMIT_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is not None:
+        raise kernel.SuppliedEpochRefused(refusal)
+    hb_epoch = int(str(hb_epoch))
     origin = this_organization(root)
     try:
         unclosable = closability_refusal(payload or {})
@@ -351,6 +427,11 @@ def emit(destination_organization: Any, payload: Mapping[str, Any], *,
             destination_service=resolved["destination_service"],
             payload=dict(payload), standing=dict(standing),
             transition_reference=transition_reference, authority_effect="NONE")
+        # One packet id publishes one frame (V-P11 F-REPUB, egress). Checked before anything is published:
+        # a byte-identical retry is a no-op; any other frame or emission receipt for this id is refused.
+        collision = emission_collision(packet, kernel.carrier_frame(packet, epoch=hb_epoch), mesh_root)
+        if collision is not None:
+            return collision
         published = kernel.publish_packet(packet, root=mesh_root, epoch=hb_epoch)
     except EgressRefused as exc:
         record = emit_refusal_record(exc.failed_predicate, exc.reason,

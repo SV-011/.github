@@ -5,15 +5,22 @@ and push its `validate` and `transition` jobs run with contents: read; the
 transition job verifies a temporary copy of the published ledger and never
 appends or pushes. The workflow_dispatch self-closure writer is
 organization-ledger-transition-writer.yml: dispatch only, job-scoped
-contents: write, the shared organization-ledger lock, and steps byte-identical
-to the dispatch job at main d7beaf59 (pinned by digest, so a shallow CI
-checkout needs no history). No workflow with a pull_request trigger holds
-contents: write. Stdlib only.
+contents: write, the shared organization-ledger lock, and the steps of the
+dispatch job at main d7beaf59 with one change, the hb_epoch pre-check (pinned
+by digest, so a shallow CI checkout needs no history). The pre-check applies
+the kernel's shared epoch rule instead of int(), which admitted "+33" and
+" 33". No workflow with a pull_request trigger holds contents: write. Stdlib
+only.
 """
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import subprocess
+import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -22,10 +29,14 @@ WORKFLOWS = ROOT / ".github/workflows"
 PR_FACING = WORKFLOWS / "organization-ledger-transition.yml"
 WRITER = WORKFLOWS / "organization-ledger-transition-writer.yml"
 MERGE_WRITER = WORKFLOWS / "organization-ledger-merge-transfer.yml"
+#: the InTr path writers (StegVerse-org/.github#162): workflow_run on the main-merge transfer only.
+INTR_WRITERS = (WORKFLOWS / "intr-path-transfer.yml", WORKFLOWS / "intr-path-ingress.yml")
 
-#: sha256 of the dispatch job's steps at main d7beaf59 (each step right-stripped, joined by newline,
-#: the job-level and step-level dispatch conditions removed).
-MAIN_DISPATCH_STEPS_SHA256 = "a632cbb00fe774dff6e278fc9676b62b0e79e0dd582f48e5ae38e97bb70771a6"
+#: sha256 of the writer's steps (each step right-stripped, joined by newline): the dispatch job's
+#: steps at main d7beaf59 (digest a632cbb0..., job-level and step-level dispatch conditions
+#: removed) with the hb_epoch pre-check changed from int() and the printable-token gate to the
+#: shared epoch rule alone, with a dispatch "" read as absent (B-P36b).
+MAIN_DISPATCH_STEPS_SHA256 = "9388314bfb116e92ef9cc50d538e8c7c80dbacfb1f61272d3de17a4248b898d1"
 MAIN_DISPATCH_BLOCK = """  workflow_dispatch:
     inputs:
       communication_id:
@@ -126,17 +137,50 @@ class WriterSplit(unittest.TestCase):
         now = [unpin(s).rstrip() for s in steps(jobs(self.writer)["transition"])]
         self.assertEqual(hashlib.sha256("\n".join(now).encode()).hexdigest(), MAIN_DISPATCH_STEPS_SHA256)
 
+    def test_the_writer_epoch_precheck_is_the_shared_rule(self):
+        step, = [s for s in steps(jobs(self.writer)["transition"])
+                 if "Append the intr-destination diagnostic self-closure" in s]
+        check = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0])
+        cases = (("4096", True, None), ("32", True, None), ("+33", False, "HB_EPOCH_INVALID"),
+                 (" 33", False, "HB_EPOCH_INVALID"), ("\uff13\uff13", False, "HB_EPOCH_INVALID"),
+                 ("\u0663\u0663", False, "HB_EPOCH_INVALID"), ("33.7", False, "HB_EPOCH_INVALID"),
+                 ("33.0", False, "HB_EPOCH_INVALID"), ("True", False, "HB_EPOCH_INVALID"),
+                 ("31", False, "HB_EPOCH_INVALID"), ("abc", False, "HB_EPOCH_INVALID"),
+                 ("", False, "HB_EPOCH_NOT_SUPPLIED"), (None, False, "HB_EPOCH_NOT_SUPPLIED"))
+        for epoch, accepted, code in cases:
+            with self.subTest(epoch=epoch):
+                environment = dict(os.environ, STEGVERSE_COMMUNICATION_ID="c", STEGVERSE_PACKET_ID="p")
+                environment.pop("STEGVERSE_HB_EPOCH", None)
+                if epoch is not None:
+                    environment["STEGVERSE_HB_EPOCH"] = epoch
+                ran = subprocess.run([sys.executable, "-c", check], cwd=ROOT, env=environment,
+                                     capture_output=True, text=True)
+                self.assertEqual(ran.returncode == 0, accepted, ran.stdout + ran.stderr)
+                if not accepted:
+                    self.assertNotIn("Traceback", ran.stderr)
+                    refusal = json.loads(ran.stdout.strip().splitlines()[-1])
+                    self.assertEqual(refusal["failure_code"], code)
+                    self.assertEqual(refusal["failed_predicate"], "SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH")
+                    for field in ("required_evidence_or_repair", "retry_entrypoint",
+                                  "owning_existing_goal", "next_attempt"):
+                        self.assertTrue(refusal.get(field), field)
+
     def test_no_workflow_with_a_pull_request_trigger_holds_contents_write(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
             text = path.read_text(encoding="utf-8")
             if re.search(r"(?m)^  pull_request(_target)?:", on_block(text)):
                 self.assertIsNone(WRITE_KEY.search(text), path.name)
                 self.assertIsNone(WRITE_ALL.search(text), path.name)
-        # the two writers are the only contents: write holders, both job-scoped, neither on pull_request
+        # the ledger writers are the only contents: write holders, all job-scoped, none on pull_request
         holders = sorted(p.name for p in WORKFLOWS.glob("*.yml") if WRITE_KEY.search(p.read_text()))
-        self.assertEqual(holders, sorted([WRITER.name, MERGE_WRITER.name]))
-        for path in (WRITER, MERGE_WRITER):
+        self.assertEqual(holders, sorted([WRITER.name, MERGE_WRITER.name] + [p.name for p in INTR_WRITERS]))
+        for path in (WRITER, MERGE_WRITER) + INTR_WRITERS:
             self.assertIn("\npermissions:\n  contents: read\n", path.read_text())
+        for path in INTR_WRITERS:
+            text = path.read_text()
+            self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on_block(text)), ["workflow_run"], path.name)
+            self.assertIn('workflows: ["Organization Ledger Main Merge Transfer"]', text, path.name)
+            self.assertIn("concurrency:\n  group: organization-ledger\n  cancel-in-progress: false\n", text, path.name)
 
 
 if __name__ == "__main__":

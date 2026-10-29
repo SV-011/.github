@@ -19,6 +19,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -104,12 +105,168 @@ def hb_reference(now_ns: int | None = None, *, epoch: int | None = None) -> dict
     })
 
 
+# The shared supplied-epoch rule and receipt-writer helper, byte-identical to
+# StegVerse-Labs/.github@bc608a3:org-kernel/kernel.py (WU-B13a).
+HB_EPOCH_NOT_SUPPLIED="HB_EPOCH_NOT_SUPPLIED"
+HB_EPOCH_INVALID="HB_EPOCH_INVALID"
+HB_EPOCH_PREDICATE="SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH"
+HB_EPOCH_OWNING_EXISTING_GOAL="INTERLOCK-INTR-RUNTIME-INDEPENDENT-PROTOCOL-001"
+
+#: sha256(inspect.getsource(supplied_epoch_failure).encode()) of the FINAL shared
+#: rule, StegVerse-Labs/.github#3282 @e1b3ac8 (comment 6261939357). Pinned by test.
+SHARED_VALIDATOR_SHA256 = "ad8ff52936d5bcd9a2ad6caceb2d9a637a099518989b34bbb3370301c7a4cce2"
+
+def supplied_epoch_failure(hb_epoch: Any, reference: Any = None) -> tuple[str, str] | None:
+    """The shared supplied-epoch rule (SUBMISSION_CARRIES_THE_SUPPLIED_HB_EPOCH).
+
+    Byte-identical in StegVerse-org/.github#185 and StegVerse-Labs/.github#3212
+    and #3213. `hb_epoch` absent (None) is HB_EPOCH_NOT_SUPPLIED. Otherwise it
+    must be ASCII [0-9]+ only -- an int is read as its decimal text; a bool, a
+    float or anything coerced ('+33', ' 33', '3_3', '33.0') is refused -- with
+    integer value >= 32 (the HB32 anchor). `reference`, the carrier frame's
+    heartbeat reference when there is one, must be an object, and a
+    `derived_from_clock` it carries must be exactly false. Any failure is
+    HB_EPOCH_INVALID. Returns (failure_code, detail), or None when the epoch is
+    supplied. No clock is read.
+    """
+    if reference is not None and not isinstance(reference, dict):
+        return "HB_EPOCH_INVALID", "the carrier's heartbeat reference is not an object"
+    if hb_epoch is None:
+        return "HB_EPOCH_NOT_SUPPLIED", "no hb_epoch was supplied and no clock is read"
+    if isinstance(hb_epoch, bool):
+        text = None
+    elif isinstance(hb_epoch, int):
+        text = str(hb_epoch)
+    elif isinstance(hb_epoch, str):
+        text = hb_epoch
+    else:
+        text = None
+    if text is None or not text.isascii() or not text.isdigit():
+        return "HB_EPOCH_INVALID", "hb_epoch " + repr(hb_epoch) + " is not ASCII [0-9]+"
+    if int(text) < 32:
+        return "HB_EPOCH_INVALID", "hb_epoch " + text + " is below the HB32 anchor (32)"
+    if reference is not None and "derived_from_clock" in reference \
+            and reference["derived_from_clock"] is not False:
+        return "HB_EPOCH_INVALID", ("the carrier's derived_from_clock is not exactly false; "
+                                    "a clock-derived epoch is not a supplied one")
+    if reference is not None and "sampled_unix_ns" in reference: return "HB_EPOCH_INVALID", "the carrier's heartbeat reference carries sampled_unix_ns; a sampled clock value is CLOCK, never a supplied epoch"
+    if reference is not None and "derived_from_clock" not in reference: return "HB_EPOCH_PROVENANCE_UNMARKED", "the carrier's heartbeat reference carries no derived_from_clock; an unmarked clock value is laundering, and a carrier cannot self-assert CARRIED provenance"
+    return None
+
+class SuppliedEpochRefused(ValueError):
+    """A receipt writer's refusal of an absent or invalid supplied epoch.
+
+    `refusal` is the six-field FAIL_CLOSED from `writer_epoch_refusal`. Raised
+    before anything is written; no clock is read to stand in for the epoch.
+    """
+    def __init__(self, refusal:dict[str,Any])->None:
+        super().__init__(refusal["failure_code"]+": "+refusal["detail"])
+        self.disposition=refusal["disposition"]
+        self.failed_predicate=refusal["failed_predicate"]
+        self.refusal=dict(refusal)
+
+def writer_epoch_refusal(hb_epoch:Any, *, retry_entrypoint:str)->dict[str,Any]|None:
+    """The six-field FAIL_CLOSED of a receipt writer's epoch, or None when it is supplied.
+
+    The shape StegVerse-org/.github#189 gave the organization ledger
+    (`epoch_refusal`): a receipt references the heartbeat epoch its caller
+    supplies, checked by `supplied_epoch_failure`; an absent one is
+    HB_EPOCH_NOT_SUPPLIED and is never derived from a clock.
+    """
+    failure=supplied_epoch_failure(hb_epoch)
+    if failure is None:
+        return None
+    code,detail=failure
+    return {"disposition":"FAIL_CLOSED","failure_code":code,"failed_predicate":HB_EPOCH_PREDICATE,
+            "detail":detail,
+            "required_evidence_or_repair":("the caller supplies hb_epoch= (or --hb-epoch): ASCII digits with "
+                                           "value >= "+str(HB_ANCHOR_EPOCH)+"; it is never derived from a clock"),
+            "retry_entrypoint":retry_entrypoint,
+            "owning_existing_goal":HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt":"call again with the supplied epoch; nothing was written",
+            "derived_from_clock":False,"consequence_committed":False}
+
+def supplied_hb_reference(hb_epoch:Any, *, retry_entrypoint:str)->dict[str,Any]:
+    """The heartbeat reference of a supplied epoch, or SuppliedEpochRefused. No clock is read."""
+    refusal=writer_epoch_refusal(hb_epoch,retry_entrypoint=retry_entrypoint)
+    if refusal is not None:
+        raise SuppliedEpochRefused(refusal)
+    return hb_reference(epoch=int(str(hb_epoch)))
+
+
 def derive_channel(payload_hash: str) -> dict[str, Any]:
     if not isinstance(payload_hash, str) or not payload_hash.startswith("sha256:") or len(payload_hash) != 71:
         raise ValueError("payload_hash_invalid")
     slot = int(payload_hash[7:23], 16) % CHANNEL_COUNT
     return {"channel_id": f"HB:H1:P{slot}", "phase_slot": slot, "phase_slot_count": CHANNEL_COUNT,
             "derivation": "PAYLOAD_SHA256_FIRST64_MOD_16", "authority_constraint": "NONE_CARRIER_ONLY"}
+
+
+#: Provenance a writer may record on hb_reference for an epoch it was not
+#: supplied but carried: the source, and the receipt that carried it. Neither
+#: changes the epoch or derived_from_clock.
+EPOCH_PROVENANCE_KEYS = ("source", "head_receipt_sha")
+
+
+def with_epoch_provenance(reference: dict[str, Any], provenance: Any) -> dict[str, Any]:
+    """``reference`` with a carried epoch's provenance recorded on it, or unchanged when there is none."""
+    if provenance is None:
+        return reference
+    if not isinstance(provenance, dict) or set(provenance) != set(EPOCH_PROVENANCE_KEYS) \
+            or not all(isinstance(provenance[key], str) and provenance[key] for key in EPOCH_PROVENANCE_KEYS):
+        raise ValueError("epoch_provenance_invalid")
+    return {**reference, **provenance}
+
+
+CARRIED_PROVENANCE_UNVERIFIED = "CARRIED_PROVENANCE_UNVERIFIED"
+CARRIED_NOT_ACCEPTED_BY_DESTINATION = "CARRIED_NOT_ACCEPTED_BY_DESTINATION"
+CARRIED_RESEND_ENTRYPOINT = ("the sender's hop: org-kernel/kernel.py::carrier_frame(packet, epoch=<SUPPLIED>) "
+                             "then publish_frame")
+
+
+def carried_provenance_refusal(provenance: Any, reference: dict[str, Any], head_store: Any,
+                               receipt_key: Any, head_key: str, *, retry_entrypoint: str) -> dict[str, Any] | None:
+    """The six-field FAIL_CLOSED when a CARRIED provenance does not verify, or None.
+
+    A writer given a carried epoch checks it against ``head_store``, the
+    organization ledger: ``head_receipt_sha`` must be its current head, that
+    receipt's seal must verify, its epoch must pass the shared rule with
+    derived_from_clock exactly false, and it must equal the epoch being written.
+    """
+    if provenance is None:
+        return None
+    claimed = provenance.get("head_receipt_sha") if isinstance(provenance, dict) else None
+    head = head_store.get(head_key) if head_store is not None else None
+    current = head.get("receipt_sha256") if isinstance(head, dict) else None
+    detail = None
+    if head_store is None:
+        detail = "no organization ledger to verify the carried head against"
+    elif not claimed or claimed != current:
+        detail = "head_receipt_sha " + repr(claimed) + " is not the organization ledger head " + repr(current)
+    else:
+        receipt = head_store.get(receipt_key(current))
+        body = {k: v for k, v in receipt.items() if k != "receipt_sha256"} if isinstance(receipt, dict) else None
+        carried = receipt.get("hb_reference") if isinstance(receipt, dict) else None
+        epoch = carried.get("epoch") if isinstance(carried, dict) else None
+        if body is None or receipt.get("receipt_sha256") != current or sha(body) != current:
+            detail = "the organization ledger head receipt " + current + " is absent or its seal does not verify"
+        elif not isinstance(carried, dict) or type(epoch) is not int \
+                or supplied_epoch_failure(epoch, carried) is not None:
+            detail = "the head receipt's hb_reference " + repr(carried) + " is not a supplied-rule, non-clock epoch"
+        elif epoch != reference.get("epoch"):
+            detail = "the carried epoch " + repr(reference.get("epoch")) + " is not the head epoch " + repr(epoch)
+    if detail is None:
+        return None
+    return {"disposition": "FAIL_CLOSED", "failure_code": CARRIED_PROVENANCE_UNVERIFIED,
+            "failed_predicate": "CARRIED_EPOCH_IS_THE_VERIFIED_ORGANIZATION_LEDGER_HEAD_EPOCH",
+            "detail": detail,
+            "required_evidence_or_repair": ("head_receipt_sha names the current organization ledger head, whose "
+                                            "sealed receipt carries a supplied-rule epoch with derived_from_clock "
+                                            "false equal to the carried epoch"),
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "read the current head and carry its epoch; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
 
 
 def carrier_frame(packet: dict[str, Any], *, now_ns: int | None = None,
@@ -127,7 +284,28 @@ def carrier_frame(packet: dict[str, Any], *, now_ns: int | None = None,
     return {**body, "frame_sha256": sha(body)}
 
 
+def _supplied_epoch_as_int(reference: Any) -> Any:
+    """Read a carrier epoch the shared rule accepts (ASCII digits >= 32) as its integer.
+
+    A digit-string ``epoch`` / ``generation`` is a supplied epoch, not an invalid
+    one; anything else is left for ``validate_hb_reference`` to refuse.
+    """
+    if not isinstance(reference, dict) or supplied_epoch_failure(reference.get("epoch")) is not None:
+        return reference
+    normalized = dict(reference, epoch=int(str(reference["epoch"])))
+    generation = reference.get("generation")
+    if isinstance(generation, str) and generation.isascii() and generation.isdigit():
+        normalized["generation"] = int(generation)
+    return normalized
+
+
+CARRIER_FRAME_STRING_FIELDS = ("packet_base64", "packet_sha256", "packet_id", "destination_org")
+
+
 def recover_packet(frame: dict[str, Any]) -> dict[str, Any]:
+    for field in CARRIER_FRAME_STRING_FIELDS:
+        if not isinstance(frame.get(field), str):
+            raise TypeError("carrier_frame_field_not_a_string: " + field)
     body = dict(frame)
     claimed = body.pop("frame_sha256", None)
     if claimed != sha(body):
@@ -135,7 +313,7 @@ def recover_packet(frame: dict[str, Any]) -> dict[str, Any]:
     raw = base64.b64decode(frame["packet_base64"].encode("ascii"), validate=True)
     if sha(raw) != frame["packet_sha256"]:
         raise ValueError("packet_hash_mismatch")
-    validate_hb_reference(frame.get("heartbeat_reference"))
+    validate_hb_reference(_supplied_epoch_as_int(frame.get("heartbeat_reference")))
     packet = json.loads(raw)
     if packet["packet_id"] != frame["packet_id"]:
         raise ValueError("packet_id_mismatch")
@@ -219,8 +397,25 @@ def publish_frame(frame: dict[str, Any], *, root: Path | None = None) -> Path:
         if path.read_text(encoding="utf-8") != rendered:
             raise ValueError("federation_frame_write_once_collision")
         return path
-    path.write_text(rendered, encoding="utf-8")
+    # Staged and renamed (B-P36q): a fault mid-write leaves no partial frame to collide with its own re-publish.
+    staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+    try:
+        staged.write_text(rendered, encoding="utf-8")
+        os.replace(staged, path)
+    finally:
+        if staged.exists():
+            staged.unlink()
     return path
+
+
+FRAME_MAX_BYTES = 1 << 20
+# json.loads raises RecursionError on deeply nested input under the size cap (F-SCAN-RECURSION); neither is a
+# ValueError, so every parse of a peer- or caller-supplied file names them too.
+DEEP_PARSE_FAULTS = (RecursionError, MemoryError)
+
+
+class FrameOversized(ValueError):
+    """A frames.d file larger than FRAME_MAX_BYTES; it is not read."""
 
 
 def scan_addressed_frames(organization: str, *, root: Path | None = None,
@@ -229,12 +424,25 @@ def scan_addressed_frames(organization: str, *, root: Path | None = None,
     directory = resolved / "frames.d"
     if not directory.is_dir():
         return []
-    consumed = seen or set()
+    consumed = seen if seen is not None else set()
+    quarantined = resolved / QUARANTINE_DIRECTORY
     found = []
     for path in sorted(directory.glob("*.json")):
-        if path.name in consumed:
+        if path.name in consumed or (quarantined / path.name).is_file():
             continue
-        frame = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            size = path.stat().st_size
+            if size > FRAME_MAX_BYTES:
+                raise FrameOversized("frame_exceeds_%d_bytes: %d" % (FRAME_MAX_BYTES, size))
+            frame = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(frame, dict):
+                raise TypeError("frame_is_not_an_object: " + type(frame).__name__)
+        except (ValueError, TypeError, OSError, *DEEP_PARSE_FAULTS) as unreadable:
+            # A read error, non-UTF-8, non-JSON, non-object or oversized file names no destination; it is offered once with its six-field refusal
+            # so the consumer quarantines it by name and the batch goes on (B-P36o F-SCAN).
+            found.append({"path": str(path), "name": path.name, "frame": {},
+                          "refusal": frame_refusal(FRAME_INGEST_FAILED, unreadable)})
+            continue
         if frame.get("destination_org") == organization:
             found.append({"path": str(path), "name": path.name, "frame": frame})
     return found
@@ -283,8 +491,37 @@ def build_packet(*, origin_org: str, origin_service: str, destination_org: str,
     }
 
 
+PUBLISH_EPOCH_RETRY_ENTRYPOINT = "org-kernel/kernel.py::publish_packet (epoch=<digits >= 32>)"
+
+
+def frames_for_packet(packet_id: str, *, root: Path | None = None) -> list[dict[str, Any]]:
+    """The frames already published for ``packet_id``. An unreadable file is not one of them."""
+    resolved, _provenance = resolve_federation_root(root)
+    found = []
+    for path in sorted((resolved / MESH_FRAME_PREFIX).glob("*.json")):
+        try:
+            frame = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError, *DEEP_PARSE_FAULTS):
+            continue
+        if isinstance(frame, dict) and frame.get("packet_id") == packet_id:
+            found.append(frame)
+    return found
+
+
 def publish_packet(packet: dict[str, Any], *, root: Path | None = None,
                    now_ns: int | None = None, epoch: int | None = None) -> dict[str, Any]:
+    """Publish a packet in a carrier frame.
+
+    A supplied ``epoch`` is checked by the shared rule: ASCII digits >= 32 are
+    taken as their integer; anything else is ``SuppliedEpochRefused`` (six
+    fields) before a frame is built or published. ``epoch=None`` still derives
+    one from the clock (WU-B13); no epoch-taking writer calls it that way.
+    """
+    if epoch is not None:
+        refusal = writer_epoch_refusal(epoch, retry_entrypoint=PUBLISH_EPOCH_RETRY_ENTRYPOINT)
+        if refusal is not None:
+            raise SuppliedEpochRefused(refusal)
+        epoch = int(str(epoch))
     frame = carrier_frame(packet, now_ns=now_ns, epoch=epoch)
     path = publish_frame(frame, root=root)
     return {"packet": packet, "frame": frame, "path": str(path)}
@@ -332,7 +569,12 @@ def collect_ecosystem_responses(origin_org: str, communication_id: str, *,
                                 mesh_root: Path | None = None) -> dict[str, Any]:
     responses = []
     for item in scan_addressed_frames(origin_org, root=mesh_root):
-        packet = recover_packet(item["frame"])
+        if "refusal" in item:
+            continue
+        try:
+            packet = recover_packet(item["frame"])
+        except Exception:
+            continue  # a peer frame that does not recover is not a response; collection goes on
         payload = packet.get("payload") or {}
         if payload.get("communication_id") != communication_id:
             continue
@@ -374,7 +616,7 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
     the submission is raised, not recorded as a consumed crossing: the receiving
     operation records its own refusal when it is the one that saw the payload.
     """
-    del node_state, epoch
+    del node_state
     registry = load_registry(root)
     if packet["destination"]["org"] != registry["organization"]:
         raise ValueError("wrong_destination_org")
@@ -398,7 +640,7 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
         previous = item["receipt_id"]
     try:
         application_result = capability_ingress(root).receive(
-            root, service, packet, registry=registry, mesh_root=mesh_root)
+            root, service, packet, registry=registry, mesh_root=mesh_root, hb_epoch=epoch)
     except SystemExit as refused:
         raise ValueError("capability_ingress_refused:" + str(refused)) from None
     constraint = (packet.get("transition") or {}).get("authority_effect")
@@ -412,14 +654,233 @@ def dispatch(root: Path, packet: dict[str, Any], *, mesh_root: Path | None = Non
                                "terminal_receipt_id": previous}}
 
 
+CARRIER_EPOCH_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sender re-publishes the packet "
+                                  "with publish_packet(..., epoch=<digits >= 32>)")
+
+
+CARRIED_HEAD_SOURCE = "ORGANIZATION_LEDGER_HEAD"
+
+
+def inbound_carried_refusal(root: Path, reference: dict[str, Any], clock_flagged: bool) -> dict[str, Any] | None:
+    """CARRIED_PROVENANCE_UNVERIFIED for an inbound claim that is not genuine, or None for one that verifies.
+
+    Genuine means the writers' own check passes against this organization's
+    ledger (STEGVERSE_ORG_LEDGER_ROOT): source ORGANIZATION_LEDGER_HEAD,
+    derived_from_clock exactly false, head_receipt_sha the current sealed head,
+    whose supplied-rule epoch equals the frame's. No clock is read.
+    """
+    provenance = {key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}
+    configured = os.getenv("STEGVERSE_ORG_LEDGER_ROOT")
+    spec = importlib.util.spec_from_file_location("ledger_store", Path(root) / "resident-runtime/ledger_store.py")
+    store_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(store_module)
+    store = store_module.open_store(store_module.parse_locator(configured)) if configured else None
+    refusal = carried_provenance_refusal(provenance, {"epoch": int(str(reference.get("epoch")))}, store,
+                                         store_module.receipt_key, store_module.HEAD_KEY,
+                                         retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+    if refusal is None and (clock_flagged or reference.get("derived_from_clock") is not False
+                            or provenance["source"] != CARRIED_HEAD_SOURCE):
+        refusal = carried_provenance_refusal({"head_receipt_sha": None}, {}, store, store_module.receipt_key,
+                                             store_module.HEAD_KEY, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+        refusal["detail"] = ("a CARRIED claim must name source " + CARRIED_HEAD_SOURCE + " with derived_from_clock "
+                             "false; this one is " + repr({**provenance,
+                                                          "derived_from_clock": reference.get("derived_from_clock")}))
+    return refusal
+
+
 def ingest_frame(root: Path, frame: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
-    packet = recover_packet(frame)
+    # The carrier epoch is checked before the frame is recovered, so an absent,
+    # invalid or clock-derived one is the six-field refusal, not a bare ValueError.
+    reference = frame.get("heartbeat_reference")
+    epoch = reference.get("epoch") if isinstance(reference, dict) else None
+    # Narrow S1 (lead, 07:48Z): a frame flagged derived_from_clock true (a WU-B13
+    # frame-only publisher's) is consumed but lends no epoch; a route that needs
+    # one refuses HB_EPOCH_NOT_SUPPLIED. Unmarked and other invalid references
+    # are still refused here, as is a self-asserted CARRIED claim.
+    # A bare-sampled reference (no flag, sampled_unix_ns present) is CLOCK too (lead, 08:10Z).
+    clock_flagged = isinstance(reference, dict) and (
+        reference.get("derived_from_clock") is True
+        or ("derived_from_clock" not in reference and "sampled_unix_ns" in reference))
+    # A clock-flagged frame lends no epoch, but its epoch must still be well-formed (the rule's
+    # digit and anchor check, without the reference), so a bad one is refused with six fields.
+    failure = supplied_epoch_failure(epoch) if clock_flagged else supplied_epoch_failure(epoch, reference)
+    carried = failure is None and isinstance(reference, dict) and any(key in reference for key in EPOCH_PROVENANCE_KEYS)
+    if carried:
+        # The manifest declares accepts_carried_crossings: false for inbound frames (09:03Z, option 1). A claim
+        # that verifies against this organization's ledger head is genuine and not accepted here: the sender
+        # re-sends a SUPPLIED epoch. A forged, non-current or tampered claim is CARRIED_PROVENANCE_UNVERIFIED.
+        unverified = inbound_carried_refusal(root, reference, clock_flagged)
+        if unverified is not None:
+            raise SuppliedEpochRefused(unverified)
+        failure = (CARRIED_NOT_ACCEPTED_BY_DESTINATION, "a carrier frame asserts CARRIED provenance "
+                   + repr({key: reference.get(key) for key in EPOCH_PROVENANCE_KEYS}))
+    if failure is not None:
+        # The writer's six-field shape, with the carrier's own failure code and detail.
+        refusal = writer_epoch_refusal(None, retry_entrypoint=CARRIER_EPOCH_RETRY_ENTRYPOINT)
+        refusal["failure_code"], refusal["detail"] = failure
+        if carried:
+            refusal.update(failed_predicate="DESTINATION_ACCEPTS_CARRIED_CROSSINGS",
+                           required_evidence_or_repair="re-send with the SUPPLIED epoch",
+                           retry_entrypoint=CARRIED_RESEND_ENTRYPOINT,
+                           next_attempt="the sender re-sends the packet in a frame whose heartbeat reference is "
+                                        "SUPPLIED (derived_from_clock false, no source or head_receipt_sha)")
+        raise SuppliedEpochRefused(refusal)
+    try:
+        packet = recover_packet(frame)
+    except Exception as exc:
+        # B-P36o / F-TYPE: a frame that does not recover is a six-field refusal, never a bare error.
+        text = str(exc)
+        code = (HB_REFERENCE_INVALID if text.startswith("heartbeat_")
+                else FRAME_INTEGRITY_INVALID if text.endswith("_mismatch") or "hash" in text
+                else FRAME_INGEST_FAILED)
+        raise SuppliedEpochRefused(frame_refusal(code, exc)) from None
     registry = load_registry(root)
     if frame["destination_org"] != registry["organization"]:
         return {"status": "IGNORED_NOT_ADDRESSED", "packet_id": frame["packet_id"]}
-    result = dispatch(root, packet, mesh_root=mesh_root,
-                      epoch=(frame.get("heartbeat_reference") or {}).get("epoch"))
-    return {"status": "CONSUMED", "packet": packet, "execution_result": result}
+    lent = None if clock_flagged else int(str(epoch))
+    result = dispatch(root, packet, mesh_root=mesh_root, epoch=lent)
+    return {"status": "CONSUMED", "packet": packet, "execution_result": result, "epoch_lent": lent is not None}
+
+
+HB_REFERENCE_INVALID = "HB_REFERENCE_INVALID"
+FRAME_INTEGRITY_INVALID = "FRAME_INTEGRITY_INVALID"
+FRAME_INGEST_FAILED = "FRAME_INGEST_FAILED"
+FRAME_RETRY_ENTRYPOINT = ("org-kernel/kernel.py::ingest_frame: the sender re-publishes a frame whose hashes, "
+                          "heartbeat reference and packet recover")
+
+
+def frame_refusal(code: str, exc: BaseException) -> dict[str, Any]:
+    """The six-field FAIL_CLOSED for a frame that does not recover or ingest. No clock is read."""
+    predicate = {HB_REFERENCE_INVALID: "CARRIER_HEARTBEAT_REFERENCE_IS_CONSISTENT",
+                 FRAME_INTEGRITY_INVALID: "CARRIER_FRAME_AND_PACKET_HASHES_VERIFY"}.get(
+        code, "FRAME_INGESTS_WITHOUT_ERROR:" + type(exc).__name__)
+    return {"disposition": "FAIL_CLOSED", "failure_code": code, "failed_predicate": predicate,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "a frame whose frame_sha256, packet_sha256 and heartbeat reference "
+                                           "verify, addressed to a capability this organization serves",
+            "retry_entrypoint": FRAME_RETRY_ENTRYPOINT,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "the frame is quarantined; a corrected frame is a new frame; nothing was written",
+            "derived_from_clock": False, "consequence_committed": False}
+
+
+FRAME_DISPATCH_IO_FAILED = "FRAME_DISPATCH_IO_FAILED"
+FRAME_DISPATCH_WRITE_FAILED = "FRAME_DISPATCH_WRITE_FAILED"
+FRAME_CYCLE_ENTRYPOINT = "org-kernel/kernel.py::consume_addressed_frames"
+
+
+def is_own_state_fault(exc: BaseException) -> bool:
+    """An OSError, or a ledger store's LedgerWriteFault (matched by its marker: each writer loads its own copy)."""
+    return isinstance(exc, OSError) or getattr(exc, "ledger_write_fault", False) is True
+
+
+def dispatch_io_refusal(exc: BaseException) -> dict[str, Any]:
+    """The six-field FAIL_CLOSED for a fault writing this repository's own state during dispatch.
+
+    The fault is ours, not the frame's: no seen or quarantine marker is written,
+    so the frame stays pending. The writers are idempotent, so the next cycle
+    resumes a partial write without a duplicate. No clock is read.
+    """
+    code = FRAME_DISPATCH_IO_FAILED if isinstance(exc, OSError) else FRAME_DISPATCH_WRITE_FAILED
+    return own_state_write_refusal(exc, code, FRAME_CYCLE_ENTRYPOINT,
+                                   "the next manifest-bound cycle; the frame stays pending")
+
+
+INPUT_FAULTS = (OSError, ValueError, *DEEP_PARSE_FAULTS)  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+
+
+def input_refusal(cli: str, argument: str, exc: BaseException, retry_entrypoint: str) -> dict[str, Any]:
+    """The terminal six-field record for a supplied input file that cannot be read or is not valid.
+
+    ``<CLI>_INPUT_UNREADABLE`` for a read fault, ``<CLI>_INPUT_INVALID`` for a
+    parse or shape fault. Nothing was written; no clock is read.
+    """
+    unreadable = isinstance(exc, OSError)
+    name = argument.lstrip("-").upper().replace("-", "_")
+    return {"disposition": "FAIL_CLOSED",
+            "failure_code": cli + ("_INPUT_UNREADABLE" if unreadable else "_INPUT_INVALID"),
+            "failed_predicate": "SUPPLIED_" + name + "_IS_A_READABLE_VALID_FILE",
+            "detail": argument + ": " + type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "supply " + argument + " as a readable file of the expected JSON",
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "none with this input; nothing was written",
+            "terminal": True, "derived_from_clock": False, "consequence_committed": False}
+
+
+def result_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str, *,
+                         committed: bool = True) -> dict[str, Any]:
+    """The non-terminal six-field record for a CLI whose result file (--out) could not be written.
+
+    ``committed``: the transition was recorded before the result write (an
+    append); the re-run is idempotent and returns it. No clock is read.
+    """
+    return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
+            "failed_predicate": "OUT_FILE_ACCEPTS_THE_RESULT:" + type(exc).__name__,
+            "detail": type(exc).__name__ + ": " + str(exc),
+            "required_evidence_or_repair": "an --out path whose directory accepts a file write",
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": "re-run the same invocation; it is idempotent",
+            "status": "PENDING", "terminal": False,
+            "derived_from_clock": False, "consequence_committed": committed}
+
+
+def own_state_write_refusal(exc: BaseException, failure_code: str, retry_entrypoint: str,
+                            next_attempt: str) -> dict[str, Any]:
+    """The non-terminal six-field FAIL_CLOSED for a fault writing this repository's own state.
+
+    The fault may fall after a write committed (F-POST-HEAD: HEAD replaced, then
+    a later step faults), so the record does not claim nothing was published.
+    The writers are idempotent and their writes atomic, so the retry returns
+    what was recorded and appends no second receipt. No clock is read.
+    """
+    return {"disposition": "FAIL_CLOSED", "failure_code": failure_code,
+            "failed_predicate": "DISPATCH_WRITES_THIS_REPOSITORYS_STATE:" + type(exc).__name__,
+            "detail": type(exc).__name__ + ": " + str(exc) + "; part of the write may be committed (a receipt or "
+                      "HEAD); the retry is idempotent and returns the recorded receipt",
+            "required_evidence_or_repair": "this repository's ledger, receipt and outbox stores accept writes",
+            "retry_entrypoint": retry_entrypoint,
+            "owning_existing_goal": HB_EPOCH_OWNING_EXISTING_GOAL,
+            "next_attempt": next_attempt,
+            "status": "PENDING", "terminal": False,
+            "derived_from_clock": False, "consequence_committed": "UNDETERMINED_RETRY_IS_IDEMPOTENT"}
+
+
+QUARANTINE_DIRECTORY = "quarantine.d"
+FRAME_REFUSED_QUARANTINED = "FRAME_REFUSED_QUARANTINED"
+
+
+def quarantine_frame(item: dict[str, Any], refusal: dict[str, Any], *, mesh_root: Path | None = None) -> dict[str, Any]:
+    """Write the terminal seen marker of a refused frame and return it. It is a marker, not a receipt.
+
+    It carries the refusal's six fields. It is write-once and keyed by the frame
+    file, so a later scan skips the frame instead of refusing it on every cycle.
+    No clock is read.
+    """
+    resolved, _provenance = resolve_federation_root(mesh_root)
+    frame = item["frame"]
+    marker = {"schema": "stegverse.frame-quarantine/v1", "status": "REFUSED",
+              "terminal": True, "frame": item["name"], "frame_sha256": frame.get("frame_sha256"),
+              "packet_id": frame.get("packet_id"), "is_a_receipt": False,
+              "disposition": refusal["disposition"], "failure_code": FRAME_REFUSED_QUARANTINED,
+              "refusal_failure_code": refusal["failure_code"],
+              **{key: refusal[key] for key in ("failed_predicate", "detail", "required_evidence_or_repair",
+                                               "retry_entrypoint", "owning_existing_goal", "next_attempt")},
+              "derived_from_clock": False, "consequence_committed": False}
+    path = resolved / QUARANTINE_DIRECTORY / item["name"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(marker, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    if not path.is_file():
+        # Written aside and renamed, so a fault mid-write leaves no partial marker for the scan to skip on.
+        staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+        try:
+            staged.write_text(rendered, encoding="utf-8")
+            os.replace(staged, path)
+        finally:
+            if staged.exists():
+                staged.unlink()
+    return marker
 
 
 def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
@@ -435,8 +896,37 @@ def consume_addressed_frames(repo_root: Path, *, mesh_root: Path | None = None,
     """
     del node_state_root, repo_ledger_root, org_ledger_root
     registry = load_registry(repo_root)
+    seen = seen if seen is not None else set()
     results = []
     for item in scan_addressed_frames(registry["organization"], root=mesh_root, seen=seen):
-        result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+        if "refusal" in item:
+            refusal = item["refusal"]
+        else:
+            try:
+                result = ingest_frame(repo_root, item["frame"], mesh_root=mesh_root)
+            except Exception as refused:
+                if is_own_state_fault(refused):
+                    # A fault writing our own state is not the frame's defect: no marker, not seen, pending.
+                    results.append({"path": item["path"], "result": dispatch_io_refusal(refused),
+                                    "organization_record": None})
+                    continue
+                # A refused frame is terminal: quarantined once, marked seen, and the batch goes on.
+                # The guard is total (F-TYPE): no exception from one frame aborts the batch.
+                # A writer's refusal comes from its own kernel copy, so it is matched by its six fields;
+                # any other adapter error is FRAME_INGEST_FAILED, naming the exception class (B-P36o).
+                refusal = getattr(refused, "refusal", None)
+                if not isinstance(refusal, dict) or refusal.get("disposition") != "FAIL_CLOSED":
+                    refusal = frame_refusal(FRAME_INGEST_FAILED, refused)
+            else:
+                refusal = None
+        if refusal is not None:
+            try:
+                result = quarantine_frame(item, refusal, mesh_root=mesh_root)
+            except OSError as fault:
+                # The marker did not land: not seen, so the next cycle refuses and quarantines it again.
+                results.append({"path": item["path"], "result": dispatch_io_refusal(fault),
+                                "organization_record": None})
+                continue
+        seen.add(item["name"])
         results.append({"path": item["path"], "result": result, "organization_record": None})
     return results

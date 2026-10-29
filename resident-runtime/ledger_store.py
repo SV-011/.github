@@ -46,6 +46,23 @@ def source_key(digest: str) -> str:
     return SOURCE_PREFIX + hex_digest + ".json"
 
 
+class LedgerWriteFault(RuntimeError):
+    """A fault in writing this store: a lost comparison, exhausted contention, or a failed git write.
+
+    It is the writer's fault, never the content's. ``ledger_write_fault`` lets a
+    caller holding another copy of this module match it without the class.
+    """
+    ledger_write_fault = True
+
+
+class LedgerStoreCollision(LedgerWriteFault, ValueError):
+    """A content-addressed key already holds a different document: the store's state, not the content, is at fault.
+
+    It is still ``ledger_receipt_collision`` and still a ValueError, so callers
+    that name the collision keep working; ``ledger_write_fault`` marks it ours.
+    """
+
+
 class LedgerLocatorInvalid(ValueError):
     """A supplied ledger location that names no store. Nothing is opened or written."""
 
@@ -164,9 +181,16 @@ class Store:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def put(self, key: str, document: Any) -> None:
+        """Write one document atomically: staged beside it and renamed, so a fault leaves the old or the new."""
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_document_bytes(document))
+        staged = path.with_name("." + path.name + "." + str(os.getpid()) + ".partial")
+        try:
+            staged.write_bytes(_document_bytes(document))
+            os.replace(staged, path)
+        finally:
+            if staged.exists():
+                staged.unlink()
 
     def list_prefix(self, prefix: str) -> set[str]:
         directory = self._path(prefix.rstrip("/"))
@@ -210,7 +234,7 @@ class Store:
             for key, value in documents.items():
                 existing = self.get(key)
                 if existing is not None and existing != value:
-                    raise ValueError("ledger_receipt_collision")
+                    raise LedgerStoreCollision("ledger_receipt_collision")
                 if existing is None:
                     missing.append(key)
             for key in missing:
@@ -280,7 +304,7 @@ class GitLedgerStore:
             ["git", *args], input=stdin, capture_output=True, env=env or self._env(git_dir))
         if check and completed.returncode != 0:
             detail = completed.stderr.decode(errors="replace").strip()
-            raise RuntimeError("git " + args[0] + " failed: " + detail)
+            raise LedgerWriteFault("git " + args[0] + " failed: " + detail)
         return completed
 
     def _tip(self) -> str | None:
@@ -350,11 +374,11 @@ class GitLedgerStore:
         stderr = completed.stderr.decode(errors="replace")
         if self._tip() != expected or "File exists" in stderr:
             return False
-        raise RuntimeError("git update-ref failed: " + stderr.strip())
+        raise LedgerWriteFault("git update-ref failed: " + stderr.strip())
 
     def _refuse_replacing_immutable(self, current: bytes | None, key: str, value: Any) -> None:
         if key.startswith(self._IMMUTABLE_PREFIXES) and current is not None and json.loads(current) != value:
-            raise ValueError("ledger_receipt_collision")
+            raise LedgerStoreCollision("ledger_receipt_collision")
 
     def initialize(self) -> None:
         """Open the repository. The ref is created by the first append, not here."""
@@ -397,7 +421,7 @@ class GitLedgerStore:
             new = self._commit(tip, {key: encoded}, "ledger put " + key)
             if new == tip or self._publish(new, tip):
                 return
-        raise RuntimeError("LEDGER_STORE_PUT_CONTENTION_EXHAUSTED")
+        raise LedgerWriteFault("LEDGER_STORE_PUT_CONTENTION_EXHAUSTED")
 
     def list_prefix(self, prefix: str) -> set[str]:
         tip = self._tip()
@@ -446,11 +470,11 @@ class GitLedgerStore:
                 for key, value in documents.items():
                     existing = current[key]
                     if existing is not None and json.loads(existing) != value:
-                        raise ValueError("ledger_receipt_collision")
+                        raise LedgerStoreCollision("ledger_receipt_collision")
                     if existing is None:
                         writes[key] = _document_bytes(value)
                 writes[HEAD_KEY] = _document_bytes(new_head)
                 new = self._commit(tip, writes, "ledger append " + receipt_key_name)
                 if self._publish(new, tip):
                     return True
-        raise RuntimeError("LEDGER_STORE_APPEND_CONTENTION_EXHAUSTED")
+        raise LedgerWriteFault("LEDGER_STORE_APPEND_CONTENTION_EXHAUSTED")
