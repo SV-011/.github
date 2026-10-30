@@ -192,5 +192,33 @@ class Consume(unittest.TestCase):
         self.six(unledgered)
 
 
+    def test_a_second_receipt_for_a_crossing_is_a_duplicate_and_the_oldest_is_read(self):
+        org, repo = synthetic_source()
+        (first,) = pi.consume(self.ledger.write_inbound([row(org, repo)]))
+        self.assertEqual(first["disposition"], "ALLOW", first)
+        d_org, d_rep, _ = pi.find_destination(PID, CID)
+        self.assertEqual(d_org["receipt_sha256"], first["organization_receipt_sha256"])
+        # A later receipt for the same crossing (a different transition id) lands on the chain.
+        store = pi.mt.org_store()
+        epoch, failed = pi.mt.head_epoch(store)
+        self.assertIsNone(failed)
+        checked = pi.check_source_pair(org, repo, PID, CID, DESTINATION)
+        evidence = pi.ingress_evidence(checked, pi.source_inclusion(checked))
+        later, _ = pi.ingress._append(
+            pi.TRANSITION_CLASS, PID + "@" + CID + "#later", evidence, epoch, operation=pi.OPERATION,
+            profile_id=pi.ingress.PROFILE_ID,
+            boundary_extra={"path_id": PID, "source_repository": checked["source_repository"],
+                            "source_organization_receipt_sha256": checked["source_organization_receipt_sha256"],
+                            "source_repository_receipt_sha256": checked["source_repository_receipt_sha256"]})
+        self.assertNotEqual(later["organization_receipt"]["receipt_sha256"], first["organization_receipt_sha256"])
+        d_org, d_rep, broken = pi.find_destination(PID, CID)
+        self.assertIsNone(broken)
+        self.assertEqual(d_org["receipt_sha256"], first["organization_receipt_sha256"])
+        (again,) = pi.consume(self.ledger.write_inbound([row(org, repo)]))
+        self.assertEqual((again["disposition"], again.get("replayed")), ("ALLOW", True), again)
+        (verified,) = pi.verify_inbound(self.ledger.inbound)
+        self.assertEqual(verified["disposition"], "ALLOW", verified)
+
+
 if __name__ == "__main__":
     unittest.main()

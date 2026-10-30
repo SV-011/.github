@@ -340,15 +340,21 @@ def ingress_evidence(checked: Mapping[str, Any], inclusion: Mapping[str, Any] | 
 
 def find_destination(path_id: str, communication_id: str, organization_store: Any = None,
                      repository_store: Any = None) -> tuple[Any, Any, str | None]:
+    """The crossing's one destination receipt: the OLDEST pair this ledger holds for it. The chain is walked newest
+    first to its end, so a later receipt for the same crossing is a duplicate that grants nothing, never the one
+    that is read (StegVerse-org/.github#261, #162)."""
     organization_store = organization_store if organization_store is not None else mt.org_store()
     repository_store = repository_store if repository_store is not None else mt.repo_store()
+    oldest = None
     for digest, receipt in mt.org_chain(organization_store):
         if not sealed(receipt):
             return None, None, "organization receipt " + digest + " on the chain is absent or unsealed"
         b = mt._boundary(receipt)
         if b.get("operation") == OPERATION and b.get("path_id") == path_id and b.get("communication_id") == communication_id:
-            return receipt, mt._receipt(repository_store, receipt.get("repo_receipt_sha256")), None
-    return None, None, None
+            oldest = receipt
+    if oldest is None:
+        return None, None, None
+    return oldest, mt._receipt(repository_store, oldest.get("repo_receipt_sha256")), None
 
 
 def consume(inbound: Path | str = INBOUND) -> list[dict[str, Any]]:
